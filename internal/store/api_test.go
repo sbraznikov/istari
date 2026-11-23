@@ -20,7 +20,7 @@ var allowedAPI = []string{
 	// functions
 	"Open",
 	// variables
-	"ErrConflict", "ErrNotFound",
+	"ErrConflict", "ErrNotFound", "ErrInvalidCursor",
 	// fields: plain data, no handles
 	"Change.Kind", "Change.ID", "Change.Data", "Change.IfVersion",
 	"Record.Kind", "Record.ID", "Record.Data", "Record.Version",

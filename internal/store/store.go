@@ -65,6 +65,8 @@ var (
 	ErrConflict = errors.New("store: projection version conflict")
 	// ErrNotFound means the projection record does not exist.
 	ErrNotFound = errors.New("store: record not found")
+	// ErrInvalidCursor means a cursor was not issued by this store.
+	ErrInvalidCursor = errors.New("store: invalid cursor")
 )
 
 // Store is the storage interface. SQLite implements it now; Postgres can later.

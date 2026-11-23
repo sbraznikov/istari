@@ -272,7 +272,7 @@ func seqOf(c Cursor) (int64, error) {
 	}
 	seq, err := strconv.ParseInt(string(c), 10, 64)
 	if err != nil || seq < 0 {
-		return 0, fmt.Errorf("store: invalid cursor %q", c)
+		return 0, fmt.Errorf("%w %q", ErrInvalidCursor, c)
 	}
 	return seq, nil
 }

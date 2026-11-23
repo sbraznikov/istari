@@ -1,8 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"context"
+	"errors"
 
 	"github.com/sbraznikov/istari/internal/core"
 )
@@ -50,6 +50,35 @@ type (
 	Empty struct{}
 )
 
+var errNoActor = errors.New("the request names no actor")
+
+func needActor(actor string) error {
+	if actor == "" {
+		return errNoActor
+	}
+	return nil
+}
+
+func (r *TaskCreateRequest) validate() error   { return needActor(r.Actor) }
+func (r *TaskRef) validate() error             { return needActor(r.Actor) }
+func (r *TaskClaimRequest) validate() error    { return needActor(r.Actor) }
+func (r *LeaseRequest) validate() error        { return needActor(r.Lease.Owner) }
+func (r *TicketCreateRequest) validate() error { return needActor(r.Actor) }
+func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
+func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
+
+// TicketRef and TaskRef also serve reads (show), which need no actor.
+type (
+	TaskShowRequest struct {
+		ID string `json:"id"`
+	}
+	TicketShowRequest struct {
+		Ref string `json:"ref"`
+	}
+)
+
+func (r *TicketRef) validate() error { return needActor(r.Actor) }
+
 // OK is the response of operations that return nothing else.
 type OK struct {
 	OK bool `json:"ok"`
@@ -66,7 +95,7 @@ func (s *Server) operations() map[string]operation {
 	return map[string]operation{
 		"task.create": op(func(ctx context.Context, r TaskCreateRequest) (any, error) { return t.Create(ctx, r.Actor, r.NewTask) }),
 		"task.list":   op(func(ctx context.Context, _ Empty) (any, error) { return t.List(ctx) }),
-		"task.show":   op(func(ctx context.Context, r TaskRef) (any, error) { return t.Get(ctx, r.ID) }),
+		"task.show":   op(func(ctx context.Context, r TaskShowRequest) (any, error) { return t.Get(ctx, r.ID) }),
 		"task.claim": op(func(ctx context.Context, r TaskClaimRequest) (any, error) {
 			if r.ID != "" {
 				return t.Claim(ctx, r.Actor, r.ID)
@@ -85,7 +114,7 @@ func (s *Server) operations() map[string]operation {
 			return k.Create(ctx, r.Actor, r.Ref, r.Project)
 		}),
 		"ticket.list": op(func(ctx context.Context, _ Empty) (any, error) { return k.List(ctx) }),
-		"ticket.show": op(func(ctx context.Context, r TicketRef) (any, error) { return k.Get(ctx, r.Ref) }),
+		"ticket.show": op(func(ctx context.Context, r TicketShowRequest) (any, error) { return k.Get(ctx, r.Ref) }),
 		"ticket.fire": op(func(ctx context.Context, r TicketFireRequest) (any, error) {
 			return k.Fire(ctx, r.Actor, r.Ref, r.Trigger)
 		}),
@@ -95,5 +124,3 @@ func (s *Server) operations() map[string]operation {
 		"ticket.unhold": op(func(ctx context.Context, r TicketRef) (any, error) { return k.ClearHold(ctx, r.Actor, r.Ref) }),
 	}
 }
-
-func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }

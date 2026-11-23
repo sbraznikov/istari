@@ -129,3 +129,17 @@ func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestDataDirExpandsTheHomeDirectory(t *testing.T) {
+	t.Setenv("HOME", "/home/alex")
+	for in, want := range map[string]string{
+		"~/.local/share/istari": "/home/alex/.local/share/istari",
+		"/var/lib/istari":       "/var/lib/istari",
+		"~":                     "/home/alex",
+	} {
+		got, err := config.Daemon{DataDir: in}.DataDirPath()
+		if err != nil || got != want {
+			t.Errorf("DataDirPath(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}

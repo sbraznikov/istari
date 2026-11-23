@@ -2,10 +2,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -73,27 +75,40 @@ type errBadRequest struct{ err error }
 
 func (e errBadRequest) Error() string { return e.err.Error() }
 
-// op adapts a typed operation.
+// validator is a request that checks itself, e.g. that it names an actor.
+type validator interface{ validate() error }
+
+// op adapts a typed operation: it decodes the request strictly (unknown
+// fields are an error) and validates it.
 func op[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var req Req
-		if len(raw) > 0 {
-			dec := json.NewDecoder(bytesReader(raw))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&req); err != nil {
-				return nil, errBadRequest{fmt.Errorf("decoding request: %w", err)}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			return nil, errBadRequest{fmt.Errorf("decoding request: %w", err)}
+		}
+		if v, ok := any(&req).(validator); ok {
+			if err := v.validate(); err != nil {
+				return nil, errBadRequest{err}
 			}
 		}
 		return f(ctx, req)
 	}
 }
 
+// maxRequestBytes bounds a request body.
+const maxRequestBytes = 1 << 20
+
 func (s *Server) handle(op operation) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var raw json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+		if err != nil {
 			writeError(w, errBadRequest{fmt.Errorf("reading request: %w", err)})
 			return
+		}
+		if len(bytes.TrimSpace(raw)) == 0 {
+			raw = []byte("{}") // no body is an empty request
 		}
 		resp, err := op(r.Context(), raw)
 		if err != nil {
@@ -114,6 +129,8 @@ func writeError(w http.ResponseWriter, err error) {
 	var coreErr *core.Error
 	var bad errBadRequest
 	switch {
+	case errors.Is(err, store.ErrInvalidCursor):
+		writeJSON(w, http.StatusBadRequest, ErrorBody{Code: "bad_request", Message: err.Error()})
 	case errors.As(err, &coreErr):
 		status := http.StatusConflict
 		if coreErr.Code == core.CodeNotFound {

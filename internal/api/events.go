@@ -19,6 +19,10 @@ const pageSize = 500
 // connection alive with a comment line.
 const pollEvery = time.Second
 
+// writeTimeout bounds one write to a stream, so a stalled client cannot hold
+// the daemon's shutdown.
+const writeTimeout = 10 * time.Second
+
 func filterOf(r *http.Request) (store.Cursor, store.Filter) {
 	q := r.URL.Query()
 	return store.Cursor(q.Get("after")), store.Filter{
@@ -58,15 +62,25 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if id := r.Header.Get("Last-Event-ID"); id != "" {
 		after = store.Cursor(id)
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, fmt.Errorf("streaming is not supported"))
+	// Check the cursor before the headers, so a bad one is a 400 and not a
+	// stream that ends at once and is retried forever.
+	if _, err := s.store.Read(r.Context(), after, filter, 1); err != nil {
+		writeError(w, err)
 		return
+	}
+	rc := http.NewResponseController(w)
+	flush := func() error {
+		if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return err
+		}
+		return rc.Flush()
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if flush() != nil {
+		return
+	}
 	for {
 		wake := s.changed.wait() // before reading, so no append is missed
 		events, err := s.store.Read(r.Context(), after, filter, pageSize)
@@ -78,8 +92,8 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", e.Cursor, e.Type, data)
 			after = e.Cursor
 		}
-		if len(events) > 0 {
-			flusher.Flush()
+		if len(events) > 0 && flush() != nil {
+			return
 		}
 		if len(events) == pageSize {
 			continue
@@ -92,7 +106,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-wake:
 		case <-time.After(pollEvery):
 			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if flush() != nil {
+				return
+			}
 		}
 	}
 }

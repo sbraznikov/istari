@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -89,7 +90,7 @@ func newDaemonInstallCommand(opts *Options) *cobra.Command {
 			case "launchd":
 				path = filepath.Join(home, "Library", "LaunchAgents", "dev.istari.daemon.plist")
 				unit = launchdPlist(args, filepath.Join(home, "Library", "Logs", "istari.log"))
-				enable = "launchctl bootstrap gui/$(id -u) " + path
+				enable = "launchctl bootstrap gui/$(id -u) " + shellQuote(path)
 			case "systemd":
 				path = filepath.Join(home, ".config", "systemd", "user", "istari.service")
 				unit = systemdUnit(args)
@@ -129,7 +130,10 @@ func launchdPlist(args []string, logPath string) string {
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardErrorPath</key>
   <string>%s</string>
 </dict>
@@ -141,7 +145,9 @@ func launchdPlist(args []string, logPath string) string {
 func systemdUnit(args []string) string {
 	quoted := make([]string, len(args))
 	for i, a := range args {
-		quoted[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(a) + `"`
+		// Quoted for systemd: backslash and quote escaped, % (specifiers) and
+		// $ (variables) doubled.
+		quoted[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, `$`, `$$`).Replace(a) + `"`
 	}
 	return fmt.Sprintf(`[Unit]
 Description=istari daemon
@@ -156,5 +162,9 @@ WantedBy=default.target
 }
 
 func xmlEscape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+	var b strings.Builder
+	xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

@@ -138,28 +138,39 @@ type sseEvent struct {
 	Data     json.RawMessage
 }
 
-// readSSE reads n events from an SSE stream opened at url.
-func readSSE(t *testing.T, client *http.Client, url, lastEventID string, n int) []sseEvent {
-	t.Helper()
+// openSSE connects to an SSE stream; next reads its events one by one.
+type sseStream struct {
+	resp   *http.Response
+	sc     *bufio.Scanner
+	cancel context.CancelFunc
+}
+
+func openSSE(client *http.Client, url, lastEventID string) (*sseStream, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		cancel()
+		return nil, err
 	}
-	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
-		t.Fatalf("Content-Type = %q", ct)
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("stream answered %s %s", resp.Status, resp.Header.Get("Content-Type"))
 	}
+	return &sseStream{resp: resp, sc: bufio.NewScanner(resp.Body), cancel: cancel}, nil
+}
+
+func (s *sseStream) close() { s.resp.Body.Close(); s.cancel() }
+
+func (s *sseStream) next(n int) ([]sseEvent, error) {
 	var events []sseEvent
 	var cur sseEvent
-	sc := bufio.NewScanner(resp.Body)
-	for len(events) < n && sc.Scan() {
-		line := sc.Text()
+	for len(events) < n && s.sc.Scan() {
+		line := s.sc.Text()
 		switch {
 		case strings.HasPrefix(line, "id: "):
 			cur.ID = strings.TrimPrefix(line, "id: ")
@@ -173,7 +184,22 @@ func readSSE(t *testing.T, client *http.Client, url, lastEventID string, n int) 
 		}
 	}
 	if len(events) < n {
-		t.Fatalf("stream ended after %d of %d events: %v", len(events), n, sc.Err())
+		return events, fmt.Errorf("stream ended after %d of %d events: %v", len(events), n, s.sc.Err())
+	}
+	return events, nil
+}
+
+// readSSE reads n events from a new connection to url.
+func readSSE(t *testing.T, client *http.Client, url, lastEventID string, n int) []sseEvent {
+	t.Helper()
+	stream, err := openSSE(client, url, lastEventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.close()
+	events, err := stream.next(n)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return events
 }
@@ -189,13 +215,18 @@ func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 	first := readSSE(t, d.client, "http://istari/v1/events/stream", "", 1)
 	cursor := first[0].ID
 
-	// Events appended while the client is connected arrive live.
-	done := make(chan []sseEvent)
-	go func() { done <- readSSE(t, d.client, "http://istari/v1/events/stream?after="+cursor, "", 2) }()
-	time.Sleep(100 * time.Millisecond)
+	// Events appended after the client connected arrive on the open stream.
+	stream, err := openSSE(d.client, "http://istari/v1/events/stream?after="+cursor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.close()
 	createTicket(t, d, "gh:acme/web#2")
 	createTicket(t, d, "gh:acme/web#3")
-	live := <-done
+	live, err := stream.next(2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if live[0].ID <= cursor || live[1].ID <= live[0].ID {
 		t.Fatalf("live cursors %s, %s do not follow %s in order", live[0].ID, live[1].ID, cursor)
 	}
@@ -222,30 +253,36 @@ func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 
 func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	d := startDaemon(t, newDataDir(t))
-	// Start a request whose body is still being sent when SIGTERM arrives.
-	body, writer := io.Pipe()
-	result := make(chan error, 1)
-	go func() {
-		resp, err := d.client.Post("http://istari/v1/ticket.create", "application/json", body)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				data, _ := io.ReadAll(resp.Body)
-				err = fmt.Errorf("%s %s", resp.Status, data)
-			}
-		}
-		result <- err
-	}()
-	io.WriteString(writer, `{"actor":"human:alex",`)
-	time.Sleep(200 * time.Millisecond)
+	// One connection: a first request proves the daemon accepted it, then a
+	// second request is still sending its body when SIGTERM arrives.
+	conn, err := net.Dial("unix", d.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	fmt.Fprint(conn, "GET /v1/health HTTP/1.1\r\nHost: istari\r\n\r\n")
+	if resp, err := http.ReadResponse(reader, nil); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("first request: %v", err)
+	} else {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	body := `{"actor":"human:alex","ref":"gh:acme/web#1","project":"web"}`
+	fmt.Fprintf(conn, "POST /v1/ticket.create HTTP/1.1\r\nHost: istari\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body[:20])
+	time.Sleep(200 * time.Millisecond) // let the daemon start reading the body
 	if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	io.WriteString(writer, `"ref":"gh:acme/web#1","project":"web"}`)
-	writer.Close()
-	if err := <-result; err != nil {
+	fmt.Fprint(conn, body[20:])
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
 		t.Fatalf("in-flight request: %v", err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("in-flight request: %s %s", resp.Status, data)
 	}
 	if err := d.cmd.Wait(); err != nil {
 		t.Fatalf("daemon exit: %v\nstderr: %s", err, d.stderr)
@@ -265,8 +302,9 @@ func TestDaemonInstallWritesTheUnitAndOnlyPrintsHowToEnableIt(t *testing.T) {
 		{"launchd", "Library/LaunchAgents/dev.istari.daemon.plist", "launchctl", "<string>daemon</string>"},
 		{"systemd", ".config/systemd/user/istari.service", "systemctl --user enable", "ExecStart="},
 	} {
-		home := t.TempDir()
-		cmd := exec.Command(binary, "daemon", "install", "--kind", tc.kind)
+		home := filepath.Join(t.TempDir(), "my home")
+		cfg := filepath.Join(home, "100% $config.toml")
+		cmd := exec.Command(binary, "daemon", "install", "--kind", tc.kind, "--config", cfg)
 		cmd.Env = append(os.Environ(), "HOME="+home)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -307,9 +345,59 @@ func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
 		{"task.claim", `{"actor":"agent:b","id":"t_1"}`, 409, "task_claimed"},
 		{"task.show", `{"id":"t_404"}`, 404, "not_found"},
 		{"task.claim", `{"actor":"agent:b","id":"t_1","colour":"red"}`, 400, "bad_request"},
+		{"task.cancel", `{"id":"t_1"}`, 400, "bad_request"}, // no actor
+		{"task.list", ``, 200, ""},                          // an empty body is an empty request
 	} {
 		if status, code := post(tc.op, tc.body); status != tc.status || code != tc.code {
 			t.Errorf("%s %s = %d %s, want %d %s", tc.op, tc.body, status, code, tc.status, tc.code)
 		}
+	}
+}
+
+func TestABadCursorIsABadRequest(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	for _, url := range []string{"http://istari/v1/events?after=garbage", "http://istari/v1/events/stream?after=garbage"} {
+		resp, err := d.client.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s = %s, want 400", url, resp.Status)
+		}
+	}
+}
+
+func TestWithoutAConfigFileTheDaemonUsesTheDefaultDataDir(t *testing.T) {
+	home := newDataDir(t)
+	cmd := exec.Command(binary, "daemon")
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Signal(syscall.SIGTERM); cmd.Wait() }()
+	socket := filepath.Join(home, ".local", "share", "istari", "istari.sock")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no socket at %s", socket)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestTheSystemdUnitEscapesSpecifiersAndVariables(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	cmd := exec.Command(binary, "daemon", "install", "--kind", "systemd", "--config", "/etc/100% $X.toml")
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	unit, _ := os.ReadFile(filepath.Join(home, ".config/systemd/user/istari.service"))
+	if !strings.Contains(string(unit), `"/etc/100%% $$X.toml"`) {
+		t.Fatalf("ExecStart does not escape %% and $:\n%s", unit)
 	}
 }
