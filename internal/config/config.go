@@ -95,6 +95,18 @@ type ProjectRepo struct {
 	DoneWhen string `toml:"done_when"`
 }
 
+// DataDirPath returns daemon.data_dir with a leading ~ expanded to the home directory.
+func (d Daemon) DataDirPath() (string, error) {
+	if d.DataDir == "~" || strings.HasPrefix(d.DataDir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, strings.TrimPrefix(d.DataDir, "~")), nil
+	}
+	return d.DataDir, nil
+}
+
 // DefaultPath returns ~/.config/istari/config.toml.
 func DefaultPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -104,9 +116,10 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "istari", "config.toml"), nil
 }
 
-// defaults returns the values that apply when a key is omitted. They are the
-// values of the example in spec section 12.
-func defaults() Config {
+// Default returns the config of an installation without a config file: the
+// values that apply when a key is omitted, which are those of the example in
+// spec section 12.
+func Default() Config {
 	return Config{
 		Daemon: Daemon{DataDir: "~/.local/share/istari", MaxConcurrentRuns: 4},
 		Defaults: Defaults{
@@ -125,7 +138,7 @@ func defaults() Config {
 // Load reads and validates the config file at path. Omitted keys keep their
 // defaults; a [defaults.budget_usd] table overrides only the sizes it names.
 func Load(path string) (*Config, error) {
-	cfg := defaults()
+	cfg := Default()
 	md, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)

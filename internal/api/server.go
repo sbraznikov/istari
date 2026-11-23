@@ -1,0 +1,135 @@
+// Package api serves the daemon API over HTTP + JSON and the event stream (spec section 13).
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/store"
+)
+
+// Server serves the daemon API over HTTP + JSON:
+//
+//	GET  /v1/health
+//	POST /v1/<operation>        one core operation; the body is its JSON request
+//	GET  /v1/events             a page of events: after, project, ticket, type, limit
+//	GET  /v1/events/stream      the same as server-sent events, live
+//
+// Operations are RPC-style rather than resource paths because ticket
+// references contain '/' and '#'. A refusal by the core answers with its code:
+// 404 for not_found, 409 for the others; a malformed request answers 400.
+type Server struct {
+	store   store.Store
+	tasks   *core.Tasks
+	tickets *core.Tickets
+	changed *notifier
+	closing chan struct{}
+	once    sync.Once
+	mux     *http.ServeMux
+}
+
+// NewServer returns the API on top of a store. Every append made through the
+// server wakes the event streams.
+func NewServer(s store.Store, clock func() time.Time) *Server {
+	n := newNotifier()
+	ns := notifyingStore{Store: s, n: n}
+	srv := &Server{
+		store:   ns,
+		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: clock}),
+		tickets: core.NewTickets(ns, core.TicketOptions{Clock: clock}),
+		changed: n,
+		closing: make(chan struct{}),
+		mux:     http.NewServeMux(),
+	}
+	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	srv.mux.HandleFunc("GET /v1/events", srv.events)
+	srv.mux.HandleFunc("GET /v1/events/stream", srv.stream)
+	for name, op := range srv.operations() {
+		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(op))
+	}
+	return srv
+}
+
+// ServeHTTP implements http.Handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+
+// Close ends the event streams; ordinary requests are not affected.
+func (s *Server) Close() { s.once.Do(func() { close(s.closing) }) }
+
+// operation decodes its request from raw and returns the response.
+type operation func(ctx context.Context, raw json.RawMessage) (any, error)
+
+// errBadRequest marks a request the server could not understand.
+type errBadRequest struct{ err error }
+
+func (e errBadRequest) Error() string { return e.err.Error() }
+
+// op adapts a typed operation.
+func op[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var req Req
+		if len(raw) > 0 {
+			dec := json.NewDecoder(bytesReader(raw))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				return nil, errBadRequest{fmt.Errorf("decoding request: %w", err)}
+			}
+		}
+		return f(ctx, req)
+	}
+}
+
+func (s *Server) handle(op operation) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var raw json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			writeError(w, errBadRequest{fmt.Errorf("reading request: %w", err)})
+			return
+		}
+		resp, err := op(r.Context(), raw)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// ErrorBody is the JSON body of every failed request.
+type ErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeError(w http.ResponseWriter, err error) {
+	var coreErr *core.Error
+	var bad errBadRequest
+	switch {
+	case errors.As(err, &coreErr):
+		status := http.StatusConflict
+		if coreErr.Code == core.CodeNotFound {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, ErrorBody{Code: coreErr.Code, Message: coreErr.Message})
+	case errors.As(err, &bad):
+		writeJSON(w, http.StatusBadRequest, ErrorBody{Code: "bad_request", Message: bad.Error()})
+	default:
+		log.Printf("istari: internal error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, ErrorBody{Code: "internal", Message: err.Error()})
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
