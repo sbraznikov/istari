@@ -150,3 +150,29 @@ func TestPauseStopsHandOutButNotRunningTasks(t *testing.T) {
 		t.Fatalf("complete a task claimed before the pause: %v", err)
 	}
 }
+
+func TestClaimReadySkipsTasksThatCannotBeHandedOutAndTakesTheNext(t *testing.T) {
+	tasks := newLimitedTasks(t, core.Limits{PerRole: map[string]int{"reviewer": 1}})
+	// Created in this order; the clock is fixed, so ties go by id.
+	mustCreate(t, tasks, "a_web", "web", "implementer") // first, but its project is paused
+	mustCreate(t, tasks, "b_rev", "api", "reviewer")
+	mustCreate(t, tasks, "c_rev", "api", "reviewer")
+	mustCreate(t, tasks, "d_api", "api", "implementer")
+	if err := tasks.Pause(ctx, "human:alex", "web"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for range 2 {
+		lease, err := tasks.ClaimReady(ctx, "agent:any", "")
+		if err != nil {
+			t.Fatalf("ClaimReady: %v", err)
+		}
+		got = append(got, lease.Task)
+	}
+	// b_rev fills the reviewer limit, so c_rev is skipped for d_api.
+	if got[0] != "b_rev" || got[1] != "d_api" {
+		t.Fatalf("claimed %v, want [b_rev d_api]", got)
+	}
+	_, err := tasks.ClaimReady(ctx, "agent:any", "")
+	assertCode(t, err, core.CodePaused) // only kept-back tasks are left: the first one's refusal
+}

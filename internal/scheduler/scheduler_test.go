@@ -48,7 +48,7 @@ func start(t *testing.T, path string, c *clock, exec func(scheduler.Exec) schedu
 	if exec != nil {
 		run = exec(run)
 	}
-	d := &daemon{store: s, srv: srv, sched: scheduler.New(srv.Store(), srv.Tasks(), run, scheduler.Options{Clock: c.Now, Allowed: srv.IsWrite})}
+	d := &daemon{store: s, srv: srv, sched: scheduler.New(srv.Store(), srv.Tasks(), run, scheduler.Options{Clock: c.Now, Prepare: srv.Prepare})}
 	t.Cleanup(func() { s.Close() })
 	return d
 }
@@ -190,5 +190,51 @@ func TestScheduleRejectsAnUnknownOperationOrAReadOperation(t *testing.T) {
 		if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), op, json.RawMessage(`{}`)); err == nil {
 			t.Errorf("Schedule(%s) succeeded", op)
 		}
+	}
+}
+
+func TestAnActionRefusedForNowIsTriedAgainOnTheNextTick(t *testing.T) {
+	c := newClock()
+	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
+	if _, err := d.srv.Tasks().Create(ctx, "system", core.NewTask{ID: "t_1", Ticket: "gh:acme/web#1", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.srv.Tasks().Pause(ctx, "human:alex", ""); err != nil {
+		t.Fatal(err)
+	}
+	claim := json.RawMessage(`{"actor":"agent:a","id":"t_1"}`)
+	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "task.claim", claim); err != nil {
+		t.Fatal(err)
+	}
+	d.sched.Step(ctx) // paused: not yet
+	if timers, _ := d.sched.List(ctx); timers[0].State != scheduler.TimerPending {
+		t.Fatalf("a paused claim marked the timer %s", timers[0].State)
+	}
+	d.srv.Tasks().Resume(ctx, "human:alex", "")
+	d.sched.Step(ctx)
+	if task, _ := d.srv.Tasks().Get(ctx, "t_1"); task.State != core.TaskClaimed {
+		t.Fatalf("after resume the scheduled claim left t_1 %s", task.State)
+	}
+}
+
+func TestScheduleChecksTheRequestAndFillsTheActor(t *testing.T) {
+	c := newClock()
+	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
+	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.fire", json.RawMessage(`{"ref":"x","colour":"red"}`)); err == nil {
+		t.Error("Schedule accepted a request with an unknown field")
+	}
+	// No actor in the request: the one who schedules acts.
+	timer, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.create", json.RawMessage(`{"ref":"gh:acme/web#1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.sched.Step(ctx)
+	events, _ := d.store.Read(ctx, "", store.Filter{Ticket: "gh:acme/web#1"}, 0)
+	if len(events) != 1 || events[0].Actor != "human:alex" {
+		t.Fatalf("timer %s created %v, want one event by human:alex", timer.ID, events)
+	}
+	// An operation whose request has no actor field gets none added.
+	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "task.release", json.RawMessage(`{"lease":{"task":"t","owner":"agent:a","token":"x"}}`)); err != nil {
+		t.Fatalf("Schedule task.release: %v", err)
 	}
 }

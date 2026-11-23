@@ -3,6 +3,7 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -383,5 +384,43 @@ func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 	}
 	if _, stderr, code := d.cli(t, "schedule", "--in", "1s", "task.list"); code != 1 || !strings.Contains(stderr, "not a write operation") {
 		t.Fatalf("scheduling a read: exit %d %q", code, stderr)
+	}
+}
+
+func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	d.call(t, "task.create", map[string]any{"actor": "system", "id": "a_web", "ticket": "gh:acme/web#1", "project": "web", "role": "implementer"}, nil)
+	d.call(t, "task.create", map[string]any{"actor": "system", "id": "b_api", "ticket": "gh:acme/api#1", "project": "api", "role": "implementer"}, nil)
+	d.mustCLI(t, nil, "pause", "--project", "web")
+	var l lease
+	d.mustCLI(t, &l, "task", "claim", "--ready", "--actor", "agent:a")
+	if l.Task != "b_api" {
+		t.Fatalf("claim --ready with web paused took %s, want b_api", l.Task)
+	}
+}
+
+func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	var first, second struct{ ID, State string }
+	d.mustCLI(t, &first, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
+	d.mustCLI(t, &second, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
+	if first.ID == "" || second != first {
+		t.Fatalf("repeated schedule = %+v, want %+v", second, first)
+	}
+	if _, stderr, code := d.cli(t, "schedule", "--in", "1h", "ticket.fire", `{"ref":"x","colour":"red"}`); code != 1 || !strings.Contains(stderr, "colour") {
+		t.Fatalf("a malformed scheduled request: exit %d %q, want a refusal naming the field", code, stderr)
+	}
+	// Keys of the form timer:<id> belong to the scheduler.
+	resp, err := d.client.Do(func() *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, "http://istari/v1/ticket.create", strings.NewReader(`{"actor":"human:alex","ref":"gh:acme/web#6"}`))
+		r.Header.Set("Idempotency-Key", "timer:tm_1")
+		return r
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a client key timer:… = %s, want 400", resp.Status)
 	}
 }

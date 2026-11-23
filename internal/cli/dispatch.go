@@ -56,18 +56,17 @@ func newScheduleCommand(opts *Options) *cobra.Command {
 		if in <= 0 {
 			return usageError{errors.New("--in must be a positive duration")}
 		}
-		request := map[string]any{}
+		raw := json.RawMessage(`{}`)
 		if len(args) == 2 {
-			if err := json.Unmarshal([]byte(args[1]), &request); err != nil {
-				return usageError{fmt.Errorf("the request is not a JSON object: %w", err)}
+			if !json.Valid([]byte(args[1])) {
+				return usageError{errors.New("the request is not JSON")}
 			}
+			raw = json.RawMessage(args[1])
 		}
-		if _, ok := request["actor"]; !ok {
-			request["actor"] = opts.Actor // the action acts as whoever scheduled it
-		}
-		raw, _ := json.Marshal(request)
+		// The daemon checks the request now, and fills in the actor of the
+		// one who schedules when the request names none.
 		var timer scheduler.Timer
-		req := api.TimerScheduleRequest{Actor: opts.Actor, At: time.Now().Add(in), Op: args[0], Request: raw}
+		req := api.TimerScheduleRequest{Actor: opts.Actor, In: in.String(), Op: args[0], Request: raw}
 		if err := opts.call(cmd, "timer.schedule", key, req, &timer); err != nil {
 			return err
 		}

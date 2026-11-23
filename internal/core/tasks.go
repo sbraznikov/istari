@@ -235,9 +235,20 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 			return errorf(CodeNoReadyTask, "no ready task for role %s", role)
 		}
 		slices.SortStableFunc(ready, func(a, b Task) int { return a.CreatedAt.Compare(b.CreatedAt) })
-		// Another worker may take the first one; a conflict re-reads the list.
-		lease, err = t.claim(ctx, actor, ready[0])
-		return err
+		// A task that a pause or a full limit keeps back is skipped for the
+		// next one. A conflict re-reads the list: another worker was faster.
+		var held error
+		for _, task := range ready {
+			lease, err = t.claim(ctx, actor, task)
+			if isCode(err, CodePaused) || isCode(err, CodeLimitReached) {
+				if held == nil {
+					held = err
+				}
+				continue
+			}
+			return err
+		}
+		return held
 	})
 	return lease, err
 }

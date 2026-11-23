@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ type Server struct {
 	sched   *scheduler.Scheduler
 	ops     map[string]operation
 	changed *notifier
+	clock   func() time.Time
 	keys    keyLocks
 	closing chan struct{}
 	once    sync.Once
@@ -61,10 +63,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits}),
 		tickets: core.NewTickets(ns, core.TicketOptions{Clock: opts.Clock}),
 		changed: n,
+		clock:   opts.Clock,
 		closing: make(chan struct{}),
 		mux:     http.NewServeMux(),
 	}
-	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Allowed: srv.IsWrite})
+	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -89,10 +92,29 @@ func (s *Server) Tickets() *core.Tickets { return s.tickets }
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }
 
-// IsWrite tells whether op is a write operation.
-func (s *Server) IsWrite(op string) bool {
+// Prepare checks a write request for later: op must be a write operation and
+// request must decode and validate as its request. A request without an actor
+// gets actor when the operation's request has one.
+func (s *Server) Prepare(op string, request json.RawMessage, actor string) (json.RawMessage, error) {
 	o, ok := s.ops[op]
-	return ok && o.again != nil
+	if !ok || o.again == nil {
+		return nil, fmt.Errorf("%q is not a write operation", op)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(request, &fields); err != nil {
+		return nil, fmt.Errorf("the request is not a JSON object: %w", err)
+	}
+	if _, named := fields["actor"]; !named {
+		fields["actor"], _ = json.Marshal(actor)
+		withActor, _ := json.Marshal(fields)
+		if o.check(withActor) == nil {
+			return withActor, nil
+		}
+	}
+	if err := o.check(request); err != nil {
+		return nil, err
+	}
+	return request, nil
 }
 
 // Do performs a write operation as an HTTP request with an idempotency key
@@ -122,19 +144,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 func (s *Server) Close() { s.once.Do(func() { close(s.closing) }) }
 
 // operation is one API operation. run decodes its request from raw and returns
-// the response. A write has again, which answers a repeat of an idempotency
-// key from the current projections; reads have none.
+// the response; check only decodes and validates. A write has again, which
+// answers a repeat of an idempotency key from the current projections; reads
+// have none.
 type operation struct {
 	run   func(ctx context.Context, raw json.RawMessage) (any, error)
+	check func(raw json.RawMessage) error
 	again func(ctx context.Context, done requestRecord) (any, error)
 }
 
 func read[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
-	return operation{run: decode(f)}
+	return operation{run: decode(f), check: checker[Req]()}
 }
 
 func write[Req any](again func(context.Context, requestRecord) (any, error), f func(ctx context.Context, req Req) (any, error)) operation {
-	return operation{run: decode(f), again: again}
+	return operation{run: decode(f), check: checker[Req](), again: again}
+}
+
+func checker[Req any]() func(json.RawMessage) error {
+	run := decode(func(context.Context, Req) (any, error) { return nil, nil })
+	return func(raw json.RawMessage) error {
+		_, err := run(context.Background(), raw)
+		return err
+	}
 }
 
 // errBadRequest marks a request the server could not understand.
@@ -178,7 +210,12 @@ func (s *Server) handle(name string, op operation) http.HandlerFunc {
 			raw = []byte("{}") // no body is an empty request
 		}
 		var resp any
-		if key := r.Header.Get(IdempotencyHeader); key != "" && op.again != nil {
+		key := r.Header.Get(IdempotencyHeader)
+		if strings.HasPrefix(key, timerKeyPrefix) {
+			writeError(w, errBadRequest{fmt.Errorf("idempotency keys starting with %q belong to the scheduler", timerKeyPrefix)})
+			return
+		}
+		if key != "" && op.again != nil {
 			resp, err = s.idempotent(r.Context(), key, name, op, raw)
 		} else {
 			resp, err = op.run(r.Context(), raw)

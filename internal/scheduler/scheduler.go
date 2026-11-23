@@ -11,11 +11,19 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
 )
+
+// KeyPrefix starts the idempotency key of every timer's action; clients may
+// not use keys of this form.
+const KeyPrefix = "timer:"
+
+// CodeInvalidTimer refuses a delayed action that could never run.
+const CodeInvalidTimer = "invalid_timer"
 
 // DefaultTick is how often the scheduler looks at the clock.
 const DefaultTick = time.Second
@@ -29,9 +37,15 @@ type Exec func(ctx context.Context, op, key string, request json.RawMessage) err
 type Options struct {
 	Clock func() time.Time
 	Tick  time.Duration
-	// Allowed tells whether op may be scheduled: a known write operation.
-	Allowed func(op string) bool
+	// Prepare checks that op is a write operation and request a valid request
+	// for it, now rather than when the timer fires, and may complete the
+	// request, e.g. with the actor of the one who schedules.
+	Prepare func(op string, request json.RawMessage, actor string) (json.RawMessage, error)
 }
+
+// transient are refusals that may pass later: the action is tried again on
+// the next tick instead of being recorded as refused.
+var transient = []string{core.CodePaused, core.CodeLimitReached, core.CodeNoReadyTask}
 
 // TimerState is the state of a delayed action.
 type TimerState string
@@ -87,19 +101,24 @@ func New(s store.Store, tasks *core.Tasks, exec Exec, opts Options) *Scheduler {
 // survives daemon restarts.
 func (s *Scheduler) Schedule(ctx context.Context, actor string, at time.Time, op string, request json.RawMessage) (Timer, error) {
 	if actor == "" {
-		return Timer{}, &core.Error{Code: core.CodeInvalidTask, Message: "a scheduled action needs an actor"}
-	}
-	if s.opts.Allowed != nil && !s.opts.Allowed(op) {
-		return Timer{}, &core.Error{Code: core.CodeInvalidTask, Message: fmt.Sprintf("%q is not a write operation that can be scheduled", op)}
+		return Timer{}, &core.Error{Code: CodeInvalidTimer, Message: "a scheduled action needs an actor"}
 	}
 	if len(request) == 0 {
 		request = json.RawMessage(`{}`)
 	}
 	if !json.Valid(request) {
-		return Timer{}, &core.Error{Code: core.CodeInvalidTask, Message: "the request of a scheduled action is not JSON"}
+		return Timer{}, &core.Error{Code: CodeInvalidTimer, Message: "the request of a scheduled action is not JSON"}
+	}
+	if s.opts.Prepare != nil {
+		var err error
+		if request, err = s.opts.Prepare(op, request, actor); err != nil {
+			return Timer{}, &core.Error{Code: CodeInvalidTimer, Message: err.Error(), Err: err}
+		}
 	}
 	b := make([]byte, 6)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return Timer{}, err
+	}
 	timer := Timer{ID: "tm_" + hex.EncodeToString(b), At: at.UTC(), Op: op, Request: request, Actor: actor, State: TimerPending}
 	if err := s.commit(ctx, actor, EventTimerScheduled, timer); err != nil {
 		return Timer{}, err
@@ -125,14 +144,16 @@ func (s *Scheduler) List(ctx context.Context) ([]Timer, error) {
 	return timers, nil
 }
 
-// Step does one tick of work: expire leases, then fire the due timers.
+// Step does one tick of work: expire leases, then fire the due timers. A
+// timer that fails does not hold back the others.
 func (s *Scheduler) Step(ctx context.Context) error {
+	var errs []error
 	if _, err := s.tasks.ExpireLeases(ctx); err != nil {
-		return fmt.Errorf("scheduler: expiring leases: %w", err)
+		errs = append(errs, fmt.Errorf("scheduler: expiring leases: %w", err))
 	}
 	timers, err := s.List(ctx)
 	if err != nil {
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 	now := s.opts.Clock()
 	for _, timer := range timers {
@@ -140,10 +161,10 @@ func (s *Scheduler) Step(ctx context.Context) error {
 			continue
 		}
 		if err := s.fire(ctx, timer); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("scheduler: timer %s: %w", timer.ID, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // fire runs a due timer's action with the key timer:<id>, then records that it
@@ -151,10 +172,12 @@ func (s *Scheduler) Step(ctx context.Context) error {
 // again with the same key, which answers from the first run instead of
 // acting twice.
 func (s *Scheduler) fire(ctx context.Context, timer Timer) error {
-	err := s.exec(ctx, timer.Op, "timer:"+timer.ID, timer.Request)
+	err := s.exec(ctx, timer.Op, KeyPrefix+timer.ID, timer.Request)
 	var refused *core.Error
 	switch {
 	case err == nil:
+	case errors.As(err, &refused) && slices.Contains(transient, refused.Code):
+		return nil // e.g. paused: the next tick tries again
 	case errors.As(err, &refused):
 		timer.Result = refused.Error()
 	default:
