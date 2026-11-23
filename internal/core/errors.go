@@ -11,6 +11,11 @@ const (
 	CodeTaskClaimed  = "task_claimed"
 	CodeClaimLost    = "claim_lost"
 	CodeNoReadyTask  = "no_ready_task"
+
+	CodeInvalidTicket     = "invalid_ticket"
+	CodeInvalidTransition = "invalid_transition"
+	CodeGuardFailed       = "guard_failed"
+	CodeTicketHeld        = "ticket_held"
 )
 
 // Error is a refusal by the core: the request was understood and is not allowed.
