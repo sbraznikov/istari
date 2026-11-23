@@ -187,7 +187,7 @@ func TestAHoldCanBeSetOnAnyUnfinishedStateAndLeavesTheStateAlone(t *testing.T) {
 		if held.State != state || held.Hold != "paused" {
 			t.Fatalf("held ticket = %s/%s, want %s/paused", held.State, held.Hold, state)
 		}
-		cleared, err := tickets.ClearHold(ctx, "human:alex", ref)
+		cleared, err := tickets.ClearHold(ctx, "human:alex", ref, "")
 		if err != nil || cleared.State != state || cleared.Hold != "" {
 			t.Fatalf("ClearHold on %s = %s/%q, %v", state, cleared.State, cleared.Hold, err)
 		}
@@ -204,7 +204,7 @@ func TestHoldReasonsAndHeldTransitions(t *testing.T) {
 		if _, err := tickets.SetHold(ctx, "system", ref, reason); err != nil {
 			t.Fatalf("SetHold %s: %v", reason, err)
 		}
-		if _, err := tickets.ClearHold(ctx, "system", ref); err != nil {
+		if _, err := tickets.ClearHold(ctx, "system", ref, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -228,7 +228,7 @@ func TestMissingTicketsAndMissingHolds(t *testing.T) {
 	_, err := tickets.Fire(ctx, "system", ref, "accept")
 	assertCode(t, err, core.CodeNotFound)
 	bringTo(t, tickets, core.TicketReady)
-	_, err = tickets.ClearHold(ctx, "system", ref)
+	_, err = tickets.ClearHold(ctx, "system", ref, "")
 	assertCode(t, err, core.CodeInvalidState)
 }
 
@@ -319,7 +319,7 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "accept") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "start") },
 		func() (core.Ticket, error) { return tickets.SetHold(ctx, "system", ref, "waiting_zone") },
-		func() (core.Ticket, error) { return tickets.ClearHold(ctx, "system", ref) },
+		func() (core.Ticket, error) { return tickets.ClearHold(ctx, "system", ref, "") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "plan_accepted") },
 		func() (core.Ticket, error) { return tickets.SetHold(ctx, "system", ref, "needs_input") },
 	} {
@@ -346,5 +346,18 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 	}
 	if projected, _ := tickets.Get(ctx, ref); projected.State != replayed.State || projected.Hold != replayed.Hold {
 		t.Fatalf("projection %s/%s differs from replay %s/%s", projected.State, projected.Hold, replayed.State, replayed.Hold)
+	}
+}
+
+func TestClearHoldCanInsistOnTheReason(t *testing.T) {
+	tickets, _ := newTickets(t, nil)
+	bringTo(t, tickets, core.TicketReady)
+	if _, err := tickets.SetHold(ctx, "system", ref, "attempts_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := tickets.ClearHold(ctx, "human:alex", ref, "paused") // resume does not lift attempts_exhausted
+	assertCode(t, err, core.CodeInvalidState)
+	if got, err := tickets.ClearHold(ctx, "human:alex", ref, "attempts_exhausted"); err != nil || got.Hold != "" {
+		t.Fatalf("ClearHold(attempts_exhausted) = %q, %v", got.Hold, err)
 	}
 }

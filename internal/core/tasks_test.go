@@ -457,3 +457,26 @@ func TestDuplicateNeedsAreRejected(t *testing.T) {
 	_, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "review", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"plan", "plan"}})
 	assertCode(t, err, core.CodeInvalidNeeds)
 }
+
+func TestClaimReadyWithoutARoleTakesTheOldestReadyTaskOfAnyRole(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_r", "reviewer")
+	f.clock.Advance(time.Second)
+	f.create(t, "t_i", "implementer")
+	lease, err := f.tasks.ClaimReady(ctx, "agent:any", "")
+	if err != nil || lease.Task != "t_r" {
+		t.Fatalf("ClaimReady(any role) = %s, %v; want t_r", lease.Task, err)
+	}
+}
+
+func TestLeaseOfReturnsTheCurrentLeaseToItsOwnerOnly(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	lease := f.claim(t, "t_1")
+	got, err := f.tasks.LeaseOf(ctx, "t_1", lease.Owner)
+	if err != nil || got != lease {
+		t.Fatalf("LeaseOf(owner) = %+v, %v; want %+v", got, err, lease)
+	}
+	_, err = f.tasks.LeaseOf(ctx, "t_1", "agent:someone-else")
+	assertCode(t, err, core.CodeClaimLost)
+}

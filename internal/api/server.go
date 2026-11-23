@@ -32,6 +32,7 @@ type Server struct {
 	tasks   *core.Tasks
 	tickets *core.Tickets
 	changed *notifier
+	keys    keyLocks
 	closing chan struct{}
 	once    sync.Once
 	mux     *http.ServeMux
@@ -56,7 +57,7 @@ func NewServer(s store.Store, clock func() time.Time) *Server {
 	srv.mux.HandleFunc("GET /v1/events", srv.events)
 	srv.mux.HandleFunc("GET /v1/events/stream", srv.stream)
 	for name, op := range srv.operations() {
-		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(op))
+		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(name, op))
 	}
 	return srv
 }
@@ -67,8 +68,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 // Close ends the event streams; ordinary requests are not affected.
 func (s *Server) Close() { s.once.Do(func() { close(s.closing) }) }
 
-// operation decodes its request from raw and returns the response.
-type operation func(ctx context.Context, raw json.RawMessage) (any, error)
+// operation is one API operation. run decodes its request from raw and returns
+// the response. A write has again, which answers a repeat of an idempotency
+// key from the current projections; reads have none.
+type operation struct {
+	run   func(ctx context.Context, raw json.RawMessage) (any, error)
+	again func(ctx context.Context, done requestRecord) (any, error)
+}
+
+func read[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
+	return operation{run: decode(f)}
+}
+
+func write[Req any](again func(context.Context, requestRecord) (any, error), f func(ctx context.Context, req Req) (any, error)) operation {
+	return operation{run: decode(f), again: again}
+}
 
 // errBadRequest marks a request the server could not understand.
 type errBadRequest struct{ err error }
@@ -78,9 +92,9 @@ func (e errBadRequest) Error() string { return e.err.Error() }
 // validator is a request that checks itself, e.g. that it names an actor.
 type validator interface{ validate() error }
 
-// op adapts a typed operation: it decodes the request strictly (unknown
+// decode adapts a typed operation: it decodes the request strictly (unknown
 // fields are an error) and validates it.
-func op[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
+func decode[Req any](f func(ctx context.Context, req Req) (any, error)) func(context.Context, json.RawMessage) (any, error) {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var req Req
 		dec := json.NewDecoder(bytes.NewReader(raw))
@@ -100,7 +114,7 @@ func op[Req any](f func(ctx context.Context, req Req) (any, error)) operation {
 // maxRequestBytes bounds a request body.
 const maxRequestBytes = 1 << 20
 
-func (s *Server) handle(op operation) http.HandlerFunc {
+func (s *Server) handle(name string, op operation) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 		if err != nil {
@@ -110,7 +124,12 @@ func (s *Server) handle(op operation) http.HandlerFunc {
 		if len(bytes.TrimSpace(raw)) == 0 {
 			raw = []byte("{}") // no body is an empty request
 		}
-		resp, err := op(r.Context(), raw)
+		var resp any
+		if key := r.Header.Get(IdempotencyHeader); key != "" && op.again != nil {
+			resp, err = s.idempotent(r.Context(), key, name, op, raw)
+		} else {
+			resp, err = op.run(r.Context(), raw)
+		}
 		if err != nil {
 			writeError(w, err)
 			return

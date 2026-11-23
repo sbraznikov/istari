@@ -135,13 +135,16 @@ func (n *notifier) notify() {
 	n.ch = make(chan struct{})
 }
 
-// notifyingStore notifies after every successful append.
+// notifyingStore is the daemon's view of the store: it adds the record of a
+// keyed request to the append that performs it, and notifies the event
+// streams after every successful append.
 type notifyingStore struct {
 	store.Store
 	n *notifier
 }
 
 func (s notifyingStore) Append(ctx context.Context, e store.Event, changes ...store.Change) (store.Event, error) {
+	changes = append(changes, recordRequest(ctx, e)...)
 	e, err := s.Store.Append(ctx, e, changes...)
 	if err == nil {
 		s.n.notify()
