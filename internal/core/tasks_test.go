@@ -97,7 +97,7 @@ func TestTwoConcurrentClaimsOfOneTaskExactlyOneWins(t *testing.T) {
 			switch {
 			case err == nil:
 				won++
-			case errors.As(err, &e) && e.Code == "task_claimed":
+			case errors.As(err, &e) && e.Code == core.CodeTaskClaimed:
 				lost++
 			default:
 				t.Fatalf("round %d: unexpected error %v", round, err)
@@ -210,7 +210,7 @@ func TestAnExpiredLeaseReturnsTheTaskToReadyAndTheOldOwnerLosesIt(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Renew before the deadline: %v", err)
 	}
-	if want := f.clock.Now().Add(core.DefaultLease); !renewed.Until.Equal(want) {
+	if want := time.Date(2026, 11, 24, 9, 9, 0, 0, time.UTC); !renewed.Until.Equal(want) { // renewed at 09:04 for 5 minutes
 		t.Fatalf("renewed lease until %s, want %s", renewed.Until, want)
 	}
 
@@ -362,4 +362,98 @@ func TestExhaustingAttemptsLeavesTheTaskFailed(t *testing.T) {
 	}
 	_, err := f.tasks.Claim(ctx, "agent:worker", "t_1")
 	assertCode(t, err, core.CodeInvalidState)
+}
+
+func TestAnOwnerPastItsDeadlineLosesTheClaimBeforeExpiryRuns(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	lease := f.claim(t, "t_1")
+	f.clock.Advance(core.DefaultLease)
+	_, err := f.tasks.Renew(ctx, lease)
+	assertCode(t, err, core.CodeClaimLost)
+	assertCode(t, f.tasks.Complete(ctx, lease), core.CodeClaimLost)
+}
+
+// slowTasks returns a task machine whose clock sleeps, which widens the window
+// between reading records and committing, so races show up reliably.
+func slowTasks(t *testing.T) *core.Tasks {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	slow := func() time.Time {
+		time.Sleep(20 * time.Millisecond)
+		return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	}
+	return core.NewTasks(s, core.TaskOptions{Clock: slow, Lease: time.Hour})
+}
+
+func TestATaskCreatedWhileItsNeedCompletesIsNotLeftWaiting(t *testing.T) {
+	tasks := slowTasks(t)
+	if _, err := tasks.Create(ctx, "system", core.NewTask{ID: "plan", Ticket: "gh:acme/web#1", Role: "planner"}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := tasks.Claim(ctx, "agent:1", "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := tasks.Complete(ctx, lease); err != nil {
+			t.Errorf("Complete: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if _, err := tasks.Create(ctx, "system", core.NewTask{ID: "review", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"plan"}}); err != nil {
+			t.Errorf("Create: %v", err)
+		}
+	}()
+	wg.Wait()
+	if review, _ := tasks.Get(ctx, "review"); review.State != core.TaskReady {
+		t.Fatalf("review is %s after its need completed, want ready", review.State)
+	}
+}
+
+func TestATaskWhoseLastNeedsCompleteTogetherBecomesReady(t *testing.T) {
+	tasks := slowTasks(t)
+	for _, nt := range []core.NewTask{
+		{ID: "a", Ticket: "gh:acme/web#1", Role: "implementer"},
+		{ID: "b", Ticket: "gh:acme/web#1", Role: "verifier"},
+		{ID: "d", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"a", "b"}},
+	} {
+		if _, err := tasks.Create(ctx, "system", nt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leaseA, errA := tasks.Claim(ctx, "agent:1", "a")
+	leaseB, errB := tasks.Claim(ctx, "agent:2", "b")
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	var wg sync.WaitGroup
+	for _, lease := range []core.Lease{leaseA, leaseB} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := tasks.Complete(ctx, lease); err != nil {
+				t.Errorf("Complete %s: %v", lease.Task, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if d, _ := tasks.Get(ctx, "d"); d.State != core.TaskReady {
+		t.Fatalf("d is %s after both needs completed, want ready", d.State)
+	}
+}
+
+func TestDuplicateNeedsAreRejected(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "plan", "planner")
+	_, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "review", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"plan", "plan"}})
+	assertCode(t, err, core.CodeInvalidNeeds)
 }

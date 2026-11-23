@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/store"
@@ -100,6 +101,8 @@ func NewTasks(s store.Store, opts TaskOptions) *Tasks {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
+	clock := opts.Clock
+	opts.Clock = func() time.Time { return clock().UTC() }
 	if opts.Lease <= 0 {
 		opts.Lease = DefaultLease
 	}
@@ -139,7 +142,8 @@ func (t *Tasks) List(ctx context.Context) ([]Task, error) {
 }
 
 // Create creates a task. It is ready when it has no needs or all of them are
-// completed, and waiting otherwise.
+// completed, and waiting otherwise. Needs may only name existing tasks, so the
+// only cycle they can form is a task naming itself, which is rejected.
 func (t *Tasks) Create(ctx context.Context, actor string, nt NewTask) (Task, error) {
 	if nt.Ticket == "" {
 		return Task{}, errorf(CodeInvalidTask, "a task needs a ticket")
@@ -150,9 +154,17 @@ func (t *Tasks) Create(ctx context.Context, actor string, nt NewTask) (Task, err
 	if nt.ID == "" {
 		nt.ID = "t_" + randomHex(6)
 	}
+	for i, id := range nt.Needs {
+		if id == nt.ID {
+			return Task{}, errorf(CodeInvalidNeeds, "task %s needs itself", nt.ID)
+		}
+		if slices.Contains(nt.Needs[:i], id) {
+			return Task{}, errorf(CodeInvalidNeeds, "task %s needs %s twice", nt.ID, id)
+		}
+	}
 	task := Task{
 		ID: nt.ID, Ticket: nt.Ticket, Project: nt.Project, Role: nt.Role,
-		Needs: nt.Needs, MaxAttempts: nt.MaxAttempts, CreatedAt: t.opts.Clock().UTC(),
+		Needs: slices.Clone(nt.Needs), MaxAttempts: nt.MaxAttempts, CreatedAt: t.opts.Clock(),
 	}
 	if task.MaxAttempts <= 0 {
 		task.MaxAttempts = t.opts.MaxAttempts
@@ -160,32 +172,27 @@ func (t *Tasks) Create(ctx context.Context, actor string, nt NewTask) (Task, err
 	err := retry(func() error {
 		if _, err := t.Get(ctx, task.ID); err == nil {
 			return errorf(CodeInvalidTask, "task %s already exists", task.ID)
+		} else if !isCode(err, CodeNotFound) {
+			return err
 		}
-		// Needs may only name existing tasks, so needs can never form a cycle
-		// longer than a task naming itself.
-		var guards []store.Change
 		task.State = TaskReady
+		var guards []store.Change
 		for _, id := range task.Needs {
-			if id == task.ID {
-				return errorf(CodeInvalidNeeds, "task %s needs itself", task.ID)
-			}
 			need, err := t.Get(ctx, id)
-			if err != nil {
+			if isCode(err, CodeNotFound) {
 				return errorf(CodeInvalidNeeds, "task %s needs %s, which does not exist", task.ID, id)
+			}
+			if err != nil {
+				return err
 			}
 			if need.State != TaskCompleted {
 				task.State = TaskWaiting
 			}
 			// Rewriting the need unchanged makes a concurrent completion of it
 			// conflict with this create, so the new task cannot miss it.
-			guard, err := taskChange(need, need.version)
-			if err != nil {
-				return err
-			}
-			guards = append(guards, guard)
+			guards = append(guards, mustChange(need))
 		}
-		_, err := t.commit(ctx, actor, "task.created", task, 0, map[string]any{"state": task.State}, guards...)
-		return err
+		return t.commit(ctx, actor, "task.created", task, map[string]any{"state": task.State}, guards...)
 	})
 	if err != nil {
 		return Task{}, err
@@ -195,20 +202,26 @@ func (t *Tasks) Create(ctx context.Context, actor string, nt NewTask) (Task, err
 
 // Claim claims one ready task for actor.
 func (t *Tasks) Claim(ctx context.Context, actor, id string) (Lease, error) {
-	task, err := t.Get(ctx, id)
-	if err != nil {
-		return Lease{}, err
-	}
-	return t.claim(ctx, actor, task)
+	var lease Lease
+	err := retry(func() error {
+		task, err := t.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		lease, err = t.claim(ctx, actor, task)
+		return err
+	})
+	return lease, err
 }
 
 // ClaimReady claims the oldest ready task of the role. It fails with
 // no_ready_task when there is none. Priority ordering comes later (spec 4.9).
 func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, error) {
-	for {
+	var lease Lease
+	err := retry(func() error {
 		all, err := t.List(ctx)
 		if err != nil {
-			return Lease{}, err
+			return err
 		}
 		var ready []Task
 		for _, task := range all {
@@ -217,130 +230,96 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 			}
 		}
 		if len(ready) == 0 {
-			return Lease{}, errorf(CodeNoReadyTask, "no ready task for role %s", role)
+			return errorf(CodeNoReadyTask, "no ready task for role %s", role)
 		}
 		slices.SortStableFunc(ready, func(a, b Task) int { return a.CreatedAt.Compare(b.CreatedAt) })
-		lost := false
-		for _, task := range ready {
-			lease, err := t.claim(ctx, actor, task)
-			var e *Error
-			if errors.As(err, &e) && e.Code == CodeTaskClaimed {
-				lost = true
-				continue // another worker was faster; try the next one
-			}
-			return lease, err
-		}
-		if !lost {
-			return Lease{}, errorf(CodeNoReadyTask, "no ready task for role %s", role)
-		}
-	}
+		// Another worker may take the first one; a conflict re-reads the list.
+		lease, err = t.claim(ctx, actor, ready[0])
+		return err
+	})
+	return lease, err
 }
 
+// claim claims a task read at task.version. A store conflict is returned as
+// is: the caller re-reads, which tells a competing claim (task_claimed) from
+// an unrelated change (claim again).
 func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, error) {
-	if task.State != TaskReady {
-		return Lease{}, notClaimable(task)
+	switch task.State {
+	case TaskReady:
+	case TaskClaimed:
+		return Lease{}, errorf(CodeTaskClaimed, "task %s is claimed by %s", task.ID, task.Owner)
+	default:
+		return Lease{}, errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
 	}
-	read := task.version
 	task.State = TaskClaimed
 	task.Owner = actor
 	task.token = randomHex(16)
-	task.LeaseUntil = t.opts.Clock().UTC().Add(t.opts.Lease)
-	payload := map[string]any{"lease_until": task.LeaseUntil}
-	if _, err := t.commit(ctx, actor, "task.claimed", task, read, payload); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			return Lease{}, errorf(CodeTaskClaimed, "task %s was claimed by someone else", task.ID)
-		}
+	task.LeaseUntil = t.opts.Clock().Add(t.opts.Lease)
+	if err := t.commit(ctx, actor, "task.claimed", task, map[string]any{"lease_until": task.LeaseUntil}); err != nil {
 		return Lease{}, err
 	}
 	return Lease{Task: task.ID, Owner: actor, Token: task.token, Until: task.LeaseUntil}, nil
 }
 
+// Renew extends the owner's lease by the lease duration from now.
+func (t *Tasks) Renew(ctx context.Context, lease Lease) (Lease, error) {
+	err := t.asOwner(ctx, lease, "task.renewed", func(task *Task) (map[string]any, []store.Change, error) {
+		task.LeaseUntil = t.opts.Clock().Add(t.opts.Lease)
+		lease.Until = task.LeaseUntil
+		return map[string]any{"lease_until": task.LeaseUntil}, nil, nil
+	})
+	if err != nil {
+		return Lease{}, err
+	}
+	return lease, nil
+}
+
 // Release gives the task back: it returns to ready without using an attempt.
 func (t *Tasks) Release(ctx context.Context, lease Lease) error {
-	return retry(func() error {
-		task, err := t.owned(ctx, lease)
-		if err != nil {
-			return err
-		}
-		read := task.version
+	return t.asOwner(ctx, lease, "task.released", func(task *Task) (map[string]any, []store.Change, error) {
 		task.State = TaskReady
 		task.release()
-		_, err = t.commit(ctx, lease.Owner, "task.released", task, read, nil)
-		return err
+		return nil, nil, nil
 	})
 }
 
-// BlockKinds are the reasons a task can be blocked (spec section 4.2).
-var BlockKinds = []string{"needs_input", "awaiting_approval", "budget_exceeded", "ci_red"}
+// blockKinds are the reasons a task can be blocked (spec section 4.2).
+var blockKinds = []string{"needs_input", "awaiting_approval", "budget_exceeded", "ci_red"}
 
-// Block stops work on the owner's task for a reason of one of BlockKinds.
-// The claim ends; Unblock returns the task to ready.
+// Block stops work on the owner's task for a reason: needs_input,
+// awaiting_approval, budget_exceeded or ci_red. The claim ends; Unblock
+// returns the task to ready.
 func (t *Tasks) Block(ctx context.Context, lease Lease, kind string) error {
-	if !slices.Contains(BlockKinds, kind) {
-		return errorf(CodeInvalidTask, "block kind %q is not one of %v", kind, BlockKinds)
+	if !slices.Contains(blockKinds, kind) {
+		return errorf(CodeInvalidTask, "block kind %q is not one of %s", kind, strings.Join(blockKinds, ", "))
 	}
-	return retry(func() error {
-		task, err := t.owned(ctx, lease)
-		if err != nil {
-			return err
-		}
-		read := task.version
+	return t.asOwner(ctx, lease, "task.blocked", func(task *Task) (map[string]any, []store.Change, error) {
 		task.State = TaskBlocked
 		task.BlockKind = kind
 		task.release()
-		_, err = t.commit(ctx, lease.Owner, "task.blocked", task, read, map[string]any{"kind": kind})
-		return err
-	})
-}
-
-// Unblock returns a blocked task to ready.
-func (t *Tasks) Unblock(ctx context.Context, actor, id string) error {
-	return retry(func() error {
-		task, err := t.Get(ctx, id)
-		if err != nil {
-			return err
-		}
-		if task.State != TaskBlocked {
-			return errorf(CodeInvalidState, "task %s is %s, not blocked", id, task.State)
-		}
-		read, kind := task.version, task.BlockKind
-		task.State = TaskReady
-		task.BlockKind = ""
-		_, err = t.commit(ctx, actor, "task.unblocked", task, read, map[string]any{"kind": kind})
-		return err
+		return map[string]any{"kind": kind}, nil, nil
 	})
 }
 
 // Complete marks the owner's task completed and readies every waiting task
 // whose needs are now all completed, in the same event.
 func (t *Tasks) Complete(ctx context.Context, lease Lease) error {
-	return retry(func() error {
-		task, err := t.owned(ctx, lease)
-		if err != nil {
-			return err
-		}
-		read := task.version
+	return t.asOwner(ctx, lease, "task.completed", func(task *Task) (map[string]any, []store.Change, error) {
 		task.State = TaskCompleted
 		task.release()
-		readied, changes, err := t.readyDependents(ctx, task.ID)
+		readied, changes, err := t.dependents(ctx, task.ID)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		_, err = t.commit(ctx, lease.Owner, "task.completed", task, read, map[string]any{"readied": readied}, changes...)
-		return err
+		return map[string]any{"readied": readied}, changes, nil
 	})
 }
 
 // Fail records a failed attempt. Below the attempt limit the task returns to
-// ready (task.failed); at the limit it stays failed and the event is
+// ready (task.failed); at the limit it stays failed and the one event is
 // task.attempts_exhausted, which asks for the ticket hold attempts_exhausted.
 func (t *Tasks) Fail(ctx context.Context, lease Lease, reason string) error {
-	return retry(func() error {
-		task, err := t.owned(ctx, lease)
-		if err != nil {
-			return err
-		}
-		read := task.version
+	return t.asOwnerTyped(ctx, lease, func(task *Task) (string, map[string]any, []store.Change, error) {
 		task.Attempts++
 		task.release()
 		typ := "task.failed"
@@ -349,84 +328,119 @@ func (t *Tasks) Fail(ctx context.Context, lease Lease, reason string) error {
 			typ = "task.attempts_exhausted"
 			task.State = TaskFailed
 		}
-		payload := map[string]any{"reason": reason, "attempts": task.Attempts, "max_attempts": task.MaxAttempts}
-		_, err = t.commit(ctx, lease.Owner, typ, task, read, payload)
-		return err
+		return typ, map[string]any{"reason": reason, "attempts": task.Attempts, "max_attempts": task.MaxAttempts}, nil, nil
+	})
+}
+
+// Unblock returns a blocked task to ready.
+func (t *Tasks) Unblock(ctx context.Context, actor, id string) error {
+	return t.byActor(ctx, actor, id, "task.unblocked", func(task *Task) (map[string]any, error) {
+		if task.State != TaskBlocked {
+			return nil, errorf(CodeInvalidState, "task %s is %s, not blocked", id, task.State)
+		}
+		kind := task.BlockKind
+		task.State = TaskReady
+		task.BlockKind = ""
+		return map[string]any{"kind": kind}, nil
 	})
 }
 
 // Cancel cancels a task from any open state.
 func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
-	return retry(func() error {
-		task, err := t.Get(ctx, id)
-		if err != nil {
-			return err
-		}
+	return t.byActor(ctx, actor, id, "task.canceled", func(task *Task) (map[string]any, error) {
 		switch task.State {
 		case TaskWaiting, TaskReady, TaskClaimed, TaskBlocked:
 		default:
-			return errorf(CodeInvalidState, "task %s is %s and cannot be canceled", id, task.State)
+			return nil, errorf(CodeInvalidState, "task %s is %s and cannot be canceled", id, task.State)
 		}
-		read := task.version
 		task.State = TaskCanceled
 		task.release()
-		_, err = t.commit(ctx, actor, "task.canceled", task, read, nil)
-		return err
+		return nil, nil
 	})
-}
-
-// Renew extends the owner's lease by the lease duration from now.
-func (t *Tasks) Renew(ctx context.Context, lease Lease) (Lease, error) {
-	err := retry(func() error {
-		task, err := t.owned(ctx, lease)
-		if err != nil {
-			return err
-		}
-		read := task.version
-		task.LeaseUntil = t.opts.Clock().UTC().Add(t.opts.Lease)
-		if _, err := t.commit(ctx, lease.Owner, "task.renewed", task, read, map[string]any{"lease_until": task.LeaseUntil}); err != nil {
-			return err
-		}
-		lease.Until = task.LeaseUntil
-		return nil
-	})
-	if err != nil {
-		return Lease{}, err
-	}
-	return lease, nil
 }
 
 // ExpireLeases returns every claimed task whose lease deadline has passed by
 // the clock to ready, with one task.expired event each, and returns their ids.
-// The old owner's lease stops working. The scheduler calls it on every tick.
+// The scheduler calls it on every tick; owners lose the lease at the deadline
+// whether or not this has run yet.
 func (t *Tasks) ExpireLeases(ctx context.Context) ([]string, error) {
 	all, err := t.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	now := t.opts.Clock()
 	expired := []string{}
-	for _, task := range all {
-		if task.State != TaskClaimed || now.Before(task.LeaseUntil) {
+	for _, listed := range all {
+		if listed.State != TaskClaimed {
 			continue
 		}
-		owner, until, read := task.Owner, task.LeaseUntil, task.version
-		task.State = TaskReady
-		task.release()
-		_, err := t.commit(ctx, "system", "task.expired", task, read, map[string]any{"owner": owner, "lease_until": until})
-		if errors.Is(err, store.ErrConflict) {
-			continue // renewed, completed or released meanwhile
-		}
-		if err != nil {
+		done := false
+		err := t.byActor(ctx, "system", listed.ID, "task.expired", func(task *Task) (map[string]any, error) {
+			if task.State != TaskClaimed || t.opts.Clock().Before(task.LeaseUntil) {
+				return nil, errNothingToDo // renewed, completed or released meanwhile
+			}
+			payload := map[string]any{"owner": task.Owner, "lease_until": task.LeaseUntil}
+			task.State = TaskReady
+			task.release()
+			done = true
+			return payload, nil
+		})
+		if err != nil && !errors.Is(err, errNothingToDo) {
 			return expired, err
 		}
-		expired = append(expired, task.ID)
+		if done && err == nil {
+			expired = append(expired, listed.ID)
+		}
 	}
 	return expired, nil
 }
 
+// errNothingToDo ends a byActor operation without writing anything.
+var errNothingToDo = errors.New("nothing to do")
+
+// mutation changes a task read from the store and returns the event payload
+// and any further changes to commit with it.
+type mutation func(task *Task) (payload map[string]any, more []store.Change, err error)
+
+// asOwner runs an owner action: it re-reads the task, checks the lease, applies
+// mutate and commits one event of type typ, retrying on store conflicts.
+func (t *Tasks) asOwner(ctx context.Context, lease Lease, typ string, mutate mutation) error {
+	return t.asOwnerTyped(ctx, lease, func(task *Task) (string, map[string]any, []store.Change, error) {
+		payload, more, err := mutate(task)
+		return typ, payload, more, err
+	})
+}
+
+func (t *Tasks) asOwnerTyped(ctx context.Context, lease Lease, mutate func(*Task) (string, map[string]any, []store.Change, error)) error {
+	return retry(func() error {
+		task, err := t.owned(ctx, lease)
+		if err != nil {
+			return err
+		}
+		typ, payload, more, err := mutate(&task)
+		if err != nil {
+			return err
+		}
+		return t.commit(ctx, lease.Owner, typ, task, payload, more...)
+	})
+}
+
+// byActor runs an action that needs no lease, such as unblock or cancel.
+func (t *Tasks) byActor(ctx context.Context, actor, id, typ string, mutate func(task *Task) (map[string]any, error)) error {
+	return retry(func() error {
+		task, err := t.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		payload, err := mutate(&task)
+		if err != nil {
+			return err
+		}
+		return t.commit(ctx, actor, typ, task, payload)
+	})
+}
+
 // owned returns the task the lease is for, or claim_lost if the lease is no
-// longer the task's current claim.
+// longer the task's current claim or its deadline has passed.
 func (t *Tasks) owned(ctx context.Context, lease Lease) (Task, error) {
 	task, err := t.Get(ctx, lease.Task)
 	if err != nil {
@@ -435,39 +449,37 @@ func (t *Tasks) owned(ctx context.Context, lease Lease) (Task, error) {
 	if task.State != TaskClaimed || task.token == "" || task.token != lease.Token {
 		return Task{}, errorf(CodeClaimLost, "the claim on task %s is no longer held", lease.Task)
 	}
+	if !t.opts.Clock().Before(task.LeaseUntil) {
+		return Task{}, errorf(CodeClaimLost, "the lease on task %s expired at %s", lease.Task, task.LeaseUntil)
+	}
 	return task, nil
 }
 
-// readyDependents returns the waiting tasks that become ready once done is
-// completed, and the changes that make them ready.
-func (t *Tasks) readyDependents(ctx context.Context, done string) ([]string, []store.Change, error) {
+// dependents returns a change for every waiting task that needs done: the ones
+// whose needs are now all completed become ready (their ids are returned), the
+// others are rewritten unchanged. Writing every dependent makes two needs that
+// complete at the same time conflict, so the second one sees the first.
+func (t *Tasks) dependents(ctx context.Context, done string) ([]string, []store.Change, error) {
 	all, err := t.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	state := map[string]TaskState{done: TaskCompleted}
+	state := map[string]TaskState{}
 	for _, task := range all {
-		if task.ID != done {
-			state[task.ID] = task.State
-		}
+		state[task.ID] = task.State
 	}
+	state[done] = TaskCompleted
 	readied := []string{}
 	var changes []store.Change
 	for _, task := range all {
 		if task.State != TaskWaiting || !slices.Contains(task.Needs, done) {
 			continue
 		}
-		if !allCompleted(task.Needs, state) {
-			continue
+		if allCompleted(task.Needs, state) {
+			task.State = TaskReady
+			readied = append(readied, task.ID)
 		}
-		read := task.version
-		task.State = TaskReady
-		change, err := taskChange(task, read)
-		if err != nil {
-			return nil, nil, err
-		}
-		readied = append(readied, task.ID)
-		changes = append(changes, change)
+		changes = append(changes, mustChange(task))
 	}
 	return readied, changes, nil
 }
@@ -504,38 +516,31 @@ func retry(op func() error) error {
 	return fmt.Errorf("core: gave up after %d conflicting attempts: %w", maxRetries, err)
 }
 
-func notClaimable(task Task) error {
-	if task.State == TaskClaimed {
-		return errorf(CodeTaskClaimed, "task %s is claimed by %s", task.ID, task.Owner)
-	}
-	return errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
-}
-
 // commit appends one task event together with the task's new projection,
-// conditional on the version read before the change (0 for a new task).
-func (t *Tasks) commit(ctx context.Context, actor, typ string, task Task, read int64, payload map[string]any, more ...store.Change) (store.Event, error) {
-	change, err := taskChange(task, read)
-	if err != nil {
-		return store.Event{}, err
-	}
+// conditional on the version the task was read at (0 for a new task).
+func (t *Tasks) commit(ctx context.Context, actor, typ string, task Task, payload map[string]any, more ...store.Change) error {
 	var raw json.RawMessage
 	if payload != nil {
+		var err error
 		if raw, err = json.Marshal(payload); err != nil {
-			return store.Event{}, err
+			return err
 		}
 	}
-	return t.store.Append(ctx, store.Event{
+	_, err := t.store.Append(ctx, store.Event{
 		Type: typ, At: t.opts.Clock(), Actor: actor,
 		Project: task.Project, Ticket: task.Ticket, Task: task.ID, Payload: raw,
-	}, append([]store.Change{change}, more...)...)
+	}, append([]store.Change{mustChange(task)}, more...)...)
+	return err
 }
 
-func taskChange(task Task, read int64) (store.Change, error) {
+// mustChange is the store change that writes task, conditional on the version
+// it was read at. Task always marshals, so an error is a programming bug.
+func mustChange(task Task) store.Change {
 	data, err := json.Marshal(taskJSON{Task: task, Token: task.token})
 	if err != nil {
-		return store.Change{}, err
+		panic(fmt.Sprintf("core: marshal task %s: %v", task.ID, err))
 	}
-	return store.Change{Kind: taskKind, ID: task.ID, Data: data, IfVersion: read}, nil
+	return store.Change{Kind: taskKind, ID: task.ID, Data: data, IfVersion: task.version}
 }
 
 func decodeTask(rec store.Record) (Task, error) {
@@ -547,6 +552,11 @@ func decodeTask(rec store.Record) (Task, error) {
 	task.token = stored.Token
 	task.version = rec.Version
 	return task, nil
+}
+
+func isCode(err error, code string) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Code == code
 }
 
 func randomHex(n int) string {
