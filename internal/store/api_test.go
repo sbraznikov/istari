@@ -12,7 +12,7 @@ import (
 
 // allowedAPI is the whole exported surface of package store. Append is the
 // only identifier in it that writes. A new exported function, method, variable
-// or interface method fails this test: if it does not write, add it here; if
+// field or interface method fails this test: if it does not write, add it here; if
 // it writes, make it part of Append instead.
 var allowedAPI = []string{
 	// types
@@ -21,25 +21,35 @@ var allowedAPI = []string{
 	"Open",
 	// variables
 	"ErrConflict", "ErrNotFound",
+	// fields: plain data, no handles
+	"Change.Kind", "Change.ID", "Change.Data", "Change.IfVersion",
+	"Record.Kind", "Record.ID", "Record.Data", "Record.Version",
+	"Filter.Project", "Filter.Ticket", "Filter.TypePrefix",
+	"Event.Cursor", "Event.Type", "Event.At", "Event.Actor", "Event.Project",
+	"Event.Ticket", "Event.Task", "Event.Run", "Event.Payload",
 	// methods of SQLite and Store
 	"SQLite.Append", "SQLite.Close", "SQLite.Get", "SQLite.List", "SQLite.Read",
 	"Store.Append", "Store.Close", "Store.Get", "Store.List", "Store.Read",
 }
 
 func TestAppendIsTheOnlyWritePath(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
+	fset := token.NewFileSet()
 	var exported []string
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				exported = append(exported, exportedNames(decl)...)
-			}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			exported = append(exported, exportedNames(decl)...)
 		}
 	}
 	for _, name := range exported {
@@ -59,11 +69,7 @@ func exportedNames(decl ast.Decl) []string {
 		if d.Recv == nil {
 			return []string{d.Name.Name}
 		}
-		recv := d.Recv.List[0].Type
-		if star, ok := recv.(*ast.StarExpr); ok {
-			recv = star.X
-		}
-		return []string{recv.(*ast.Ident).Name + "." + d.Name.Name}
+		return []string{receiverName(d.Recv.List[0].Type) + "." + d.Name.Name}
 	case *ast.GenDecl:
 		for _, spec := range d.Specs {
 			switch s := spec.(type) {
@@ -78,15 +84,46 @@ func exportedNames(decl ast.Decl) []string {
 					continue
 				}
 				names = append(names, s.Name.Name)
-				if iface, ok := s.Type.(*ast.InterfaceType); ok {
-					for _, m := range iface.Methods.List {
-						for _, n := range m.Names {
+				var members []*ast.Field
+				switch typ := s.Type.(type) {
+				case *ast.InterfaceType:
+					members = typ.Methods.List
+				case *ast.StructType:
+					members = typ.Fields.List
+				}
+				for _, m := range members {
+					for _, n := range m.Names {
+						if n.IsExported() {
 							names = append(names, s.Name.Name+"."+n.Name)
 						}
+					}
+					if len(m.Names) == 0 { // embedded: its exported members are promoted
+						names = append(names, s.Name.Name+"."+receiverName(m.Type))
 					}
 				}
 			}
 		}
 	}
 	return names
+}
+
+// receiverName returns the type name of a receiver or embedded field,
+// without pointers and type parameters.
+func receiverName(expr ast.Expr) string {
+	for {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		case *ast.IndexListExpr:
+			expr = e.X
+		case *ast.SelectorExpr:
+			return e.Sel.Name
+		case *ast.Ident:
+			return e.Name
+		default:
+			return "?"
+		}
+	}
 }

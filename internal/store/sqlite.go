@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,9 +52,14 @@ func Open(path string) (*SQLite, error) {
 	q := url.Values{}
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "busy_timeout(10000)")
-	q.Add("_pragma", "synchronous(NORMAL)")
-	q.Set("_txlock", "immediate") // writers take the lock up front instead of failing on upgrade
-	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
+	q.Add("_pragma", "synchronous(FULL)") // the log is the audit: a commit survives power loss
+	q.Set("_txlock", "immediate")         // writers take the lock up front instead of failing on upgrade
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	dsn := url.URL{Scheme: "file", Path: abs, RawQuery: q.Encode()} // escapes ?, # and % in the path
+	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
@@ -92,6 +99,9 @@ func (s *SQLite) Close() error { return s.db.Close() }
 func (s *SQLite) Append(ctx context.Context, e Event, changes ...Change) (Event, error) {
 	if e.Type == "" {
 		return Event{}, fmt.Errorf("store: append: event has no type")
+	}
+	if len(e.Payload) > 0 && !json.Valid(e.Payload) {
+		return Event{}, fmt.Errorf("store: append %s: payload is not valid JSON", e.Type)
 	}
 	if e.At.IsZero() {
 		e.At = time.Now()
@@ -184,6 +194,9 @@ func applyChange(ctx context.Context, tx *sql.Tx, c Change) error {
 	if c.Kind == "" || c.ID == "" {
 		return fmt.Errorf("change without kind or id")
 	}
+	if len(c.Data) > 0 && !json.Valid(c.Data) {
+		return fmt.Errorf("%s %s: data is not valid JSON", c.Kind, c.ID)
+	}
 	data := []byte(c.Data)
 	if len(data) == 0 {
 		data = []byte("null")
@@ -217,7 +230,7 @@ func (s *SQLite) Get(ctx context.Context, kind, id string) (Record, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT data, version FROM records WHERE kind = ? AND id = ?`, kind, id).
 		Scan(&data, &r.Version)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, fmt.Errorf("%s %s: %w", kind, id, ErrNotFound)
+		return Record{}, fmt.Errorf("store: get %s %s: %w", kind, id, ErrNotFound)
 	}
 	if err != nil {
 		return Record{}, fmt.Errorf("store: get %s %s: %w", kind, id, err)
@@ -249,7 +262,9 @@ func (s *SQLite) List(ctx context.Context, kind string) ([]Record, error) {
 	return recs, nil
 }
 
-func cursorOf(seq int64) Cursor { return Cursor(strconv.FormatInt(seq, 10)) }
+// cursorOf zero-pads the sequence number so that cursors also increase when
+// compared as strings.
+func cursorOf(seq int64) Cursor { return Cursor(fmt.Sprintf("%020d", seq)) }
 
 func seqOf(c Cursor) (int64, error) {
 	if c == "" {

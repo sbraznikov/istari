@@ -1,5 +1,6 @@
-// Package store holds istari's state: one ordered, append-only event log and
-// the projections derived from it (spec sections 2 and 8).
+// Package store persists istari's state: one ordered, append-only event log
+// (spec section 8) and the projection records built from it. Which records an
+// event changes is decided by internal/core; store only stores them.
 //
 // Append is the only write path. It writes one event together with the
 // projection changes that event causes, in one transaction, so a projection

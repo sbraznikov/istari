@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -96,7 +98,7 @@ func TestReadReturnsExactlyTheEventsAfterTheCursorInOrder(t *testing.T) {
 	for _, typ := range []string{"a.1", "a.2", "a.3", "a.4"} {
 		cursors = append(cursors, mustAppend(t, s, store.Event{Type: typ}).Cursor)
 	}
-	if got := types(readAll(t, s, cursors[1], store.Filter{})); !equal(got, []string{"a.3", "a.4"}) {
+	if got := types(readAll(t, s, cursors[1], store.Filter{})); !slices.Equal(got, []string{"a.3", "a.4"}) {
 		t.Errorf("after the 2nd event: %v, want [a.3 a.4]", got)
 	}
 	if got := readAll(t, s, cursors[3], store.Filter{}); len(got) != 0 {
@@ -106,7 +108,7 @@ func TestReadReturnsExactlyTheEventsAfterTheCursorInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := types(page); !equal(got, []string{"a.1", "a.2"}) {
+	if got := types(page); !slices.Equal(got, []string{"a.1", "a.2"}) {
 		t.Errorf("first page of 2: %v, want [a.1 a.2]", got)
 	}
 }
@@ -132,22 +134,10 @@ func TestFiltersReturnOnlyMatchingEvents(t *testing.T) {
 		{"type prefix", store.Filter{TypePrefix: "task."}, []string{"task.created", "task.claimed", "task.created"}},
 		{"combined", store.Filter{Project: "web", TypePrefix: "task."}, []string{"task.created", "task.claimed"}},
 	} {
-		if got := types(readAll(t, s, "", tc.filter)); !equal(got, tc.want) {
+		if got := types(readAll(t, s, "", tc.filter)); !slices.Equal(got, tc.want) {
 			t.Errorf("%s filter: %v, want %v", tc.name, got, tc.want)
 		}
 	}
-}
-
-func equal(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestChangesAreAppliedWithTheirEvent(t *testing.T) {
@@ -181,7 +171,7 @@ func TestAFailedChangeRollsBackItsEventAndTheOtherChanges(t *testing.T) {
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("Append with a stale change: %v, want ErrConflict", err)
 	}
-	if got := types(readAll(t, s, "", store.Filter{})); !equal(got, []string{"task.created"}) {
+	if got := types(readAll(t, s, "", store.Filter{})); !slices.Equal(got, []string{"task.created"}) {
 		t.Errorf("log = %v, want only [task.created]", got)
 	}
 	if rec, _ := s.Get(ctx, "task", "t_1"); rec.Version != 1 || string(rec.Data) != `{"state":"ready"}` {
@@ -215,7 +205,7 @@ func TestListReturnsTheRecordsOfOneKindByID(t *testing.T) {
 	for _, r := range recs {
 		ids = append(ids, r.ID+"="+string(r.Data))
 	}
-	if !equal(ids, []string{"t_1=1", "t_2=2"}) {
+	if !slices.Equal(ids, []string{"t_1=1", "t_2=2"}) {
 		t.Errorf("List(task) = %v, want [t_1=1 t_2=2]", ids)
 	}
 }
@@ -264,15 +254,54 @@ func TestConcurrentAppendsGetIncreasingCursorsAndNoneIsLost(t *testing.T) {
 		}
 	}
 	// Within one writer, later appends come later in the log.
-	last := map[string]int{}
-	for i, e := range log {
+	next := map[int]int{}
+	for _, e := range log {
 		var w, n int
-		fmt.Sscanf(e.Type, "w%d.%d", &w, &n)
-		key := fmt.Sprint(w)
-		if prev, ok := last[key]; ok && prev > i {
-			t.Fatalf("writer %d's events are out of order", w)
+		if _, err := fmt.Sscanf(e.Type, "w%d.%d", &w, &n); err != nil {
+			t.Fatalf("unexpected event type %q", e.Type)
 		}
-		last[key] = i
+		if n != next[w] {
+			t.Fatalf("writer %d: event %d follows event %d in the log", w, n, next[w]-1)
+		}
+		next[w] = n + 1
+	}
+}
+
+func TestCursorsIncreaseAsStrings(t *testing.T) {
+	s := open(t, tempDB(t))
+	var prev store.Cursor
+	for i := range 12 { // past 9 → 10, where decimal strings stop sorting numerically
+		c := mustAppend(t, s, store.Event{Type: fmt.Sprintf("e.%d", i)}).Cursor
+		if c <= prev {
+			t.Fatalf("cursor %q does not follow %q", c, prev)
+		}
+		prev = c
+	}
+}
+
+func TestOpenAcceptsAPathWithURISpecialCharacters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a?b#c%d", "istari.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := open(t, path)
+	mustAppend(t, s, store.Event{Type: "e.1"})
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database was not created at %s: %v", path, err)
+	}
+}
+
+func TestInvalidJSONIsRejectedAndNothingIsWritten(t *testing.T) {
+	s := open(t, tempDB(t))
+	if _, err := s.Append(ctx, store.Event{Type: "e.1", Payload: json.RawMessage(`{not json`)}); err == nil {
+		t.Error("Append accepted an invalid payload")
+	}
+	if _, err := s.Append(ctx, store.Event{Type: "e.2"},
+		store.Change{Kind: "task", ID: "t_1", Data: json.RawMessage(`{"state":`)}); err == nil {
+		t.Error("Append accepted invalid change data")
+	}
+	if got := readAll(t, s, "", store.Filter{}); len(got) != 0 {
+		t.Errorf("log = %v, want empty", types(got))
 	}
 }
 
