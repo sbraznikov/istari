@@ -39,7 +39,7 @@ func newTailCommand(opts *Options) *cobra.Command {
 				}
 				return c.stream(cmd.Context(), store.Cursor(after), f, func(e store.Event) bool {
 					if opts.JSON {
-						print(out, opts, e, nil, nil)
+						render(out, opts, e, nil, nil)
 					} else {
 						fmt.Fprintln(out, strings.Join(eventRow(e), "\t"))
 					}
@@ -66,7 +66,7 @@ func newTailCommand(opts *Options) *cobra.Command {
 			for i, e := range all {
 				rows[i] = eventRow(e)
 			}
-			return print(out, opts, all, eventHeader, rows)
+			return render(out, opts, all, eventHeader, rows)
 		},
 	}
 	addFilterFlags(cmd, &f)
@@ -122,9 +122,10 @@ func newWaitCommand(opts *Options) *cobra.Command {
 			}
 			cursor := store.Cursor(after)
 			if cursor == "" {
-				// Wait for what happens from now on: start at the end of the log.
+				// Wait for what happens from now on: start at the end of the
+				// log. To catch an event that may come sooner, pass --after.
 				if cursor, err = c.lastCursor(ctx); err != nil {
-					return err
+					return waitError(ctx, err, timeout)
 				}
 			}
 			var found *store.Event
@@ -136,17 +137,22 @@ func newWaitCommand(opts *Options) *cobra.Command {
 				return false
 			})
 			if found != nil {
-				return print(cmd.OutOrStdout(), opts, found, eventHeader, [][]string{eventRow(*found)})
+				return render(cmd.OutOrStdout(), opts, found, eventHeader, [][]string{eventRow(*found)})
 			}
-			if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-				return fmt.Errorf("timeout: no matching event within %s", timeout)
-			}
-			return err
+			return waitError(ctx, err, timeout)
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "give up after this long (exit 1); 0 waits forever")
 	cmd.Flags().StringVar(&after, "after", "", "consider events after this cursor (default: from now on)")
 	return cmd
+}
+
+// waitError reports a deadline as a timeout and any other end as itself.
+func waitError(ctx context.Context, err error, timeout time.Duration) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("timeout: no matching event within %s", timeout)
+	}
+	return err
 }
 
 // lastCursor returns the cursor of the last event in the log.

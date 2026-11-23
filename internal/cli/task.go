@@ -32,7 +32,7 @@ func newTaskCommand(opts *Options) *cobra.Command {
 			if err := opts.call(cmd, "task.list", "", api.Empty{}, &tasks); err != nil {
 				return err
 			}
-			return print(cmd.OutOrStdout(), opts, tasks, taskHeader, taskRows(tasks...))
+			return render(cmd.OutOrStdout(), opts, tasks, taskHeader, taskRows(tasks...))
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -42,7 +42,7 @@ func newTaskCommand(opts *Options) *cobra.Command {
 			if err := opts.call(cmd, "task.show", "", api.TaskShowRequest{ID: args[0]}, &task); err != nil {
 				return err
 			}
-			return print(cmd.OutOrStdout(), opts, task, taskHeader, taskRows(task))
+			return render(cmd.OutOrStdout(), opts, task, taskHeader, taskRows(task))
 		},
 	})
 
@@ -130,13 +130,13 @@ func leaseCommand(opts *Options, name, short, extra, op string, returnsLease boo
 }
 
 func printLease(cmd *cobra.Command, opts *Options, l core.Lease) error {
-	return print(cmd.OutOrStdout(), opts, l, []string{"TASK", "OWNER", "TOKEN", "UNTIL"},
+	return render(cmd.OutOrStdout(), opts, l, []string{"TASK", "OWNER", "TOKEN", "UNTIL"},
 		[][]string{{l.Task, l.Owner, l.Token, timeOrDash(l.Until)}})
 }
 
 func printOK(cmd *cobra.Command, opts *Options, res api.OK, text string) error {
 	if opts.JSON {
-		return print(cmd.OutOrStdout(), opts, res, nil, nil)
+		return render(cmd.OutOrStdout(), opts, res, nil, nil)
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), text)
 	return err

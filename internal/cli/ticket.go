@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
@@ -26,7 +28,7 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			if err := opts.call(cmd, "ticket.list", "", api.Empty{}, &tickets); err != nil {
 				return err
 			}
-			return print(cmd.OutOrStdout(), opts, tickets, ticketHeader, ticketRows(tickets...))
+			return render(cmd.OutOrStdout(), opts, tickets, ticketHeader, ticketRows(tickets...))
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -36,7 +38,7 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			if err := opts.call(cmd, "ticket.show", "", api.TicketShowRequest{Ref: args[0]}, &ticket); err != nil {
 				return err
 			}
-			return print(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+			return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 		},
 	})
 	// The human actions on a ticket (spec sections 4.1 and 10.5).
@@ -49,9 +51,6 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		}},
 		{"resume", "Lift a paused hold", "ticket.unhold", func(actor, ref string) any {
 			return api.TicketHoldRequest{Actor: actor, Ref: ref, Reason: "paused"}
-		}},
-		{"retry", "Lift an attempts_exhausted hold", "ticket.unhold", func(actor, ref string) any {
-			return api.TicketHoldRequest{Actor: actor, Ref: ref, Reason: "attempts_exhausted"}
 		}},
 		{"cancel", "Cancel the ticket (T13)", "ticket.fire", func(actor, ref string) any {
 			return api.TicketFireRequest{Actor: actor, Ref: ref, Trigger: "cancel"}
@@ -67,8 +66,50 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			if err := opts.call(cmd, a.op, key, a.req(opts.Actor, args[0]), &ticket); err != nil {
 				return err
 			}
-			return print(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+			return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 		}))
 	}
+	cmd.AddCommand(writeCommand(opts, &cobra.Command{
+		Use:   "retry <ref>",
+		Short: "Restart the ticket's failed tasks and lift its attempts_exhausted hold",
+		Args:  Args(cobra.ExactArgs(1)),
+	}, func(cmd *cobra.Command, args []string, key string) error {
+		ref := args[0]
+		var ticket core.Ticket
+		if err := opts.call(cmd, "ticket.show", "", api.TicketShowRequest{Ref: ref}, &ticket); err != nil {
+			return err
+		}
+		if ticket.Hold != "attempts_exhausted" {
+			return refusal{api.ErrorBody{Code: core.CodeInvalidState, Message: fmt.Sprintf("ticket %s is not on hold for attempts_exhausted", ref)}}
+		}
+		var tasks []core.Task
+		if err := opts.call(cmd, "task.list", "", api.Empty{}, &tasks); err != nil {
+			return err
+		}
+		// Restart the tasks first and lift the hold last, so an interrupted
+		// retry leaves the ticket held; a repeat finishes it. Each step has
+		// its own key derived from the command's.
+		for _, task := range tasks {
+			if task.Ticket != ref || task.State != core.TaskFailed {
+				continue
+			}
+			if err := opts.call(cmd, "task.retry", subKey(key, task.ID), api.TaskActRequest{Actor: opts.Actor, ID: task.ID}, &api.OK{}); err != nil {
+				return err
+			}
+		}
+		req := api.TicketHoldRequest{Actor: opts.Actor, Ref: ref, Reason: "attempts_exhausted"}
+		if err := opts.call(cmd, "ticket.unhold", subKey(key, "hold"), req, &ticket); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+	}))
 	return cmd
+}
+
+// subKey derives the key of one step of a command from the command's key.
+func subKey(key, step string) string {
+	if key == "" {
+		return ""
+	}
+	return key + ":" + step
 }

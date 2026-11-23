@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +85,7 @@ func TestExitCodes(t *testing.T) {
 		{[]string{"task", "show", "t_404"}, 1, "not_found"},
 		{[]string{"task", "claim"}, 2, "--ready"},                        // nothing to claim named
 		{[]string{"task", "renew", "t_1"}, 2, "--token"},                 // a lease action without the lease
-		{[]string{"ticket", "pause"}, 2, "arg"},                          // missing ref
+		{[]string{"ticket", "pause"}, 2, "accepts 1 arg"},                // missing ref
 		{[]string{"wait", "colour=red", "--timeout", "1s"}, 2, "colour"}, // unknown filter key
 		{[]string{"wait", "type=task.completed", "--timeout", "300ms"}, 1, "timeout"},
 	} {
@@ -162,10 +161,32 @@ func TestTicketCommands(t *testing.T) {
 	if s, _ := state(); s != "new" {
 		t.Fatalf("after cancel and reopen: %s", s)
 	}
+}
+
+func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	ref := "gh:acme/web#1"
+	createTicket(t, d, ref)
+	d.createTask(t, "t_1", "implementer")
+	for range 3 {
+		var l lease
+		d.mustCLI(t, &l, "task", "claim", "t_1", "--actor", "agent:a")
+		d.mustCLI(t, nil, "task", "fail", "t_1", "--actor", "agent:a", "--token", l.Token, "--reason", "red")
+	}
 	d.call(t, "ticket.hold", map[string]any{"actor": "system", "ref": ref, "reason": "attempts_exhausted"}, nil)
 	d.mustCLI(t, nil, "ticket", "retry", ref)
-	if _, h := state(); h != "" {
-		t.Fatalf("after retry: hold %s", h)
+	var task struct {
+		State    string
+		Attempts int
+	}
+	d.mustCLI(t, &task, "task", "show", "t_1")
+	if task.State != "ready" || task.Attempts != 0 {
+		t.Fatalf("after retry t_1 = %+v, want ready with no attempts", task)
+	}
+	var ticket struct{ Hold string }
+	d.mustCLI(t, &ticket, "ticket", "show", ref)
+	if ticket.Hold != "" {
+		t.Fatalf("after retry the hold is %s", ticket.Hold)
 	}
 }
 
@@ -195,9 +216,17 @@ func TestRepeatingAWriteWithTheSameIdempotencyKeyPerformsItOnce(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("%d task.claimed events, want 1", len(events))
 	}
-	// The same key on a different operation is refused.
-	if _, stderr, code := d.cli(t, "task", "unblock", "t_2", "--idempotency-key", "k-1"); code != 1 || !strings.Contains(stderr, "idempotency") {
-		t.Fatalf("reused key on another operation: exit %d %q", code, stderr)
+	// The same key on another request is refused: another operation, another
+	// actor (who must not receive agent:a's lease) or other arguments.
+	for _, args := range [][]string{
+		{"task", "unblock", "t_2", "--idempotency-key", "k-1"},
+		{"task", "claim", "--ready", "--actor", "agent:b", "--idempotency-key", "k-1"},
+		{"task", "claim", "t_2", "--actor", "agent:a", "--idempotency-key", "k-1"},
+	} {
+		out, stderr, code := d.cli(t, args...)
+		if code != 1 || !strings.Contains(stderr, "idempotency_mismatch") || strings.Contains(out, first.Token) {
+			t.Errorf("istari %v: exit %d %q %q, want idempotency_mismatch", args, code, stderr, out)
+		}
 	}
 }
 
@@ -240,12 +269,16 @@ func TestTailAfterACursorResumesExactly(t *testing.T) {
 func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
+	d.createTask(t, "t_2", "implementer")
+	var now []struct{ Cursor string }
+	d.mustCLI(t, &now, "tail")
+	cursor := now[len(now)-1].Cursor
+	d.mustCLI(t, nil, "task", "claim", "t_2", "--actor", "agent:a") // matches type but not task
 	done := make(chan string, 1)
 	go func() {
-		out, _, code := d.cli(t, "--json", "wait", "type=task.claimed", "task=t_1", "--timeout", "10s")
+		out, _, code := d.cli(t, "--json", "wait", "type=task.claimed", "task=t_1", "--after", cursor, "--timeout", "10s")
 		done <- fmt.Sprintf("%d %s", code, out)
 	}()
-	time.Sleep(300 * time.Millisecond)
 	d.mustCLI(t, nil, "task", "claim", "t_1", "--actor", "agent:a")
 	got := <-done
 	if !strings.HasPrefix(got, "0 ") || !strings.Contains(got, `"task.claimed"`) {
@@ -298,7 +331,7 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 	for _, o := range got {
 		owners[o[0]] = true
 	}
-	if !slices.Equal([]bool{owners["agent:shell-0"], owners["agent:shell-1"]}, []bool{true, true}) {
+	if len(owners) < 2 {
 		t.Logf("one shell claimed everything (%v); the test still holds but proves less", owners)
 	}
 }

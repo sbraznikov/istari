@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,9 @@ import (
 // --idempotency-key on writing commands).
 const IdempotencyHeader = "Idempotency-Key"
 
+// CodeIdempotencyMismatch refuses a key that was used for another request.
+const CodeIdempotencyMismatch = "idempotency_mismatch"
+
 // requestKind is the projection kind of the record a keyed write leaves.
 const requestKind = "request"
 
@@ -23,6 +28,7 @@ const requestKind = "request"
 // not perform the write again; it answers from the current projections.
 type requestRecord struct {
 	Op     string `json:"op"`
+	Body   string `json:"body"` // SHA-256 of the request body
 	Actor  string `json:"actor"`
 	Task   string `json:"task,omitempty"`
 	Ticket string `json:"ticket,omitempty"`
@@ -31,32 +37,53 @@ type requestRecord struct {
 type requestKeyCtx struct{}
 
 type requestKey struct {
-	key, op string
+	key, op, body string
 }
 
-// keyLocks serializes requests that carry the same key.
+// keyLocks serializes requests that carry the same key; a key's lock lives
+// only while requests hold or wait for it.
 type keyLocks struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*keyLock
+}
+
+type keyLock struct {
+	sync.Mutex
+	users int
 }
 
 func (k *keyLocks) lock(key string) func() {
 	k.mu.Lock()
 	if k.locks == nil {
-		k.locks = map[string]*sync.Mutex{}
+		k.locks = map[string]*keyLock{}
 	}
 	l, ok := k.locks[key]
 	if !ok {
-		l = &sync.Mutex{}
+		l = &keyLock{}
 		k.locks[key] = l
 	}
+	l.users++
 	k.mu.Unlock()
 	l.Lock()
-	return l.Unlock
+	return func() {
+		l.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
-// idempotent runs a write once per key. A repeat with the same key answers
-// through again; the same key on another operation is refused.
+func bodyHash(raw json.RawMessage) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// idempotent runs a write once per key. A repeat of the same request with the
+// same key answers through again; the same key on any other request (another
+// operation, actor or argument) is refused, so a repeat never hands out what
+// another caller received.
 func (s *Server) idempotent(ctx context.Context, key, name string, op operation, raw json.RawMessage) (any, error) {
 	unlock := s.keys.lock(key)
 	defer unlock()
@@ -67,14 +94,14 @@ func (s *Server) idempotent(ctx context.Context, key, name string, op operation,
 		if err := json.Unmarshal(rec.Data, &done); err != nil {
 			return nil, err
 		}
-		if done.Op != name {
-			return nil, &core.Error{Code: "idempotency_mismatch", Message: fmt.Sprintf("idempotency key %q was used for %s", key, done.Op)}
+		if done.Op != name || done.Body != bodyHash(raw) {
+			return nil, &core.Error{Code: CodeIdempotencyMismatch, Message: fmt.Sprintf("idempotency key %q was used for another request (%s)", key, done.Op)}
 		}
 		return op.again(ctx, done)
 	case !errors.Is(err, store.ErrNotFound):
 		return nil, err
 	}
-	return op.run(context.WithValue(ctx, requestKeyCtx{}, requestKey{key: key, op: name}), raw)
+	return op.run(context.WithValue(ctx, requestKeyCtx{}, requestKey{key: key, op: name, body: bodyHash(raw)}), raw)
 }
 
 // recordRequest returns the change that records a keyed write together with
@@ -84,6 +111,6 @@ func recordRequest(ctx context.Context, e store.Event) []store.Change {
 	if !ok {
 		return nil
 	}
-	data, _ := json.Marshal(requestRecord{Op: k.op, Actor: e.Actor, Task: e.Task, Ticket: e.Ticket})
+	data, _ := json.Marshal(requestRecord{Op: k.op, Body: k.body, Actor: e.Actor, Task: e.Task, Ticket: e.Ticket})
 	return []store.Change{{Kind: requestKind, ID: k.key, Data: data}}
 }

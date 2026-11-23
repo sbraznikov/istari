@@ -109,6 +109,7 @@ func (s *Server) operations() map[string]operation {
 		"task.block":    write(okAgain, func(ctx context.Context, r LeaseRequest) (any, error) { return ok(t.Block(ctx, r.Lease, r.Kind)) }),
 		"task.unblock":  write(okAgain, func(ctx context.Context, r TaskActRequest) (any, error) { return ok(t.Unblock(ctx, r.Actor, r.ID)) }),
 		"task.cancel":   write(okAgain, func(ctx context.Context, r TaskActRequest) (any, error) { return ok(t.Cancel(ctx, r.Actor, r.ID)) }),
+		"task.retry":    write(okAgain, func(ctx context.Context, r TaskActRequest) (any, error) { return ok(t.Retry(ctx, r.Actor, r.ID)) }),
 
 		"ticket.list": read(func(ctx context.Context, _ Empty) (any, error) { return k.List(ctx) }),
 		"ticket.show": read(func(ctx context.Context, r TicketShowRequest) (any, error) { return k.Get(ctx, r.Ref) }),

@@ -480,3 +480,24 @@ func TestLeaseOfReturnsTheCurrentLeaseToItsOwnerOnly(t *testing.T) {
 	_, err = f.tasks.LeaseOf(ctx, "t_1", "agent:someone-else")
 	assertCode(t, err, core.CodeClaimLost)
 }
+
+func TestRetryReturnsAFailedTaskToReadyWithFreshAttempts(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	assertCode(t, f.tasks.Retry(ctx, "human:alex", "t_1"), core.CodeInvalidState) // not failed
+	for range core.DefaultMaxAttempts {
+		if err := f.tasks.Fail(ctx, f.claim(t, "t_1"), "red"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.tasks.Retry(ctx, "human:alex", "t_1"); err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	task, _ := f.tasks.Get(ctx, "t_1")
+	if task.State != core.TaskReady || task.Attempts != 0 {
+		t.Fatalf("after Retry: %s with %d attempts", task.State, task.Attempts)
+	}
+	if got := f.events(t, store.Filter{TypePrefix: "task.retried"}); len(got) != 1 {
+		t.Fatalf("task.retried events = %d, want 1", len(got))
+	}
+}

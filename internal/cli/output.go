@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// print writes v as JSON with --json, and otherwise as a table: a header
+// render writes v as JSON with --json, and otherwise as a table: a header
 // line and one line per row.
-func print(w io.Writer, opts *Options, v any, header []string, rows [][]string) error {
+func render(w io.Writer, opts *Options, v any, header []string, rows [][]string) error {
 	if opts.JSON {
 		enc := json.NewEncoder(w)
 		return enc.Encode(v)

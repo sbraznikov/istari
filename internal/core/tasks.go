@@ -360,6 +360,20 @@ func (t *Tasks) Unblock(ctx context.Context, actor, id string) error {
 	})
 }
 
+// Retry returns a failed task to ready with no attempts used. It is the
+// human's answer to attempts_exhausted (spec sections 4.1 and 10.5).
+func (t *Tasks) Retry(ctx context.Context, actor, id string) error {
+	return t.byActor(ctx, actor, id, "task.retried", func(task *Task) (map[string]any, error) {
+		if task.State != TaskFailed {
+			return nil, errorf(CodeInvalidState, "task %s is %s, not failed", id, task.State)
+		}
+		payload := map[string]any{"attempts": task.Attempts}
+		task.State = TaskReady
+		task.Attempts = 0
+		return payload, nil
+	})
+}
+
 // Cancel cancels a task from any open state.
 func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
 	return t.byActor(ctx, actor, id, "task.canceled", func(task *Task) (map[string]any, error) {
