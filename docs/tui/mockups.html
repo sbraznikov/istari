@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>istari TUI mockups</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+body{margin:0}
+.t{width:1180px;height:740px;box-sizing:border-box;background:#14161b;color:#d7dae0;font:13px/20px 'JetBrains Mono',ui-monospace,Menlo,monospace;padding:14px 18px 12px;display:flex;flex-direction:column;gap:16px}
+.bar{display:flex;align-items:center;gap:12px}
+.bar>*{white-space:nowrap;flex-shrink:0}
+.logo{background:#8ab4ff;color:#10131a;font-weight:700;padding:0 8px;border-radius:3px}
+.dim{color:#8b93a1}.b{font-weight:700}.acc{color:#8ab4ff}.g{color:#8fd694}.y{color:#e6c36a}.r{color:#f08a8a}.p{color:#c3a6ff}.c{color:#7fd6d0}.o{color:#f0a875}
+.tab{padding:0 7px 2px;color:#8b93a1;border-bottom:2px solid transparent}
+.tab.on{color:#d7dae0;font-weight:700;border-bottom-color:#8ab4ff}
+.sp{flex:1}
+.pan{position:relative;border:1px solid #303644;border-radius:8px;padding:14px 14px 10px;display:flex;flex-direction:column;min-height:0;box-sizing:border-box}
+.pan.f{border-color:#8ab4ff}
+.pt{position:absolute;top:-11px;left:12px;background:#14161b;padding:0 6px;color:#8b93a1}
+.pan.f .pt{color:#8ab4ff;font-weight:700}
+.pc{position:absolute;top:-11px;right:12px;background:#14161b;padding:0 6px;color:#8b93a1}
+.row{display:flex;gap:10px;white-space:pre}
+.sel{background:#222836;border-radius:4px}
+.pill{padding:0 7px;border-radius:3px;font-weight:700;color:#10131a}
+.k{background:#262b36;color:#d7dae0;padding:0 6px;border-radius:3px;margin-right:6px}
+.foot{display:flex;gap:18px;color:#8b93a1}
+.meter{display:inline-block;width:90px;height:6px;border-radius:3px;background:#2a303c;overflow:hidden}
+.meter i{display:block;height:100%;background:#8fd694}
+.card{padding:4px 8px;margin:0 -8px}
+.rule{display:flex;align-items:center;gap:10px;color:#8b93a1;white-space:pre}
+.rule:before,.rule:after{content:"";flex:1;height:1px;background:#303644}
+.tr{display:grid;grid-template-columns:120px 22px minmax(0,1fr) 180px 80px 36px 44px;column-gap:10px;white-space:pre;padding:2px 8px;margin:0 -8px;border-radius:4px}
+.tr.sel{background:#222836}
+.tr>span:nth-child(3){overflow:hidden;text-overflow:ellipsis}
+.th{color:#8b93a1;border-bottom:1px solid #303644;border-radius:0;padding-bottom:4px;margin-bottom:4px}
+.num{text-align:right}
+.seg{display:inline-block;width:8px;height:4px;border-radius:2px;background:#303644;margin-right:3px;vertical-align:middle}
+.seg.d{background:#8fd694}.seg.n{background:#8ab4ff}.seg.w{background:#c3a6ff}
+.tl{display:grid;grid-template-columns:44px 12px minmax(0,1fr);column-gap:8px}
+.tl .ln{border-left:1px solid #303644;margin-left:5px}
+.chip{background:#262b36;padding:0 8px;border-radius:3px}
+.ev{display:grid;grid-template-columns:72px 176px 112px 124px minmax(0,1fr);column-gap:14px;white-space:pre;padding:2px 8px;margin:0 -8px;border-radius:4px}
+.ev.sel{background:#222836}
+.day{display:flex;align-items:center;gap:10px;color:#8b93a1;margin:6px 0}
+.day:after{content:"";flex:1;height:1px;background:#303644}
+.it{padding:2px 8px;margin:0 -8px;border-radius:4px}
+.it.sel{background:#222836}
+.grp{color:#8b93a1;font-weight:700;margin-top:12px}
+.opt{border:1px solid #303644;border-radius:6px;padding:6px 12px;display:grid;grid-template-columns:20px minmax(0,1fr) auto;column-gap:10px}
+.opt.rec{border-color:#8fd694}
+.h{color:#8b93a1;font-weight:700;margin-top:10px}
+.txt{max-width:640px}
+body{background:#0d0f13;padding:32px;overflow-x:auto}
+h2{font:700 14px/20px 'JetBrains Mono',ui-monospace,Menlo,monospace;color:#8b93a1;margin:32px 0 12px}
+.frame{width:1180px;border-radius:10px;overflow:hidden;border:1px solid #303644}
+</style>
+</head>
+<body>
+<h2>1 Agents</h2>
+<div class="frame"><div class="t">
+  <div class="bar">
+    <span class="logo">istari</span><span class="b">billing</span><span class="dim">service · core</span>
+    <span class="sp"></span>
+    <span class="tab on">1 Agents</span><span class="tab">2 Tickets</span><span class="tab">3 Events</span><span class="tab">4 Decisions <span class="y b">6</span></span>
+    <span class="sp"></span>
+    <span><span class="g">●</span> 3 running</span><span><span class="y">◐</span> 2 on hold</span><span class="dim">$18.40 / $50</span><span class="meter"><i style="width:37%"></i></span>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex;gap:16px">
+    <div style="width:410px;display:flex;flex-direction:column;gap:18px">
+      <div class="pan f" style="gap:4px">
+        <span class="pt">Agents</span><span class="pc">3 of 5 busy</span>
+        <div class="card sel">
+          <div class="row"><span class="g">⣾</span><span class="b">implementer-1</span><span class="sp"></span><span class="acc">service#211</span><span class="dim"> 12m</span></div>
+          <div class="row dim"><span>  implement · slice 3</span><span class="sp"></span><span>lease</span><span class="meter" style="width:64px;align-self:center"><i style="width:74%"></i></span></div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="g">⣽</span><span class="b">implementer-2</span><span class="sp"></span><span class="acc">core#57</span><span class="dim">  3m</span></div>
+          <div class="row dim"><span>  implement · slice 1</span><span class="sp"></span><span>lease</span><span class="meter" style="width:64px;align-self:center"><i style="width:92%"></i></span></div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="p">⣻</span><span class="b">reviewer-1</span><span class="sp"></span><span class="acc">service#198</span><span class="dim">  1m</span></div>
+          <div class="row dim"><span>  review · round 2 of 3</span><span class="sp"></span><span>lease</span><span class="meter" style="width:64px;align-self:center"><i style="width:40%;background:#e6c36a"></i></span></div>
+        </div>
+        <div class="card"><div class="row dim"><span>○</span><span>planner-1</span><span class="sp"></span><span>idle</span></div></div>
+        <div class="card"><div class="row dim"><span>○</span><span>refiner-1</span><span class="sp"></span><span>idle</span></div></div>
+      </div>
+
+      <div class="pan" style="flex:1">
+        <span class="pt">Queue</span><span class="pc">3 ready · 2 on hold</span>
+        <div class="row"><span class="dim">·</span><span class="acc">service#214</span><span class="sp"></span><span>plan</span></div>
+        <div class="row"><span class="dim">·</span><span class="acc">service#215</span><span class="sp"></span><span>refine</span></div>
+        <div class="row"><span class="dim">·</span><span class="acc">core#58</span><span class="sp"></span><span>implement</span></div>
+        <div class="row"><span class="y">◐</span><span class="acc">service#209</span><span class="sp"></span><span class="y">decision</span><span class="dim"> 3h</span></div>
+        <div class="row"><span class="y">◐</span><span class="acc">service#205</span><span class="sp"></span><span class="y">decision</span><span class="dim"> 5h</span></div>
+        <div class="row"><span class="r">◐</span><span class="acc">service#177</span><span class="sp"></span><span class="r">budget</span><span class="dim"> 9h</span></div>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:18px">
+      <div class="pan" style="gap:6px">
+        <span class="pt">service#211</span><span class="pc">P1 · size M · attempt 1 of 3</span>
+        <div class="row"><span class="b" style="font-size:15px">Use new report format</span><span class="sp"></span><span class="pill" style="background:#8ab4ff">in_progress</span></div>
+        <div class="row"><span class="g">✓ refine</span><span class="dim">──</span><span class="g">✓ plan</span><span class="dim">──</span><span class="acc b">● implement</span><span class="dim">── ○ review ── ○ approval ── ○ done</span></div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px">
+          <div class="row"><span class="dim">branch    </span><span>istari/service-211/report-format</span></div>
+          <div class="row"><span class="dim">run       </span><span>$1.92</span><span class="dim">· ticket $4.10 / $15</span></div>
+          <div class="row"><span class="dim">needs     </span><span class="acc">core#57</span><span class="dim">soft · in_progress</span></div>
+          <div class="row"><span class="dim">checkpoint</span><span>23:02</span><span class="dim">slice 2 green</span></div>
+        </div>
+      </div>
+
+      <div class="pan" style="flex:1">
+        <span class="pt">Activity</span><span class="pc"><span class="g">●</span> live</span>
+        <div class="row"><span class="dim">23:10:02</span><span class="c">Read </span><span>src/report/format.go</span></div>
+        <div class="row"><span class="dim">23:10:19</span><span class="y">Edit </span><span>src/report/format_test.go</span><span class="dim">+18</span></div>
+        <div class="row"><span class="dim">23:10:41</span><span class="p">Bash </span><span>go test ./report -run TestMapFields</span></div>
+        <div class="row"><span class="dim">        </span><span class="g">✓    </span><span class="g">green</span><span class="dim">4 passed · 0.8s</span></div>
+        <div class="rule"><span>checkpoint · slice 2 green · a41c9e2</span></div>
+        <div class="row"><span class="dim">23:12:11</span><span class="c">Read </span><span>src/report/export.go</span></div>
+        <div class="row"><span class="dim">23:12:14</span><span class="y">Edit </span><span>src/report/export_test.go</span><span class="dim">+24</span></div>
+        <div class="row"><span class="dim">23:12:31</span><span class="p">Bash </span><span>go test ./report -run TestExportV2</span></div>
+        <div class="row"><span class="dim">        </span><span class="r">✗    </span><span class="r">red</span><span class="dim">TestExportV2: unknown format "v2"</span></div>
+        <div class="row"><span class="dim">23:13:20</span><span class="y">Edit </span><span>src/report/export.go</span><span class="dim">+31 −4</span></div>
+        <div class="row"><span class="dim">23:13:41</span><span class="p">Bash </span><span>go test ./report -run TestExportV2</span></div>
+        <div class="row"><span class="dim">        </span><span class="g">✓    </span><span class="g">green</span><span class="dim">5 passed · 0.9s</span></div>
+        <div class="row"><span class="dim">23:13:55</span><span class="acc">say  </span><span>Slice 3 is green. Writing the checkpoint.</span></div>
+        <div class="row"><span class="dim">23:14:02</span><span class="dim">lease</span><span class="dim">renewed +5m</span></div>
+        <div class="row"><span class="dim">23:14:05</span><span class="p">Bash </span><span>istari checkpoint "slice 3 export v2"</span><span class="acc">▍</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><span class="k">⏎</span>ticket</span><span><span class="k">l</span>full log</span><span><span class="k">s</span>stop run</span><span><span class="k">p</span>pause ticket</span><span><span class="k">/</span>filter</span><span><span class="k">P</span>project</span>
+    <span class="sp"></span>
+    <span><span class="k">?</span>help</span>
+  </div>
+</div></div>
+<h2>2 Tickets</h2>
+<div class="frame"><div class="t">
+  <div class="bar">
+    <span class="logo">istari</span><span class="b">billing</span><span class="dim">service · core</span>
+    <span class="sp"></span>
+    <span class="tab">1 Agents</span><span class="tab on">2 Tickets</span><span class="tab">3 Events</span><span class="tab">4 Decisions <span class="y b">6</span></span>
+    <span class="sp"></span>
+    <span><span class="g">●</span> 3 running</span><span><span class="y">◐</span> 2 on hold</span><span class="dim">$18.40 / $50</span><span class="meter"><i style="width:37%"></i></span>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex;gap:16px">
+    <div class="pan f" style="flex:1;min-width:0">
+      <span class="pt">Tickets</span><span class="pc">11 open · 4 done today</span>
+      <div class="row" style="gap:16px;margin-bottom:10px"><span><span class="dim">new</span> 1</span><span><span class="dim">ready</span> 2</span><span><span class="dim">planning</span> 1</span><span><span class="acc">in_progress</span> 3</span><span><span class="p">in_review</span> 1</span><span><span class="o">awaiting</span> 3</span></div>
+      <div class="tr th"><span>TICKET</span><span>SZ</span><span>TITLE</span><span>STAGE</span><span>HOLD</span><span class="num">AGE</span><span class="num">$</span></div>
+      <div class="tr"><span class="acc">service#210</span><span class="dim">L</span><span>New report format</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> in_progress</span><span class="dim">—</span><span class="num dim">2h</span><span class="num">0.40</span></div>
+      <div class="tr"><span><span class="dim">├ </span><span class="acc">core#57</span></span><span class="dim">S</span><span>Add format to component</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> in_progress</span><span class="dim">—</span><span class="num dim">40m</span><span class="num">1.10</span></div>
+      <div class="tr sel"><span><span class="dim">└ </span><span class="acc b">service#211</span></span><span>M</span><span class="b">Use new report format</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> in_progress</span><span class="dim">—</span><span class="num dim">35m</span><span class="num">4.10</span></div>
+      <div class="tr"><span class="acc">service#198</span><span class="dim">S</span><span>Fix cache stampede</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg w"></span><span class="seg"></span><span class="seg"></span> in_review <span class="dim">2/3</span></span><span class="dim">—</span><span class="num dim">15m</span><span class="num">6.80</span></div>
+      <div class="tr"><span class="acc">service#209</span><span class="dim">M</span><span>Rate limit per tenant</span><span><span class="seg d"></span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> planning</span><span class="y">◐ decision</span><span class="num dim">3h</span><span class="num">0.90</span></div>
+      <div class="tr"><span class="acc">service#205</span><span class="dim">M</span><span>Migrate session store</span><span><span class="seg d"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> ready</span><span class="y">◐ decision</span><span class="num dim">5h</span><span class="num">0.30</span></div>
+      <div class="tr"><span class="acc">service#214</span><span class="dim">S</span><span>Export audit log</span><span><span class="seg d"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> ready</span><span class="dim">—</span><span class="num dim">10m</span><span class="num">0.00</span></div>
+      <div class="tr"><span class="acc">service#215</span><span class="dim">·</span><span>make login faster</span><span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> new <span class="dim">refining</span></span><span class="dim">—</span><span class="num dim">2m</span><span class="num">0.00</span></div>
+      <div class="tr"><span class="acc">service#190</span><span class="dim">S</span><span>Retry webhook delivery</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg" style="background:#f0a875"></span><span class="seg"></span> awaiting</span><span class="dim">—</span><span class="num dim">6h</span><span class="num">5.20</span></div>
+      <div class="tr"><span class="acc">core#55</span><span class="dim">XS</span><span>Drop legacy codec</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg" style="background:#f0a875"></span><span class="seg"></span> awaiting</span><span class="dim">—</span><span class="num dim">2h</span><span class="num">3.70</span></div>
+      <div class="tr"><span class="acc">service#187</span><span class="dim">S</span><span>Paginate invoices</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg d"></span><span class="seg" style="background:#f0a875"></span><span class="seg"></span> awaiting</span><span class="dim">—</span><span class="num dim">1h</span><span class="num">2.90</span></div>
+      <div class="tr"><span class="acc">service#177</span><span class="dim">L</span><span>Rebuild search index</span><span><span class="seg d"></span><span class="seg d"></span><span class="seg n"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span> in_progress</span><span class="r">◐ budget</span><span class="num dim">9h</span><span class="num r">15.00</span></div>
+    </div>
+
+    <div class="pan" style="width:372px;gap:4px">
+      <span class="pt">service#211</span><span class="pc">P1 · size M · $4.10 / $15</span>
+      <div class="row"><span class="b" style="font-size:15px">Use new report format</span></div>
+      <div class="row"><span class="dim">parent</span><span class="acc">service#210</span><span class="dim">· needs</span><span class="acc">core#57</span><span class="dim">soft</span></div>
+      <div class="row"><span class="dim">branch</span><span>istari/service-211/report-format</span></div>
+
+      <div class="row" style="margin-top:10px"><span class="dim b">WORK STATE</span></div>
+      <div class="row"><span class="g">✓</span><span>slice 1 parse header</span></div>
+      <div class="row"><span class="g">✓</span><span>slice 2 map fields</span></div>
+      <div class="row"><span class="acc">●</span><span>slice 3 export v2</span><span class="dim">next</span></div>
+
+      <div class="row" style="margin-top:10px"><span class="dim b">JOURNAL</span></div>
+      <div class="tl"><span class="dim">23:02</span><span class="g">●</span><span>checkpoint <span class="dim">slice 2 green · a41c9e2</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span></span></div>
+      <div class="tl"><span class="dim">22:47</span><span class="g">●</span><span>checkpoint <span class="dim">slice 1 green · 77b0f13</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span></span></div>
+      <div class="tl"><span class="dim">22:40</span><span class="o">●</span><span>assumption <span class="dim">cache size from config</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span></span></div>
+      <div class="tl"><span class="dim">22:31</span><span class="y">●</span><span>decision <span class="dim">B, keep v1 exporter</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span class="dim">behind a flag · chosen by alex</span></div>
+      <div class="tl"><span class="dim">22:20</span><span class="c">●</span><span>question <span class="dim">reverse format for v1?</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span class="dim">answer: no · alex</span></div>
+      <div class="tl"><span class="dim">22:05</span><span class="p">●</span><span>plan <span class="dim">3 slices · 2 seams</span></span></div>
+      <div class="tl"><span></span><span class="ln"></span><span></span></div>
+      <div class="tl"><span class="dim">21:58</span><span class="dim">●</span><span class="dim">ready → planning</span></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><span class="k">⏎</span>open</span><span><span class="k">r</span>resume</span><span><span class="k">p</span>pause</span><span><span class="k">t</span>retry</span><span><span class="k">x</span>cancel</span><span><span class="k">o</span>tracker</span><span><span class="k">g</span>PR</span><span><span class="k">/</span>filter</span><span><span class="k">s</span>sort</span>
+    <span class="sp"></span>
+    <span><span class="k">?</span>help</span>
+  </div>
+</div></div>
+<h2>3 Events</h2>
+<div class="frame"><div class="t">
+  <div class="bar">
+    <span class="logo">istari</span><span class="b">billing</span><span class="dim">service · core</span>
+    <span class="sp"></span>
+    <span class="tab">1 Agents</span><span class="tab">2 Tickets</span><span class="tab on">3 Events</span><span class="tab">4 Decisions <span class="y b">6</span></span>
+    <span class="sp"></span>
+    <span><span class="g">●</span> 3 running</span><span><span class="y">◐</span> 2 on hold</span><span class="dim">$18.40 / $50</span><span class="meter"><i style="width:37%"></i></span>
+  </div>
+
+  <div class="pan f" style="flex:1">
+    <span class="pt">Events</span><span class="pc"><span class="g">●</span> following</span>
+    <div class="row" style="margin-bottom:10px;align-items:center"><span class="dim">/</span><span class="chip">project: billing</span><span class="chip">type: task, ticket, decision</span><span class="acc">▍</span><span class="sp"></span><span class="dim">214 events in the last hour</span></div>
+    <div class="ev th"><span>TIME</span><span>EVENT</span><span>TICKET</span><span>ACTOR</span><span>DETAIL</span></div>
+    <div class="ev sel"><span class="dim">23:14:05</span><span class="g b">ticket.checkpoint</span><span class="acc">service#211</span><span>implementer-1</span><span>slice 3 green <span class="dim">· c09d2aa</span></span></div>
+    <div class="ev"><span class="dim">23:14:02</span><span class="dim">task.renewed</span><span class="acc">service#211</span><span class="dim">implementer-1</span><span class="dim">lease +5m</span></div>
+    <div class="ev"><span class="dim">23:11:40</span><span class="acc">task.claimed</span><span class="acc">service#198</span><span>reviewer-1</span><span>review, round 2 of 3</span></div>
+    <div class="ev"><span class="dim">23:11:38</span><span class="p">ticket.transitioned</span><span class="acc">service#198</span><span class="dim">system</span><span>in_progress <span class="dim">→</span> in_review</span></div>
+    <div class="ev"><span class="dim">23:09:12</span><span class="y">ticket.hold</span><span class="acc">service#205</span><span class="dim">system</span><span>waiting for a decision</span></div>
+    <div class="ev"><span class="dim">23:09:12</span><span class="y">decision.proposed</span><span class="acc">service#205</span><span>planner-1</span><span>3 options, recommends B</span></div>
+    <div class="ev"><span class="dim">23:04:51</span><span class="acc">task.claimed</span><span class="acc">core#57</span><span>implementer-2</span><span>resumed from checkpoint <span class="dim">· 5e1b770</span></span></div>
+    <div class="ev"><span class="dim">23:04:50</span><span class="r">task.expired</span><span class="acc">core#57</span><span>implementer-2</span><span>lease lost, task back to ready</span></div>
+    <div class="ev"><span class="dim">23:02:44</span><span class="g">ticket.checkpoint</span><span class="acc">service#211</span><span>implementer-1</span><span>slice 2 green <span class="dim">· a41c9e2</span></span></div>
+    <div class="ev"><span class="dim">22:58:03</span><span class="p">ticket.transitioned</span><span class="acc">service#214</span><span class="dim">system</span><span>new <span class="dim">→</span> ready</span></div>
+    <div class="ev"><span class="dim">22:57:59</span><span class="c">ticket.refined</span><span class="acc">service#214</span><span>refiner-1</span><span>2 sections added, 1 assumption</span></div>
+    <div class="ev"><span class="dim">22:47:10</span><span class="g">ticket.checkpoint</span><span class="acc">service#211</span><span>implementer-1</span><span>slice 1 green <span class="dim">· 77b0f13</span></span></div>
+    <div class="ev"><span class="dim">22:40:31</span><span class="o">ticket.assumption</span><span class="acc">service#211</span><span>implementer-1</span><span>cache size taken from current config</span></div>
+    <div class="ev"><span class="dim">22:31:17</span><span class="y">decision.chosen</span><span class="acc">service#211</span><span>alex</span><span>option B, keep v1 exporter behind a flag</span></div>
+    <div class="ev"><span class="dim">22:20:48</span><span class="c">ticket.answer</span><span class="acc">service#211</span><span>alex</span><span>reverse format for v1 is not needed</span></div>
+    <div class="ev"><span class="dim">22:16:02</span><span class="c">ticket.question</span><span class="acc">service#211</span><span>planner-1</span><span>Is reverse format needed for v1 API?</span></div>
+    <div class="ev"><span class="dim">22:05:30</span><span class="p">ticket.plan</span><span class="acc">service#211</span><span>planner-1</span><span>3 slices, 2 seams</span></div>
+    <div class="ev"><span class="dim">21:58:14</span><span class="p">ticket.transitioned</span><span class="acc">service#211</span><span class="dim">system</span><span>ready <span class="dim">→</span> planning</span></div>
+  </div>
+
+  <div class="foot">
+    <span><span class="k">/</span>filter</span><span><span class="k">f</span>follow</span><span><span class="k">⏎</span>details</span><span><span class="k">t</span>go to ticket</span><span><span class="k">c</span>copy cursor</span>
+    <span class="sp"></span>
+    <span><span class="k">?</span>help</span>
+  </div>
+</div></div>
+<h2>4 Decisions</h2>
+<div class="frame"><div class="t">
+  <div class="bar">
+    <span class="logo">istari</span><span class="b">billing</span><span class="dim">service · core</span>
+    <span class="sp"></span>
+    <span class="tab">1 Agents</span><span class="tab">2 Tickets</span><span class="tab">3 Events</span><span class="tab on">4 Decisions <span class="y b">6</span></span>
+    <span class="sp"></span>
+    <span><span class="g">●</span> 3 running</span><span><span class="y">◐</span> 2 on hold</span><span class="dim">$18.40 / $50</span><span class="meter"><i style="width:37%"></i></span>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex;gap:16px">
+    <div class="pan f" style="width:400px">
+      <span class="pt">Waiting for you</span><span class="pc">6 items</span>
+
+      <div class="row grp" style="margin-top:0"><span class="y">◆</span><span>DECISION CARDS</span><span class="sp"></span><span>2</span></div>
+      <div class="it sel">
+        <div class="row"><span class="acc b">service#205</span><span class="sp"></span><span class="dim">5h</span></div>
+        <div class="row"><span>Where should sessions live?</span></div>
+      </div>
+      <div class="it">
+        <div class="row"><span class="acc">service#209</span><span class="sp"></span><span class="dim">deferred · 3h</span></div>
+        <div class="row dim"><span>Rate limit key: tenant or API key?</span></div>
+      </div>
+
+      <div class="row grp"><span class="o">◆</span><span>PULL REQUESTS</span><span class="sp"></span><span>3</span></div>
+      <div class="it">
+        <div class="row"><span class="acc">service#190</span><span class="dim">PR #482</span><span class="sp"></span><span class="dim">6h</span></div>
+        <div class="row dim"><span>Retry webhook delivery</span><span class="sp"></span><span class="g">✓ checks</span></div>
+      </div>
+      <div class="it">
+        <div class="row"><span class="acc">core#55</span><span class="dim">PR #91</span><span class="sp"></span><span class="dim">2h</span></div>
+        <div class="row dim"><span>Drop legacy codec</span><span class="sp"></span><span class="g">✓ checks</span></div>
+      </div>
+      <div class="it">
+        <div class="row"><span class="acc">service#187</span><span class="dim">PR #479</span><span class="sp"></span><span class="dim">1h</span></div>
+        <div class="row dim"><span>Paginate invoices</span><span class="sp"></span><span class="g">✓ checks</span></div>
+      </div>
+
+      <div class="row grp"><span class="r">◆</span><span>HOLDS</span><span class="sp"></span><span>1</span></div>
+      <div class="it">
+        <div class="row"><span class="acc">service#177</span><span class="sp"></span><span class="dim">9h</span></div>
+        <div class="row dim"><span>Budget exceeded: $15.00 of $15</span></div>
+      </div>
+    </div>
+
+    <div class="pan" style="flex:1;min-width:0;gap:2px">
+      <span class="pt">Decision card</span><span class="pc">service#205 · by planner-1</span>
+      <div class="row"><span class="b" style="font-size:15px">Where should sessions live?</span><span class="sp"></span><span class="pill" style="background:#e6c36a">waiting 5h</span></div>
+
+      <div class="h">PROBLEM</div>
+      <div class="txt">The session store must move off local disk before the service can run more than one instance.</div>
+
+      <div class="h">CURRENT STATE</div>
+      <div class="txt">Sessions live in a BoltDB file next to the binary. One instance, 40 requests per second at peak. Postgres is already deployed and backed up.</div>
+
+      <div class="h" style="margin-bottom:6px">OPTIONS</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="opt"><span class="b">A</span><span><span class="b">Redis</span><br><span class="dim">Fast and purpose-built. Adds a dependency to run and monitor.</span></span><span class="dim">size M</span></div>
+        <div class="opt rec"><span class="b g">B</span><span><span class="b">Postgres table</span><span class="g">  ★ recommended</span><br><span class="dim">Reuses the existing database. One migration, no new service.</span></span><span class="dim">size S</span></div>
+        <div class="opt"><span class="b">C</span><span><span class="b">Sticky sessions</span><br><span class="dim">No code change. Ties users to instances and limits the balancer.</span></span><span class="dim">size XS</span></div>
+      </div>
+
+      <div class="h">RECOMMENDATION</div>
+      <div class="txt">B. The load is far below what Postgres handles, and backups already cover it. I would pick A instead if peak load grows past a few thousand requests per second.</div>
+
+      <span class="sp"></span>
+      <div class="row dim" style="border-top:1px solid #303644;padding-top:8px"><span>The choice is made in Slack:</span><span><span class="k">⏎</span>open the card there</span></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><span class="k">⏎</span>open in Slack</span><span><span class="k">o</span>tracker</span><span><span class="k">g</span>PR</span><span><span class="k">b</span>raise budget</span><span><span class="k">t</span>retry</span><span><span class="k">/</span>filter</span>
+    <span class="sp"></span>
+    <span><span class="k">?</span>help</span>
+  </div>
+</div></div>
+
+</body>
+</html>
