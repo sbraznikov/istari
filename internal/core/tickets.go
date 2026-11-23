@@ -123,6 +123,11 @@ func NewTickets(s store.Store, opts TicketOptions) *Tickets {
 	}
 	clock := opts.Clock
 	opts.Clock = func() time.Time { return clock().UTC() }
+	for id := range opts.Guards {
+		if !slices.ContainsFunc(transitions, func(row transition) bool { return row.id == id }) {
+			panic(fmt.Sprintf("core: guard for unknown transition %q", id))
+		}
+	}
 	return &Tickets{store: s, opts: opts}
 }
 
@@ -191,17 +196,22 @@ func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket,
 		}
 		if guard := m.opts.Guards[row.id]; guard != nil {
 			if err := guard(ctx, ticket); err != nil {
-				return errorf(CodeGuardFailed, "%s %s: %v", row.id, trigger, err)
+				return &Error{Code: CodeGuardFailed, Message: fmt.Sprintf("%s %s: %v", row.id, trigger, err), Err: err}
 			}
 		}
+		payload := transitionPayload(row.from, row.to, trigger, actor)
 		ticket.State = row.to
+		if row.to == TicketCanceled && ticket.Hold != "" {
+			// A finished ticket carries no hold; cancel ends it.
+			payload["hold_cleared"] = ticket.Hold
+			ticket.Hold = ""
+		}
 		ticket.Updated = m.opts.Clock()
-		return m.commit(ctx, actor, EventTicketTransitioned, ticket, transitionPayload(row.from, row.to, trigger, actor))
+		return m.commit(ctx, actor, EventTicketTransitioned, ticket, payload)
 	})
 	if err != nil {
 		return Ticket{}, err
 	}
-	ticket.version++
 	return ticket, nil
 }
 
@@ -211,42 +221,42 @@ func (m *Tickets) SetHold(ctx context.Context, actor, ref, reason string) (Ticke
 	if !slices.Contains(HoldReasons(), reason) {
 		return Ticket{}, errorf(CodeInvalidTicket, "hold reason %q is not one of %s", reason, strings.Join(HoldReasons(), ", "))
 	}
-	return m.changeHold(ctx, actor, ref, EventTicketHoldSet, func(ticket *Ticket) error {
+	return m.changeHold(ctx, actor, ref, EventTicketHoldSet, func(ticket *Ticket) (string, error) {
 		if ticket.State == TicketDone || ticket.State == TicketCanceled {
-			return errorf(CodeInvalidState, "ticket %s is %s; a finished ticket cannot be held", ref, ticket.State)
+			return "", errorf(CodeInvalidState, "ticket %s is %s; a finished ticket cannot be held", ref, ticket.State)
 		}
 		if ticket.Hold != "" {
-			return errorf(CodeTicketHeld, "ticket %s is already on hold (%s)", ref, ticket.Hold)
+			return "", errorf(CodeTicketHeld, "ticket %s is already on hold (%s)", ref, ticket.Hold)
 		}
 		ticket.Hold = reason
-		return nil
+		return reason, nil
 	})
 }
 
 // ClearHold clears the hold flag; the ticket continues from the same state.
 func (m *Tickets) ClearHold(ctx context.Context, actor, ref string) (Ticket, error) {
-	return m.changeHold(ctx, actor, ref, EventTicketHoldCleared, func(ticket *Ticket) error {
+	return m.changeHold(ctx, actor, ref, EventTicketHoldCleared, func(ticket *Ticket) (string, error) {
 		if ticket.Hold == "" {
-			return errorf(CodeInvalidState, "ticket %s is not on hold", ref)
+			return "", errorf(CodeInvalidState, "ticket %s is not on hold", ref)
 		}
+		reason := ticket.Hold
 		ticket.Hold = ""
-		return nil
+		return reason, nil
 	})
 }
 
-func (m *Tickets) changeHold(ctx context.Context, actor, ref, typ string, mutate func(*Ticket) error) (Ticket, error) {
+// changeHold re-reads the ticket, lets mutate set or clear the hold and
+// return the hold reason the event records, and commits one event of type typ.
+func (m *Tickets) changeHold(ctx context.Context, actor, ref, typ string, mutate func(*Ticket) (string, error)) (Ticket, error) {
 	var ticket Ticket
 	err := retry(func() error {
 		var err error
 		if ticket, err = m.Get(ctx, ref); err != nil {
 			return err
 		}
-		reason := ticket.Hold
-		if err := mutate(&ticket); err != nil {
+		reason, err := mutate(&ticket)
+		if err != nil {
 			return err
-		}
-		if ticket.Hold != "" {
-			reason = ticket.Hold
 		}
 		ticket.Updated = m.opts.Clock()
 		return m.commit(ctx, actor, typ, ticket, map[string]any{"reason": reason, "state": ticket.State, "actor": actor})
@@ -254,7 +264,6 @@ func (m *Tickets) changeHold(ctx context.Context, actor, ref, typ string, mutate
 	if err != nil {
 		return Ticket{}, err
 	}
-	ticket.version++
 	return ticket, nil
 }
 
@@ -272,7 +281,7 @@ func (m *Tickets) commit(ctx context.Context, actor, typ string, ticket Ticket, 
 		return err
 	}
 	_, err = m.store.Append(ctx, store.Event{
-		Type: typ, At: m.opts.Clock(), Actor: actor, Project: ticket.Project, Ticket: ticket.Ref, Payload: raw,
+		Type: typ, At: ticket.Updated, Actor: actor, Project: ticket.Project, Ticket: ticket.Ref, Payload: raw,
 	}, store.Change{Kind: ticketKind, ID: ticket.Ref, Data: data, IfVersion: ticket.version})
 	return err
 }
@@ -287,33 +296,49 @@ func decodeTicket(rec store.Record) (Ticket, error) {
 }
 
 // ReplayTicket rebuilds a ticket from its events in log order, using nothing
-// but the log. It fails if the events do not form a valid history.
+// but the log. It fails unless the events are the valid history of one ticket:
+// they start with create, every transition is a row of the table from the
+// state the ticket was in, and holds are set and cleared only on a ticket.
 func ReplayTicket(events []store.Event) (Ticket, error) {
 	var ticket Ticket
+	invalid := func(e store.Event, format string, args ...any) error {
+		return fmt.Errorf("core: replay %s at %s: %s", e.Ticket, e.Cursor, fmt.Sprintf(format, args...))
+	}
 	for _, e := range events {
+		switch e.Type {
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared:
+		default:
+			continue
+		}
 		var p struct {
 			From    TicketState `json:"from"`
 			To      TicketState `json:"to"`
 			Trigger string      `json:"trigger"`
 			Reason  string      `json:"reason"`
 		}
-		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared:
-		default:
-			continue
-		}
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
-			return Ticket{}, fmt.Errorf("core: replay %s at %s: %w", e.Ticket, e.Cursor, err)
+			return Ticket{}, invalid(e, "%v", err)
 		}
 		if ticket.Ref == "" {
-			ticket.Ref, ticket.Project = e.Ticket, e.Project
+			if e.Type != EventTicketTransitioned || p.Trigger != "create" {
+				return Ticket{}, invalid(e, "the history does not start with create")
+			}
+			ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, Updated: e.At}
+			continue
+		}
+		if e.Ticket != ticket.Ref {
+			return Ticket{}, invalid(e, "event of another ticket than %s", ticket.Ref)
 		}
 		switch e.Type {
 		case EventTicketTransitioned:
-			if p.From != ticket.State {
-				return Ticket{}, fmt.Errorf("core: replay %s at %s: transition from %q, but the ticket is %q", e.Ticket, e.Cursor, p.From, ticket.State)
+			row, ok := findTransition(ticket.State, p.Trigger)
+			if !ok || p.From != ticket.State || p.To != row.to {
+				return Ticket{}, invalid(e, "%s → %s by %s is not a transition from %s", p.From, p.To, p.Trigger, ticket.State)
 			}
-			ticket.State = p.To
+			ticket.State = row.to
+			if row.to == TicketCanceled {
+				ticket.Hold = ""
+			}
 		case EventTicketHoldSet:
 			ticket.Hold = p.Reason
 		case EventTicketHoldCleared:

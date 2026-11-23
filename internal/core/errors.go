@@ -22,9 +22,13 @@ const (
 type Error struct {
 	Code    string
 	Message string
+	Err     error // the cause, if any, such as a guard's refusal
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
+
+// Unwrap returns the cause.
+func (e *Error) Unwrap() error { return e.Err }
 
 func errorf(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}

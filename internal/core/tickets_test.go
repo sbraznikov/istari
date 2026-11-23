@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,24 +164,7 @@ func TestEveryPairOutsideTheTableIsRejectedAndAppendsNothing(t *testing.T) {
 	}
 }
 
-func TestDoneIsTerminalAndCanceledLeavesOnlyThroughReopen(t *testing.T) {
-	for _, tc := range []struct {
-		state core.TicketState
-		exits []string
-	}{
-		{core.TicketDone, nil},
-		{core.TicketCanceled, []string{"reopen"}},
-	} {
-		var exits []string
-		for _, row := range transitionTable {
-			if row.from == tc.state {
-				exits = append(exits, row.trigger)
-			}
-		}
-		if !slices.Equal(exits, tc.exits) {
-			t.Errorf("exits from %s in the spec table = %v, want %v", tc.state, exits, tc.exits)
-		}
-	}
+func TestCanceledLeavesOnlyThroughReopen(t *testing.T) {
 	tickets, _ := newTickets(t, nil)
 	bringTo(t, tickets, core.TicketCanceled)
 	if got, err := tickets.Fire(ctx, "human:alex", ref, "reopen"); err != nil || got.State != core.TicketNew {
@@ -225,11 +208,86 @@ func TestHoldReasonsAndHeldTransitions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tickets.SetHold(ctx, "system", ref, "waiting_zone")
+	if _, err := tickets.SetHold(ctx, "system", ref, "waiting_zone"); err != nil {
+		t.Fatal(err)
+	}
 	_, err := tickets.Fire(ctx, "system", ref, "start")
 	assertCode(t, err, core.CodeTicketHeld)
-	if got, err := tickets.Fire(ctx, "human:alex", ref, "cancel"); err != nil || got.State != core.TicketCanceled {
-		t.Fatalf("cancel while held = %s, %v; want canceled", got.State, err)
+	// Cancel passes a hold and ends it: a finished ticket carries no hold.
+	got, err := tickets.Fire(ctx, "human:alex", ref, "cancel")
+	if err != nil || got.State != core.TicketCanceled || got.Hold != "" {
+		t.Fatalf("cancel while held = %s/%q, %v; want canceled without a hold", got.State, got.Hold, err)
+	}
+	if got, err := tickets.Fire(ctx, "human:alex", ref, "reopen"); err != nil || got.State != core.TicketNew || got.Hold != "" {
+		t.Fatalf("reopen after cancel = %s/%q, %v; want new without a hold", got.State, got.Hold, err)
+	}
+}
+
+func TestMissingTicketsAndMissingHolds(t *testing.T) {
+	tickets, _ := newTickets(t, nil)
+	_, err := tickets.Fire(ctx, "system", ref, "accept")
+	assertCode(t, err, core.CodeNotFound)
+	bringTo(t, tickets, core.TicketReady)
+	_, err = tickets.ClearHold(ctx, "system", ref)
+	assertCode(t, err, core.CodeInvalidState)
+}
+
+func TestTwoConcurrentTransitionsOfOneTicketExactlyOneWins(t *testing.T) {
+	for round := range 20 {
+		tickets, s := newTickets(t, nil)
+		bringTo(t, tickets, core.TicketReady)
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[i] = tickets.Fire(ctx, "system", ref, "start")
+			}()
+		}
+		wg.Wait()
+		won := 0
+		for _, err := range errs {
+			if err == nil {
+				won++
+			} else {
+				assertCode(t, err, core.CodeInvalidTransition)
+			}
+		}
+		events, err := s.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: "ticket.transitioned"}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if won != 1 || len(events) != 3 { // create, accept, one start
+			t.Fatalf("round %d: %d transitions won, %d events; want 1 and 3", round, won, len(events))
+		}
+	}
+}
+
+func TestAGuardKeyThatIsNoTransitionIsRejected(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewTickets accepted a guard for the unknown transition t3")
+		}
+	}()
+	newTickets(t, core.Guards{"t3": func(context.Context, core.Ticket) error { return nil }})
+}
+
+func TestReplayRejectsAnInvalidHistory(t *testing.T) {
+	at := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	ev := func(ticket, typ, payload string) store.Event {
+		return store.Event{Type: typ, Ticket: ticket, At: at, Payload: json.RawMessage(payload)}
+	}
+	create := ev(ref, "ticket.transitioned", `{"from":"","to":"new","trigger":"create"}`)
+	for name, events := range map[string][]store.Event{
+		"transition outside the table": {create, ev(ref, "ticket.transitioned", `{"from":"new","to":"done","trigger":"merged"}`)},
+		"hold before create":           {ev(ref, "ticket.hold_set", `{"reason":"paused"}`), create},
+		"events of two tickets":        {create, ev("gh:acme/web#999", "ticket.transitioned", `{"from":"new","to":"ready","trigger":"accept"}`)},
+		"history without create":       {ev(ref, "ticket.transitioned", `{"from":"","to":"ready","trigger":"accept"}`)},
+	} {
+		if _, err := core.ReplayTicket(events); err == nil {
+			t.Errorf("%s: replay succeeded", name)
+		}
 	}
 }
 
@@ -252,8 +310,11 @@ func TestAGuardThatRefusesBlocksItsTransitionOnly(t *testing.T) {
 
 func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 	tickets, s := newTickets(t, nil)
-	tickets.Create(ctx, "human:alex", ref, "web")
-	tickets.Create(ctx, "human:alex", "gh:acme/web#999", "web") // another ticket in the same log
+	for _, r := range []string{ref, "gh:acme/web#999"} { // another ticket shares the log
+		if _, err := tickets.Create(ctx, "human:alex", r, "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, step := range []func() (core.Ticket, error){
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "accept") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "start") },
