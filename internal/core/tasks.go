@@ -86,6 +86,7 @@ type TaskOptions struct {
 	Clock       func() time.Time
 	Lease       time.Duration
 	MaxAttempts int
+	Limits      Limits
 }
 
 // Tasks runs the task state machine on top of a store. All writes go through
@@ -252,11 +253,15 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 	default:
 		return Lease{}, errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
 	}
+	admitted, err := t.admit(ctx, task)
+	if err != nil {
+		return Lease{}, err
+	}
 	task.State = TaskClaimed
 	task.Owner = actor
 	task.token = randomHex(16)
 	task.LeaseUntil = t.opts.Clock().Add(t.opts.Lease)
-	if err := t.commit(ctx, actor, "task.claimed", task, map[string]any{"lease_until": task.LeaseUntil}); err != nil {
+	if err := t.commit(ctx, actor, "task.claimed", task, map[string]any{"lease_until": task.LeaseUntil}, admitted); err != nil {
 		return Lease{}, err
 	}
 	return Lease{Task: task.ID, Owner: actor, Token: task.token, Until: task.LeaseUntil}, nil

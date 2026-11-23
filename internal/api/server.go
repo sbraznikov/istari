@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
 )
 
@@ -31,6 +32,8 @@ type Server struct {
 	store   store.Store
 	tasks   *core.Tasks
 	tickets *core.Tickets
+	sched   *scheduler.Scheduler
+	ops     map[string]operation
 	changed *notifier
 	keys    keyLocks
 	closing chan struct{}
@@ -38,28 +41,78 @@ type Server struct {
 	mux     *http.ServeMux
 }
 
+// ServerOptions configures a Server.
+type ServerOptions struct {
+	Clock  func() time.Time
+	Limits core.Limits
+	Tick   time.Duration // scheduler tick; 0 means scheduler.DefaultTick
+}
+
 // NewServer returns the API on top of a store. Every append made through the
 // server wakes the event streams.
-func NewServer(s store.Store, clock func() time.Time) *Server {
+func NewServer(s store.Store, opts ServerOptions) *Server {
+	if opts.Clock == nil {
+		opts.Clock = time.Now
+	}
 	n := newNotifier()
 	ns := notifyingStore{Store: s, n: n}
 	srv := &Server{
 		store:   ns,
-		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: clock}),
-		tickets: core.NewTickets(ns, core.TicketOptions{Clock: clock}),
+		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits}),
+		tickets: core.NewTickets(ns, core.TicketOptions{Clock: opts.Clock}),
 		changed: n,
 		closing: make(chan struct{}),
 		mux:     http.NewServeMux(),
 	}
+	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Allowed: srv.IsWrite})
+	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	srv.mux.HandleFunc("GET /v1/events", srv.events)
 	srv.mux.HandleFunc("GET /v1/events/stream", srv.stream)
-	for name, op := range srv.operations() {
+	for name, op := range srv.ops {
 		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(name, op))
 	}
 	return srv
+}
+
+// Store returns the store as the server writes it: appends wake the streams.
+func (s *Server) Store() store.Store { return s.store }
+
+// Tasks returns the task machine.
+func (s *Server) Tasks() *core.Tasks { return s.tasks }
+
+// Tickets returns the ticket machine.
+func (s *Server) Tickets() *core.Tickets { return s.tickets }
+
+// Scheduler returns the scheduler; the daemon runs it.
+func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }
+
+// IsWrite tells whether op is a write operation.
+func (s *Server) IsWrite(op string) bool {
+	o, ok := s.ops[op]
+	return ok && o.again != nil
+}
+
+// Do performs a write operation as an HTTP request with an idempotency key
+// would. Refusals and malformed requests come back as *core.Error.
+func (s *Server) Do(ctx context.Context, op, key string, request json.RawMessage) error {
+	o, ok := s.ops[op]
+	if !ok || o.again == nil {
+		return &core.Error{Code: "bad_request", Message: fmt.Sprintf("%q is not a write operation", op)}
+	}
+	var err error
+	if key != "" {
+		_, err = s.idempotent(ctx, key, op, o, request)
+	} else {
+		_, err = o.run(ctx, request)
+	}
+	var bad errBadRequest
+	if errors.As(err, &bad) {
+		return &core.Error{Code: "bad_request", Message: bad.Error(), Err: err}
+	}
+	return err
 }
 
 // ServeHTTP implements http.Handler.

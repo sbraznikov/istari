@@ -39,10 +39,10 @@ func newDataDir(t *testing.T) string {
 	return dir
 }
 
-func writeDaemonConfig(t *testing.T, dataDir string) string {
+func writeDaemonConfig(t *testing.T, dataDir string, daemonKeys ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	body := fmt.Sprintf("[daemon]\ndata_dir = %q\n", dataDir)
+	body := fmt.Sprintf("[daemon]\ndata_dir = %q\n%s\n", dataDir, strings.Join(daemonKeys, "\n"))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -58,9 +58,10 @@ func socketClient(socket string) *http.Client {
 }
 
 // startDaemon starts `istari daemon` on dataDir and waits until it answers.
-func startDaemon(t *testing.T, dataDir string) *daemon {
+// daemonKeys are extra lines of the [daemon] table of its config.
+func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 	t.Helper()
-	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: writeDaemonConfig(t, dataDir), stderr: &bytes.Buffer{}}
+	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: writeDaemonConfig(t, dataDir, daemonKeys...), stderr: &bytes.Buffer{}}
 	d.cmd = exec.Command(binary, "daemon", "--config", d.config)
 	d.cmd.Stderr = d.stderr
 	if err := d.cmd.Start(); err != nil {

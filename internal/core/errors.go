@@ -16,6 +16,9 @@ const (
 	CodeInvalidTransition = "invalid_transition"
 	CodeGuardFailed       = "guard_failed"
 	CodeTicketHeld        = "ticket_held"
+
+	CodePaused       = "paused"
+	CodeLimitReached = "limit_reached"
 )
 
 // Error is a refusal by the core: the request was understood and is not allowed.

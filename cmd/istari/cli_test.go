@@ -287,7 +287,7 @@ func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 }
 
 func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") // the shells never complete
 	const n = 40
 	for i := range n {
 		d.createTask(t, fmt.Sprintf("t_%02d", i), "implementer")
@@ -333,5 +333,55 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 	}
 	if len(owners) < 2 {
 		t.Logf("one shell claimed everything (%v); the test still holds but proves less", owners)
+	}
+}
+
+func TestPauseAndResumeTheHandOut(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	d.createTask(t, "t_1", "implementer")
+	d.createTask(t, "t_2", "implementer")
+	var running lease
+	d.mustCLI(t, &running, "task", "claim", "t_1", "--actor", "agent:a")
+	d.mustCLI(t, nil, "pause", "--all")
+	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:b"); code != 1 || !strings.Contains(stderr, "paused") {
+		t.Fatalf("claim while paused: exit %d %q", code, stderr)
+	}
+	d.mustCLI(t, nil, "task", "renew", "t_1", "--actor", running.Owner, "--token", running.Token) // running work goes on
+	d.mustCLI(t, nil, "resume", "--all")
+	d.mustCLI(t, nil, "task", "claim", "--ready", "--actor", "agent:b")
+	if _, _, code := d.cli(t, "pause"); code != 2 {
+		t.Fatalf("pause without a scope: exit %d, want 2", code)
+	}
+}
+
+func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1")
+	d.createTask(t, "t_1", "implementer")
+	d.createTask(t, "t_2", "implementer")
+	d.mustCLI(t, nil, "task", "claim", "t_1", "--actor", "agent:a")
+	if _, stderr, code := d.cli(t, "task", "claim", "t_2", "--actor", "agent:b"); code != 1 || !strings.Contains(stderr, "limit_reached") {
+		t.Fatalf("second claim with max_concurrent_runs = 1: exit %d %q", code, stderr)
+	}
+}
+
+func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	ref := "gh:acme/web#1"
+	createTicket(t, d, ref)
+	var now []struct{ Cursor string }
+	d.mustCLI(t, &now, "tail")
+	var timer struct{ ID, State string }
+	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"accept"}`)
+	if timer.ID == "" || timer.State != "pending" {
+		t.Fatalf("schedule = %+v", timer)
+	}
+	d.mustCLI(t, nil, "wait", "type=timer.fired", "--after", now[len(now)-1].Cursor, "--timeout", "10s")
+	var tk struct{ State string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.State != "ready" {
+		t.Fatalf("after the scheduled accept the ticket is %s", tk.State)
+	}
+	if _, stderr, code := d.cli(t, "schedule", "--in", "1s", "task.list"); code != 1 || !strings.Contains(stderr, "not a write operation") {
+		t.Fatalf("scheduling a read: exit %d %q", code, stderr)
 	}
 }

@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 )
@@ -49,6 +51,16 @@ type (
 		Ref    string `json:"ref"`
 		Reason string `json:"reason"` // hold: the reason; unhold: only a hold of this reason ("" = any)
 	}
+	DispatchRequest struct {
+		Actor   string `json:"actor"`
+		Project string `json:"project,omitempty"` // empty: all projects
+	}
+	TimerScheduleRequest struct {
+		Actor   string          `json:"actor"`
+		At      time.Time       `json:"at"`
+		Op      string          `json:"op"`
+		Request json.RawMessage `json:"request"`
+	}
 	Empty struct{}
 )
 
@@ -68,6 +80,13 @@ func (r *LeaseRequest) validate() error        { return needActor(r.Lease.Owner)
 func (r *TicketCreateRequest) validate() error { return needActor(r.Actor) }
 func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
+func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
+func (r *TimerScheduleRequest) validate() error {
+	if r.At.IsZero() {
+		return errors.New("the request names no time")
+	}
+	return needActor(r.Actor)
+}
 
 // OK is the response of operations that return nothing else.
 type OK struct {
@@ -122,6 +141,15 @@ func (s *Server) operations() map[string]operation {
 		"ticket.hold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.SetHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),
+		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
+		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {
+			return ok(t.Resume(ctx, r.Actor, r.Project))
+		}),
+		"timer.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.sched.List(ctx) }),
+		"timer.schedule": write(okAgain, func(ctx context.Context, r TimerScheduleRequest) (any, error) {
+			return s.sched.Schedule(ctx, r.Actor, r.At, r.Op, r.Request)
+		}),
+
 		"ticket.unhold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.ClearHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),
