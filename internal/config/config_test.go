@@ -73,8 +73,8 @@ func TestUnknownKeyIsNamed(t *testing.T) {
 
 func TestWrongTypeIsNamed(t *testing.T) {
 	for _, tc := range []struct{ body, key string }{
-		{"[daemon]\nmax_concurrent_runs = \"four\"\n", "max_concurrent_runs"},
-		{"[defaults]\nplan_gate = \"no\"\n", "plan_gate"},
+		{"[daemon]\nmax_concurrent_runs = \"four\"\n", "daemon.max_concurrent_runs"},
+		{"[defaults]\nplan_gate = \"no\"\n", "defaults.plan_gate"},
 	} {
 		_, err := config.Load(writeConfig(t, tc.body))
 		assertErrorNames(t, err, tc.key)

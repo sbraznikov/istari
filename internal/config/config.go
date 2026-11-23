@@ -163,15 +163,15 @@ func (c *Config) validate() error {
 			fail(key, "%q is not one of %s", value, strings.Join(allowed, ", "))
 		}
 	}
-	atLeastOne := func(key string, value int) {
+	positive := func(key string, value int) {
 		if value < 1 {
-			fail(key, "must be at least 1, got %d", value)
+			fail(key, "must be positive, got %d", value)
 		}
 	}
 
-	atLeastOne("daemon.max_concurrent_runs", c.Daemon.MaxConcurrentRuns)
-	atLeastOne("defaults.max_review_rounds", c.Defaults.MaxReviewRounds)
-	atLeastOne("defaults.max_attempts", c.Defaults.MaxAttempts)
+	positive("daemon.max_concurrent_runs", c.Daemon.MaxConcurrentRuns)
+	positive("defaults.max_review_rounds", c.Defaults.MaxReviewRounds)
+	positive("defaults.max_attempts", c.Defaults.MaxAttempts)
 	oneOf("defaults.priority", c.Defaults.Priority, priorities)
 	oneOf("defaults.zones", c.Defaults.Zones, zoneModes)
 	oneOf("defaults.merge.mode", c.Defaults.Merge.Mode, mergeModes)
