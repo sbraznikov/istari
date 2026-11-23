@@ -1,0 +1,365 @@
+package core_test
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/store"
+)
+
+var ctx = context.Background()
+
+// clock is a manual clock for tests.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+type fixture struct {
+	store *store.SQLite
+	clock *clock
+	tasks *core.Tasks
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := &clock{now: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}
+	return &fixture{store: s, clock: c, tasks: core.NewTasks(s, core.TaskOptions{Clock: c.Now})}
+}
+
+func (f *fixture) create(t *testing.T, id, role string, needs ...string) core.Task {
+	t.Helper()
+	task, err := f.tasks.Create(ctx, "system", core.NewTask{
+		ID: id, Ticket: "gh:acme/web#1", Project: "web", Role: role, Needs: needs,
+	})
+	if err != nil {
+		t.Fatalf("Create %s: %v", id, err)
+	}
+	return task
+}
+
+func (f *fixture) state(t *testing.T, id string) core.TaskState {
+	t.Helper()
+	task, err := f.tasks.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return task.State
+}
+
+func assertCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != code {
+		t.Fatalf("error = %v, want code %s", err, code)
+	}
+}
+
+func TestTwoConcurrentClaimsOfOneTaskExactlyOneWins(t *testing.T) {
+	for round := range 20 {
+		f := newFixture(t)
+		f.create(t, "t_1", "implementer")
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), "t_1")
+			}()
+		}
+		wg.Wait()
+		won, lost := 0, 0
+		for _, err := range errs {
+			var e *core.Error
+			switch {
+			case err == nil:
+				won++
+			case errors.As(err, &e) && e.Code == "task_claimed":
+				lost++
+			default:
+				t.Fatalf("round %d: unexpected error %v", round, err)
+			}
+		}
+		if won != 1 || lost != 1 {
+			t.Fatalf("round %d: %d claims won and %d got task_claimed, want 1 and 1", round, won, lost)
+		}
+	}
+}
+
+func (f *fixture) claim(t *testing.T, id string) core.Lease {
+	t.Helper()
+	lease, err := f.tasks.Claim(ctx, "agent:worker", id)
+	if err != nil {
+		t.Fatalf("Claim %s: %v", id, err)
+	}
+	return lease
+}
+
+func (f *fixture) complete(t *testing.T, id string) {
+	t.Helper()
+	if err := f.tasks.Complete(ctx, f.claim(t, id)); err != nil {
+		t.Fatalf("Complete %s: %v", id, err)
+	}
+}
+
+func TestATaskWithUnfinishedNeedsWaitsUntilAllAreCompleted(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "plan", "planner")
+	f.create(t, "verify", "verifier")
+	if got := f.create(t, "review", "reviewer", "plan", "verify").State; got != core.TaskWaiting {
+		t.Fatalf("review with unfinished needs is %s, want waiting", got)
+	}
+	f.complete(t, "plan")
+	if got := f.state(t, "review"); got != core.TaskWaiting {
+		t.Fatalf("review after one of two needs completed is %s, want waiting", got)
+	}
+	f.complete(t, "verify")
+	if got := f.state(t, "review"); got != core.TaskReady {
+		t.Fatalf("review after all needs completed is %s, want ready", got)
+	}
+	if got := f.create(t, "approve", "human", "plan").State; got != core.TaskReady {
+		t.Fatalf("a task whose needs are already completed is %s, want ready", got)
+	}
+}
+
+func TestAFailedOrCanceledPrerequisiteReadiesNothing(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "implement", "implementer")
+	f.create(t, "plan", "planner")
+	f.create(t, "after-implement", "reviewer", "implement")
+	f.create(t, "after-plan", "reviewer", "plan")
+
+	if err := f.tasks.Cancel(ctx, "human:alex", "implement"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	for range core.DefaultMaxAttempts {
+		if err := f.tasks.Fail(ctx, f.claim(t, "plan"), "tests red"); err != nil {
+			t.Fatalf("Fail: %v", err)
+		}
+	}
+	if got := f.state(t, "plan"); got != core.TaskFailed {
+		t.Fatalf("plan is %s, want failed", got)
+	}
+	for _, id := range []string{"after-implement", "after-plan"} {
+		if got := f.state(t, id); got != core.TaskWaiting {
+			t.Errorf("%s is %s, want waiting", id, got)
+		}
+	}
+}
+
+func TestInvalidNeedsAreRejected(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "plan", "planner")
+	for _, tc := range []struct {
+		name  string
+		id    string
+		needs []string
+	}{
+		{"cycle through itself", "loop", []string{"plan", "loop"}},
+		{"unknown task", "review", []string{"no-such-task"}},
+	} {
+		_, err := f.tasks.Create(ctx, "system", core.NewTask{
+			ID: tc.id, Ticket: "gh:acme/web#1", Role: "reviewer", Needs: tc.needs,
+		})
+		assertCode(t, err, core.CodeInvalidNeeds)
+		if _, err := f.tasks.Get(ctx, tc.id); err == nil {
+			t.Errorf("%s: the task was created anyway", tc.name)
+		}
+	}
+}
+
+func (f *fixture) events(t *testing.T, filter store.Filter) []store.Event {
+	t.Helper()
+	events, err := f.store.Read(ctx, "", filter, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+func TestAnExpiredLeaseReturnsTheTaskToReadyAndTheOldOwnerLosesIt(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	old := f.claim(t, "t_1")
+
+	f.clock.Advance(4 * time.Minute)
+	renewed, err := f.tasks.Renew(ctx, old)
+	if err != nil {
+		t.Fatalf("Renew before the deadline: %v", err)
+	}
+	if want := f.clock.Now().Add(core.DefaultLease); !renewed.Until.Equal(want) {
+		t.Fatalf("renewed lease until %s, want %s", renewed.Until, want)
+	}
+
+	f.clock.Advance(core.DefaultLease - time.Second)
+	if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) != 0 {
+		t.Fatalf("ExpireLeases before the deadline = %v, %v; want none", expired, err)
+	}
+	f.clock.Advance(time.Second)
+	expired, err := f.tasks.ExpireLeases(ctx)
+	if err != nil || len(expired) != 1 || expired[0] != "t_1" {
+		t.Fatalf("ExpireLeases at the deadline = %v, %v; want [t_1]", expired, err)
+	}
+	if got := f.state(t, "t_1"); got != core.TaskReady {
+		t.Fatalf("after expiry t_1 is %s, want ready", got)
+	}
+	if got := f.events(t, store.Filter{TypePrefix: "task.expired"}); len(got) != 1 || got[0].Task != "t_1" {
+		t.Fatalf("task.expired events = %v, want one for t_1", got)
+	}
+
+	_, err = f.tasks.Renew(ctx, renewed)
+	assertCode(t, err, core.CodeClaimLost)
+	assertCode(t, f.tasks.Complete(ctx, renewed), core.CodeClaimLost)
+
+	// The task can be claimed again, and the old lease still does not work.
+	f.claim(t, "t_1")
+	assertCode(t, f.tasks.Complete(ctx, renewed), core.CodeClaimLost)
+}
+
+func TestEveryOperationAppendsExactlyOneMatchingEvent(t *testing.T) {
+	f := newFixture(t)
+	var lease core.Lease
+	steps := []struct {
+		want string
+		op   func() error
+	}{
+		{"task.created", func() error {
+			_, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_1", Ticket: "gh:acme/web#1", Role: "implementer"})
+			return err
+		}},
+		{"task.created", func() error {
+			_, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_2", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"t_1"}})
+			return err
+		}},
+		{"task.claimed", func() (err error) {
+			lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+			return err
+		}},
+		{"task.renewed", func() (err error) { lease, err = f.tasks.Renew(ctx, lease); return err }},
+		{"task.released", func() error { return f.tasks.Release(ctx, lease) }},
+		{"task.claimed", func() (err error) { lease, err = f.tasks.Claim(ctx, "agent:implementer-1", "t_1"); return err }},
+		{"task.blocked", func() error { return f.tasks.Block(ctx, lease, "ci_red") }},
+		{"task.unblocked", func() error { return f.tasks.Unblock(ctx, "human:alex", "t_1") }},
+		{"task.claimed", func() (err error) {
+			lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+			return err
+		}},
+		{"task.failed", func() error { return f.tasks.Fail(ctx, lease, "tests red") }},
+		{"task.claimed", func() (err error) {
+			lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+			return err
+		}},
+		{"task.expired", func() error { f.clock.Advance(core.DefaultLease); _, err := f.tasks.ExpireLeases(ctx); return err }},
+		{"task.claimed", func() (err error) {
+			lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+			return err
+		}},
+		{"task.completed", func() error { return f.tasks.Complete(ctx, lease) }},
+		{"task.canceled", func() error { return f.tasks.Cancel(ctx, "human:alex", "t_2") }},
+	}
+	seen := 0
+	for i, step := range steps {
+		if err := step.op(); err != nil {
+			t.Fatalf("step %d (%s): %v", i, step.want, err)
+		}
+		events := f.events(t, store.Filter{})
+		if len(events) != seen+1 {
+			t.Fatalf("step %d (%s) appended %d events, want 1", i, step.want, len(events)-seen)
+		}
+		if got := events[seen].Type; got != step.want {
+			t.Fatalf("step %d appended %s, want %s", i, got, step.want)
+		}
+		seen++
+	}
+	if got := f.state(t, "t_1"); got != core.TaskCompleted {
+		t.Errorf("t_1 ends %s, want completed", got)
+	}
+}
+
+func TestBlockNeedsAKnownKindAndUnblockReturnsToReady(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	lease := f.claim(t, "t_1")
+	if err := f.tasks.Block(ctx, lease, "bored"); err == nil {
+		t.Fatal("Block accepted an unknown kind")
+	}
+	for _, kind := range []string{"needs_input", "awaiting_approval", "budget_exceeded", "ci_red"} {
+		if err := f.tasks.Block(ctx, lease, kind); err != nil {
+			t.Fatalf("Block %s: %v", kind, err)
+		}
+		if task, _ := f.tasks.Get(ctx, "t_1"); task.State != core.TaskBlocked || task.BlockKind != kind {
+			t.Fatalf("after Block %s: %s/%s", kind, task.State, task.BlockKind)
+		}
+		if err := f.tasks.Unblock(ctx, "human:alex", "t_1"); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.state(t, "t_1"); got != core.TaskReady {
+			t.Fatalf("after Unblock: %s, want ready", got)
+		}
+		lease = f.claim(t, "t_1")
+	}
+	assertCode(t, f.tasks.Unblock(ctx, "human:alex", "t_1"), core.CodeInvalidState)
+}
+
+func TestClaimReadyTakesTheOldestReadyTaskOfTheRole(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_b", "implementer")
+	f.clock.Advance(time.Second)
+	f.create(t, "t_a", "implementer")
+	f.create(t, "t_r", "reviewer")
+	lease, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+	if err != nil || lease.Task != "t_b" {
+		t.Fatalf("first ClaimReady = %s, %v; want t_b", lease.Task, err)
+	}
+	if lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err != nil || lease.Task != "t_a" {
+		t.Fatalf("second ClaimReady = %s, %v; want t_a", lease.Task, err)
+	}
+	_, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+	assertCode(t, err, core.CodeNoReadyTask)
+}
+
+func TestExhaustingAttemptsLeavesTheTaskFailed(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	for attempt := 1; attempt <= core.DefaultMaxAttempts; attempt++ {
+		if err := f.tasks.Fail(ctx, f.claim(t, "t_1"), "tests red"); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+	}
+	task, _ := f.tasks.Get(ctx, "t_1")
+	if task.State != core.TaskFailed || task.Attempts != 3 {
+		t.Fatalf("after 3 failures: %s with %d attempts, want failed with 3", task.State, task.Attempts)
+	}
+	if got := f.events(t, store.Filter{TypePrefix: "task.failed"}); len(got) != 2 {
+		t.Errorf("task.failed events = %d, want 2", len(got))
+	}
+	exhausted := f.events(t, store.Filter{TypePrefix: "task.attempts_exhausted"})
+	if len(exhausted) != 1 || exhausted[0].Ticket != "gh:acme/web#1" {
+		t.Fatalf("task.attempts_exhausted events = %v, want one carrying the ticket", exhausted)
+	}
+	_, err := f.tasks.Claim(ctx, "agent:worker", "t_1")
+	assertCode(t, err, core.CodeInvalidState)
+}
