@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -503,6 +504,72 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 	}
 	if v := f.stage(t, ref, "verify"); v.State != core.TaskCompleted {
 		t.Fatalf("verify is %s, want completed by green CI", v.State)
+	}
+}
+
+func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
+	ci := "pending"
+	checks := func(context.Context, string) (string, bool) { return ci, true }
+	var f *engineFixture
+	var readied []string
+	var stateWhenReadied core.TicketState
+	ready := func(_ context.Context, r string) error {
+		readied = append(readied, r)
+		stateWhenReadied = f.state(t, r)
+		return nil
+	}
+	f = newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Ready: ready})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if len(readied) != 0 {
+		t.Fatalf("with CI pending Ready was called for %v", readied)
+	}
+	ci = "success"
+	f.reconcile(t)
+	if len(readied) != 1 || readied[0] != ref {
+		t.Fatalf("Ready was called for %v, want once for %s", readied, ref)
+	}
+	if stateWhenReadied != core.TicketInProgress {
+		t.Fatalf("Ready saw the ticket %s, want in_progress: the draft ends before T6", stateWhenReadied)
+	}
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("after Ready the ticket is %s, want in_review (T6)", st)
+	}
+}
+
+func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
+	checks := func(context.Context, string) (string, bool) { return "success", true }
+	readyErr := errors.New("github: 502")
+	ready := func(context.Context, string) error { return readyErr }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Ready: ready})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	all, err := f.tickets.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Reconcile(ctx, all); !errors.Is(err, readyErr) {
+		t.Fatalf("Reconcile = %v, want the failure to mark ready", err)
+	}
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with the pull request still a draft the ticket is %s, want in_progress", st)
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready", v.State)
+	}
+	readyErr = nil
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("once marked ready the ticket is %s, want in_review (T6)", st)
 	}
 }
 
