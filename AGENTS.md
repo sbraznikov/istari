@@ -9,6 +9,8 @@ istari runs the development lifecycle for coding agents: it takes a ticket to a 
 - **Behaviour:** `docs/design.md`. If code and spec disagree, the spec wins until a ticket changes it. Read the sections listed at the bottom of your ticket plus section 7.7, not the whole file.
 - **Scope:** your GitHub issue. Its acceptance criteria define done.
 - **TUI look:** `docs/tui/*.png`. The mockups are normative.
+- **Code style:** `CODING_STANDARDS.md`, before writing or reviewing Go code. Cite a rule by its number.
+- **Words:** `GLOSSARY.md`, when naming a type, test or message.
 
 ## Hard rules
 
