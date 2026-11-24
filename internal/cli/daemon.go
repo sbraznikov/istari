@@ -56,6 +56,9 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				}
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
+			if daemonOpts.Tracker != nil {
+				daemonOpts.Runner.Tickets = daemonOpts.Tracker // the ticket text of the brief
+			}
 			daemonOpts.Defaults = cfg.Defaults
 			return api.RunDaemon(ctx, daemonOpts)
 		},

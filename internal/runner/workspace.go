@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -471,6 +473,27 @@ func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove fu
 		os.RemoveAll(dir)
 		gitOut(bg, clone, "worktree", "prune")
 	}, nil
+}
+
+// MainFile reads a file of the repository's main branch, as last fetched;
+// a missing file is an error wrapping fs.ErrNotExist.
+func (w *Workspaces) MainFile(ctx context.Context, repo, path string) ([]byte, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	clone := w.clonePath(repo)
+	main, err := mainBranch(ctx, clone)
+	if err != nil {
+		return nil, err
+	}
+	rev := "origin/" + main + ":" + path
+	if !hasRef(ctx, clone, rev) {
+		return nil, fmt.Errorf("%s: %w", rev, fs.ErrNotExist)
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", clone, "show", rev).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git show %s: %w", rev, err)
+	}
+	return out, nil
 }
 
 // Get returns the ticket's workspace record; a ticket without one gets a zero

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -13,6 +14,9 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/skill"
 )
 
 // Defaults of the runner.
@@ -45,6 +49,14 @@ type RunnerOptions struct {
 	Socket        string        // the daemon's socket, for the agent's istari commands
 	TranscriptMax int64         // 0: DefaultTranscriptMax
 	Clock         func() time.Time
+	// Tickets gives the ticket's text for the brief; nil: the title only.
+	Tickets interface {
+		Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, error)
+	}
+	// Skill is the agent skill installed into every workspace as
+	// .istari/skill.md when the repository has none (spec section 7.4);
+	// "": istari's own.
+	Skill string
 }
 
 // Runner starts agents (spec section 7.2). Only the runner does: a free slot
@@ -78,6 +90,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.TranscriptMax <= 0 {
 		opts.TranscriptMax = DefaultTranscriptMax
+	}
+	if opts.Skill == "" {
+		opts.Skill = skill.Skill()
 	}
 	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
 }
@@ -197,7 +212,22 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: brief(task, tk), Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
+	// The instruction comes from the main branch: the ticket's own branch
+	// must not rewrite the instructions of the roles that check it.
+	var mainFile skill.ReadFile
+	if ref, err := tickets.ParseRef(task.Ticket); err == nil {
+		mainFile = func(path string) ([]byte, error) { return r.ws.MainFile(bg, ref.Repo, path) }
+	}
+	instructions, err := skill.Instruction(slot.Role, mainFile)
+	if err != nil {
+		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, err.Error())
+		fail(err.Error())
+		return
+	}
+	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
+		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
+	}
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
@@ -356,9 +386,54 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 	}
 }
 
-// brief is the first message to the harness. Its content is assembled from the
-// ticket by a later component (spec section 7.2); until then it names the work.
-func brief(task core.Task, tk core.Ticket) string {
-	return fmt.Sprintf("You are the %s of ticket %s (%s), task %s. Run `istari whoami` and `istari ticket show %s`; when your work is done, run `istari complete`.",
-		task.Role, tk.Ref, tk.Title, task.ID, tk.Ref)
+// brief assembles the run's brief from the ticket and its journal.
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket) string {
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title}
+	ref, err := tickets.ParseRef(tk.Ref)
+	if err != nil {
+		return Brief(in)
+	}
+	if r.opts.Tickets != nil {
+		if t, err := r.opts.Tickets.Get(ctx, ref); err == nil {
+			in.Title, in.Body = t.Title, t.Body
+		} else {
+			log.Printf("istari: brief of %s: the ticket text: %v", tk.Ref, err)
+		}
+	}
+	if in.Journal, err = journal.New(nil, r.store, nil).Stored(ctx, ref); err != nil {
+		log.Printf("istari: brief of %s: the journal: %v", tk.Ref, err)
+	}
+	return Brief(in)
+}
+
+// installSkill writes the agent skill into the workspace when the
+// repository has none, and keeps git from seeing it as a change.
+func installSkill(ctx context.Context, dir, skill string) error {
+	path := filepath.Join(dir, ".istari", "skill.md")
+	if skill == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil {
+		return err
+	}
+	exclude, err := gitOut(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(exclude, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString("\n/.istari/skill.md\n")
+	return err
 }

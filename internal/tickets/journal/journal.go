@@ -205,7 +205,7 @@ func Render(e Entry) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := headline(e) + "\n\n<!-- istari:journal " + string(data) + " -->"
+	out := Text(e) + "\n\n<!-- istari:journal " + string(data) + " -->"
 	if len(out) > maxComment {
 		return "", fmt.Errorf("journal: the %s entry is %d characters as a comment, more than %d", e.Kind, len(out), maxComment)
 	}
@@ -224,8 +224,8 @@ func Parse(body string) (e Entry, ok bool, err error) {
 	return e, true, nil
 }
 
-// headline is what a person reads of an entry.
-func headline(e Entry) string {
+// Text is what a person reads of an entry: its comment without the marker.
+func Text(e Entry) string {
 	by := " — " + e.Actor
 	switch e.Kind {
 	case Question:
@@ -251,7 +251,18 @@ func headline(e Entry) string {
 		}
 		return b.String()
 	case Plan:
-		return "**Plan**" + by + "\n\n" + e.Plan.Summary + bullets(e.Plan.Slices)
+		p := e.Plan
+		s := "**Plan**" + by + "\n\n" + p.Summary
+		if len(p.Slices) > 0 {
+			s += "\n\nSlices:" + bullets(p.Slices)
+		}
+		if len(p.Seams) > 0 {
+			s += "\n\nSeams:" + bullets(p.Seams)
+		}
+		if len(p.Zone) > 0 {
+			s += "\n\nChange zone:" + bullets(p.Zone)
+		}
+		return s
 	case Checkpoint:
 		c := e.Checkpoint
 		s := "**Checkpoint**" + by + "\n\nDone: " + c.Done

@@ -78,6 +78,10 @@ func TestInitCreatesTheIstariFilesAndRegistersTheProjectOnce(t *testing.T) {
 			t.Errorf(".istari/%s was not created: %v", f, err)
 		}
 	}
+	// The role files are the built-in instructions, as a starting point.
+	if impl, _ := os.ReadFile(filepath.Join(repo, ".istari", "roles", "implementer.md")); !strings.Contains(string(impl), "Refactoring is not part of the cycle") {
+		t.Errorf("the scaffolded implementer instruction is not the built-in one:\n%s", impl)
+	}
 	cfg, _ := os.ReadFile(config)
 	if !strings.Contains(string(cfg), "# my installation") || !strings.Contains(string(cfg), `repo = "acme/web"`) || !strings.Contains(string(cfg), `name = "web"`) {
 		t.Fatalf("config after init:\n%s", cfg)

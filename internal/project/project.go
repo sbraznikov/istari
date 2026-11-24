@@ -9,9 +9,12 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/config"
+	"github.com/sbraznikov/istari/internal/pipeline"
+	"github.com/sbraznikov/istari/skill"
 )
 
 // ErrNotGit means a directory is not inside a git repository.
@@ -102,7 +105,38 @@ func Scaffold(root string) ([]string, error) {
 		created = append(created, rel)
 		return nil
 	})
-	return created, err
+	if err != nil {
+		return created, err
+	}
+	// The agent skill and the role instructions: istari's built-in ones, to
+	// adapt to the project.
+	own := map[string]string{".istari/skill.md": skill.Skill()}
+	for _, role := range pipeline.AgentRoles {
+		text, err := skill.Instruction(role, nil)
+		if err != nil {
+			return created, err
+		}
+		own[path.Join(".istari", "roles", role+".md")] = text
+	}
+	names := make([]string, 0, len(own))
+	for rel := range own {
+		names = append(names, rel)
+	}
+	slices.Sort(names)
+	for _, rel := range names {
+		target := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Stat(target); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return created, err
+		}
+		if err := os.WriteFile(target, []byte(own[rel]), 0o644); err != nil {
+			return created, err
+		}
+		created = append(created, rel)
+	}
+	return created, nil
 }
 
 // checksFor proposes the check commands of spec section 7.7 for the
