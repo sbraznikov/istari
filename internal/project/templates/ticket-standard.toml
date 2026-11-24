@@ -1,0 +1,6 @@
+# The schema of a ticket that code checks (istari spec section 4.5).
+
+sections = ["Context", "What needs to be done", "Acceptance criteria", "Out of scope"]
+types = ["feature", "bug", "chore", "epic"]
+sizes = ["XS", "S", "M", "L", "XL"]
+priorities = ["P0", "P1", "P2", "P3"]

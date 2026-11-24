@@ -98,7 +98,20 @@ type ProjectSlack struct {
 type ProjectRepo struct {
 	Repo     string `toml:"repo"`
 	Primary  bool   `toml:"primary"`
-	DoneWhen string `toml:"done_when"`
+	DoneWhen string `toml:"done_when"` // merged (default) or released
+	// Link is how the repository is linked to the primary one (spec section
+	// 4.4): package, submodule, path or none. With none, soft dependencies
+	// are unavailable until a human describes the link.
+	Link string `toml:"link"`
+}
+
+// RepoList returns the project's repositories, the single-repository form
+// (repo = "...") included as the primary one.
+func (p Project) RepoList() []ProjectRepo {
+	if len(p.Repos) == 0 && p.Repo != "" {
+		return []ProjectRepo{{Repo: p.Repo, Primary: true}}
+	}
+	return p.Repos
 }
 
 // DataDirPath returns daemon.data_dir with a leading ~ expanded to the home directory.
@@ -223,6 +236,15 @@ func (c *Config) validate() error {
 			fail(key, "%q is used by another project", p.Name)
 		}
 		names[p.Name] = true
+		for j, r := range p.Repos {
+			rkey := fmt.Sprintf("project[%d].repos[%d]", i, j)
+			if r.DoneWhen != "" {
+				oneOf(rkey+".done_when", r.DoneWhen, []string{"merged", "released"})
+			}
+			if r.Link != "" {
+				oneOf(rkey+".link", r.Link, []string{"package", "submodule", "path", "none"})
+			}
+		}
 		if p.MaxConcurrentRuns != nil && *p.MaxConcurrentRuns < 1 {
 			fail(fmt.Sprintf("project[%d].max_concurrent_runs", i), "must be positive, got %d", *p.MaxConcurrentRuns)
 		}
