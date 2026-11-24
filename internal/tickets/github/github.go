@@ -485,6 +485,17 @@ func (p *Provider) LastActor(ctx context.Context, ref tickets.Ref, kind, label s
 	return actor, nil
 }
 
+// Self implements tickets.Access: the login of the token.
+func (p *Provider) Self(ctx context.Context) (string, error) {
+	var res struct {
+		Login string `json:"login"`
+	}
+	if err := p.do(ctx, http.MethodGet, "/user", nil, &res); err != nil {
+		return "", fmt.Errorf("github: the token's user: %w", err)
+	}
+	return res.Login, nil
+}
+
 // ReadFile implements tickets.Files with the contents API's raw media type.
 func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, error) {
 	if err := checkRepo(repo); err != nil {

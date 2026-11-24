@@ -6,7 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -98,4 +100,52 @@ func TestAfterAKilledRunTheNextOneStartsFromTheCheckpointAndTheConflicts(t *test
 		t.Fatalf("brief of the next run:\n%s", b)
 	}
 	again.Stop(0)
+}
+
+func TestTheRunnerKnowsWhichTaskItIsWorkingOn(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 9)
+	if _, ok := f.runner.Working(ctx, task.ID); ok {
+		t.Fatal("working on a task before any run")
+	}
+	f.start(t)
+	s := f.session(t)
+	if run, ok := f.runner.Working(ctx, task.ID); !ok || run != s.spec.Env["ISTARI_RUN"] {
+		t.Fatalf("Working = %q, %v during run %s", run, ok, s.spec.Env["ISTARI_RUN"])
+	}
+	if _, ok := f.runner.Working(ctx, "t_other"); ok {
+		t.Fatal("working on every task during one run")
+	}
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := f.runner.Working(ctx, task.ID); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("still working after the run ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestAMergeThatCannotStartLeavesTheWorktreeAsItWas(t *testing.T) {
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 10, "Edit the readme")
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(w.Dir, "README.md"), "uncommitted work\n") // a killed run left it
+	f.moveMain(t, map[string]string{"README.md": "web, by main\n"})
+	if conflicts, err := f.ws.MergeMain(ctx, tk.Ref); err == nil || len(conflicts) != 0 {
+		t.Fatalf("MergeMain over uncommitted work = %v, %v; want an error", conflicts, err)
+	}
+	if body, _ := os.ReadFile(filepath.Join(w.Dir, "README.md")); string(body) != "uncommitted work\n" {
+		t.Fatalf("README.md = %q: the uncommitted work is gone", body)
+	}
 }

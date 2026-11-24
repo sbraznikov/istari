@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -17,8 +16,8 @@ import (
 // next run starts from the ticket, its journal and its branch, with the main
 // branch merged in. Tasks whose attempts ran out are istari ticket retry's.
 func (s *Server) resume(ctx context.Context, actor, ref string) (core.Ticket, error) {
-	if !strings.HasPrefix(actor, "human:") {
-		return core.Ticket{}, &core.Error{Code: core.CodeHumanOnly, Message: "a ticket is resumed by a human, not " + actor}
+	if err := requireHuman(actor, "a ticket is resumed"); err != nil {
+		return core.Ticket{}, err
 	}
 	tk, err := s.tickets.Get(ctx, ref)
 	if err != nil {
@@ -35,8 +34,7 @@ func (s *Server) resume(ctx context.Context, actor, ref string) (core.Ticket, er
 		if task.Ticket != ref {
 			continue
 		}
-		switch task.State {
-		case core.TaskClaimed:
+		if task.State == core.TaskClaimed {
 			if s.runner != nil {
 				if run, ok := s.runner.Working(ctx, task.ID); ok {
 					return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: "task " + task.ID + " is running in run " + run + "; stop it with istari run stop first"}
@@ -58,8 +56,8 @@ func (s *Server) resume(ctx context.Context, actor, ref string) (core.Ticket, er
 // with their state, hold and journal, and the pull requests their journals
 // name, which are watched again.
 func (s *Server) recoverTickets(ctx context.Context, actor string) (tickets.SyncReport, error) {
-	if !strings.HasPrefix(actor, "human:") {
-		return tickets.SyncReport{}, &core.Error{Code: core.CodeHumanOnly, Message: "istari recover is run by a human, not " + actor}
+	if err := requireHuman(actor, "istari recover is run"); err != nil {
+		return tickets.SyncReport{}, err
 	}
 	if s.syncer == nil {
 		return tickets.SyncReport{}, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker"}
@@ -80,11 +78,18 @@ func (s *Server) recoverTickets(ctx context.Context, actor string) (tickets.Sync
 		if err != nil {
 			return err
 		}
-		url := journal.Summarize(entries).PR
-		n, err := strconv.Atoi(url[strings.LastIndex(url, "/")+1:])
-		if url == "" || err != nil {
+		pr, ok := vcs.PullRequestAt(journal.Summarize(entries).PR)
+		if !ok {
 			return nil // no pull request yet
 		}
-		return s.watch.Track(ctx, ref.String(), ref.Repo, vcs.Opened{Number: n, URL: url})
+		return s.watch.Track(ctx, ref.String(), ref.Repo, pr)
 	})
+}
+
+// requireHuman refuses an action of anyone but a human.
+func requireHuman(actor, action string) error {
+	if !strings.HasPrefix(actor, "human:") {
+		return &core.Error{Code: core.CodeHumanOnly, Message: action + " by a human, not " + actor}
+	}
+	return nil
 }

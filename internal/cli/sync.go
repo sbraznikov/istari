@@ -22,8 +22,10 @@ func newSyncCommand(opts *Options) *cobra.Command {
 				return err
 			}
 			n := func(i int) string { return strconv.Itoa(i) }
-			return render(cmd.OutOrStdout(), opts, r, []string{"CREATED", "PUSHED", "TRANSITIONED", "REVERTED", "COMMENTS"},
-				[][]string{{n(r.Created), n(r.Pushed), n(r.Transitioned), n(r.Reverted), n(r.Comments)}})
+			// UNKNOWN: tickets labelled past ready that istari does not have;
+			// istari recover takes them back.
+			return render(cmd.OutOrStdout(), opts, r, []string{"CREATED", "PUSHED", "TRANSITIONED", "REVERTED", "COMMENTS", "UNKNOWN"},
+				[][]string{{n(r.Created), n(r.Pushed), n(r.Transitioned), n(r.Reverted), n(r.Comments), n(r.Unknown)}})
 		},
 	}
 }
@@ -40,6 +42,10 @@ func newRecoverCommand(opts *Options) *cobra.Command {
 		if err := opts.call(cmd, "recover", key, api.ActorRequest{Actor: opts.Actor}, &r); err != nil {
 			return err
 		}
-		return render(cmd.OutOrStdout(), opts, r, []string{"RECOVERED"}, [][]string{{strconv.Itoa(r.Recovered)}})
+		rows := [][]string{{"recovered", strconv.Itoa(r.Recovered)}}
+		for _, why := range r.Skipped {
+			rows = append(rows, []string{"skipped", why})
+		}
+		return render(cmd.OutOrStdout(), opts, r, []string{"RESULT", "DETAIL"}, rows)
 	})
 }

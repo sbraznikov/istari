@@ -46,7 +46,14 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 
-	d.mustCLI(t, nil, "sync") // the sync leaves lost tickets alone
+	var synced struct{ Unknown int }
+	d.mustCLI(t, &synced, "sync") // the sync leaves lost tickets alone, and says so
+	if synced.Unknown != 2 {
+		t.Fatalf("sync report = %+v, want 2 unknown", synced)
+	}
+	if out, _, _ := d.cli(t, "sync"); !strings.Contains(out, "UNKNOWN") || !strings.Contains(strings.Fields(strings.Split(out, "\n")[1])[5], "2") {
+		t.Fatalf("istari sync does not show the unknown tickets:\n%s", out)
+	}
 	if _, stderr, code := d.cli(t, "ticket", "show", ref.String()); code == 0 {
 		t.Fatalf("sync took a lost ticket as new: %s", stderr)
 	}

@@ -82,8 +82,10 @@ type SyncReport struct {
 	// Unknown are tickets istari does not have whose labels say they are
 	// past ready: istari lost them, and istari recover takes them back.
 	Unknown int `json:"unknown,omitempty"`
-	// Recovered are the tickets istari recover took back.
-	Recovered int `json:"recovered,omitempty"`
+	// Recovered are the tickets istari recover took back; Skipped, the
+	// lost tickets it did not, and why.
+	Recovered int      `json:"recovered,omitempty"`
+	Skipped   []string `json:"skipped,omitempty"`
 }
 
 // Syncer keeps the tracker and istari's tickets in step (spec section 3.1,
@@ -106,8 +108,6 @@ type Syncer struct {
 
 	mu      sync.Mutex           // one sync at a time
 	updated map[string]time.Time // per ticket: the tracker's update time whose comments were read
-	// recovering: a sync from Recover, which takes lost tickets back.
-	recovering bool
 }
 
 // NewSyncer returns a Syncer.
@@ -208,14 +208,18 @@ func lost(state core.TicketState) bool {
 // Recover takes back the tickets istari lost with its database (spec
 // section 4.6, istari recover): every open ticket labelled past ready that
 // istari does not have gets the state and hold of its labels, and its
-// journal is restored from its comments by restore. The tracker is not
-// changed.
+// journal is restored from its comments by restore; the closed tickets it
+// needs come back as done or canceled. A state label counts only when
+// istari itself or a trusted member set it: anyone who can label could set
+// one. The tracker is not changed.
 func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref) error) (SyncReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.recovering = true
-	defer func() { s.recovering = false }()
 	var report SyncReport
+	self, err := s.provider.Self(ctx)
+	if err != nil {
+		return report, err
+	}
 	var errs []error
 	for _, repo := range s.repos {
 		open, err := s.provider.List(ctx, Query{Repo: repo.Repo})
@@ -230,7 +234,7 @@ func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref)
 			if _, err := s.tickets.Get(ctx, t.Ref.String()); err == nil {
 				continue // istari has it
 			}
-			if err := s.reconcile(ctx, repo, t, &report); err != nil {
+			if err := s.recoverOne(ctx, repo, t, self, &report); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", t.Ref, err))
 				continue
 			}
@@ -240,6 +244,74 @@ func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref)
 		}
 	}
 	return report, errors.Join(errs...)
+}
+
+// recoverOne takes one lost ticket back, then the closed tickets it needs.
+func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self string, report *SyncReport) error {
+	label := "istari:" + string(t.State.State)
+	by, err := s.provider.LastActor(ctx, t.Ref, "labeled", label)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(by, self) {
+		ok, err := s.trusted(ctx, repo, by)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			report.Skipped = append(report.Skipped, fmt.Sprintf("%s: %s was set by %s, who is not trusted", t.Ref, label, or(by, "nobody")))
+			return nil
+		}
+	}
+	nt := core.NewTicket{Ref: t.Ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
+	if _, err := s.tickets.Recover(ctx, "system", nt, t.State.State, t.State.Hold); err != nil {
+		return err
+	}
+	report.Recovered++
+	if err := s.reconcile(ctx, repo, t, report); err != nil {
+		return err
+	}
+	tk, err := s.tickets.Get(ctx, t.Ref.String())
+	if err != nil {
+		return err
+	}
+	for _, need := range tk.Needs {
+		ref, err := ParseRef(need)
+		if err != nil {
+			continue
+		}
+		if _, err := s.tickets.Get(ctx, need); err == nil {
+			continue
+		}
+		c, err := s.provider.Get(ctx, ref)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !c.Closed || !finished(c.State.State) {
+			continue // an open need is recovered or synced on its own
+		}
+		cr, ok := s.repoOf(ref)
+		if !ok {
+			continue
+		}
+		if _, err := s.tickets.Recover(ctx, "system", core.NewTicket{Ref: need, Project: cr.Project, Title: c.Title, Author: c.Author, URL: c.URL}, c.State.State, ""); err != nil {
+			return err
+		}
+		if err := s.reconcile(ctx, cr, c, report); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func or(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // side is a ticket's state as one side has it.
@@ -320,21 +392,13 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 	tk, err := s.tickets.Get(ctx, ref)
 	var coreErr *core.Error
 	if errors.As(err, &coreErr) && coreErr.Code == core.CodeNotFound {
-		nt := core.NewTicket{Ref: ref, Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
-		switch {
-		case !lost(t.State.State):
-			if tk, err = s.tickets.CreateWith(ctx, "human:"+t.Author, nt); err == nil {
-				report.Created++
-			}
-		case s.recovering:
-			// Labels past ready are taken as they are only when a human
-			// asked for it: anyone who can label could set them.
-			if tk, err = s.tickets.Recover(ctx, "system", nt, t.State.State, t.State.Hold); err == nil {
-				report.Recovered++
-			}
-		default:
-			report.Unknown++
+		if lost(t.State.State) {
+			report.Unknown++ // istari lost it: istari recover takes it back
 			return nil
+		}
+		nt := core.NewTicket{Ref: ref, Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
+		if tk, err = s.tickets.CreateWith(ctx, "human:"+t.Author, nt); err == nil {
+			report.Created++
 		}
 	}
 	if err != nil {

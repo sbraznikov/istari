@@ -674,18 +674,19 @@ func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []
 		return nil, err
 	}
 	upstream := "refs/remotes/origin/" + main
-	if _, err := gitOut(ctx, ws.Dir, "merge", "--no-edit", "-m", "Merge "+main+" into "+ws.Branch, upstream); err == nil {
+	_, merr := gitOut(ctx, ws.Dir, "merge", "--no-edit", "-m", "Merge "+main+" into "+ws.Branch, upstream)
+	if merr == nil {
 		return nil, nil
 	}
 	// The merge stopped: on conflicts, or on an earlier merge whose
-	// conflicts are not resolved yet.
+	// conflicts are not resolved yet. Otherwise it did not start, e.g.
+	// uncommitted changes it would overwrite.
 	unmerged, err := gitOut(ctx, ws.Dir, "diff", "--name-only", "--diff-filter=U")
 	if err != nil {
 		return nil, err
 	}
 	if unmerged == "" {
-		gitOut(ctx, ws.Dir, "merge", "--abort")
-		return nil, fmt.Errorf("merge main into %s failed", ws.Branch)
+		return nil, fmt.Errorf("merge main into %s: %w", ws.Branch, merr)
 	}
 	return strings.Split(unmerged, "\n"), nil
 }

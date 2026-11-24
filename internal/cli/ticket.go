@@ -84,7 +84,7 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			return api.TicketHoldRequest{Actor: actor, Ref: ref, Reason: "paused"}
 		}},
 		{"resume", "Continue an unfinished ticket: lift a paused hold, take back tasks whose run is gone", "ticket.resume", func(actor, ref string) any {
-			return api.TicketReadyRequest{Actor: actor, Ref: ref}
+			return api.TicketResumeRequest{Actor: actor, Ref: ref}
 		}},
 		{"cancel", "Cancel the ticket (T13)", "ticket.fire", func(actor, ref string) any {
 			return api.TicketFireRequest{Actor: actor, Ref: ref, Trigger: "cancel"}

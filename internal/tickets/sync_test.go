@@ -3,6 +3,7 @@ package tickets_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -408,5 +409,41 @@ func TestRecoverTakesTheTicketsStateHoldAndJournalFromTheTracker(t *testing.T) {
 	}
 	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:in_progress", "istari:hold:needs_input"}) {
 		t.Fatalf("labels = %v", got)
+	}
+}
+
+func TestRecoverTakesOnlyStateLabelsIstariOrATrustedMemberSet(t *testing.T) {
+	f := newSync(t, "bob")
+	f.gh.SetPermission("mallory", "triage")
+	n := f.gh.Seed("Sneak in", conforming, "mallory", "istari:in_progress")
+	own := f.gh.Seed("Istari's own", conforming, f.gh.TokenUser, "istari:in_progress") // istari is not on the trusted list
+	report, err := f.sync.Recover(ctx, func(context.Context, tickets.Ref) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, own); tk.State != core.TicketInProgress {
+		t.Fatalf("istari's own label: %s", tk.State)
+	}
+	if _, err := f.tickets.Get(ctx, ghRef(n)); err == nil {
+		t.Fatal("a state label set by an untrusted user was recovered")
+	}
+	if report.Recovered != 1 || len(report.Skipped) != 1 || !strings.Contains(report.Skipped[0], "mallory") {
+		t.Fatalf("report = %+v, want the ticket skipped with who labelled it", report)
+	}
+}
+
+func TestRecoverTakesBackTheClosedTicketsARecoveredOneNeeds(t *testing.T) {
+	f := newSync(t)
+	done := f.gh.Seed("Done before", conforming, "alex", "istari:done")
+	f.gh.HumanClose(done, "alex", "completed")
+	n := f.gh.Seed("Needs it", strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: #%d", done), 1), "alex", "istari:in_progress")
+	if _, err := f.sync.Recover(ctx, func(context.Context, tickets.Ref) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, n); !slices.Equal(tk.Needs, []string{ghRef(done)}) {
+		t.Fatalf("needs = %v", tk.Needs)
+	}
+	if tk := f.ticket(t, done); tk.State != core.TicketDone {
+		t.Fatalf("the closed need is %s, want done", tk.State)
 	}
 }

@@ -228,10 +228,13 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			return
 		}
 		run.Dir = ws.Dir
-		// Resuming pulls the main branch in; conflicts are the first step
-		// (spec section 4.6).
-		if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
-			log.Printf("istari: run of %s: merging the main branch: %v", task.Ticket, err)
+		// The implementer's run pulls the main branch in; conflicts are its
+		// first step (spec section 4.6). Other roles judge the branch as
+		// the pull request has it.
+		if slot.Role == "implementer" {
+			if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
+				log.Printf("istari: run of %s: merging the main branch: %v", task.Ticket, err)
+			}
 		}
 	}
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")

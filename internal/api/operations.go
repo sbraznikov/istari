@@ -114,6 +114,10 @@ type (
 		Actor string `json:"actor"`
 		Ref   string `json:"ref"`
 	}
+	TicketResumeRequest struct {
+		Actor string `json:"actor"`
+		Ref   string `json:"ref"`
+	}
 	TicketPriorityRequest struct {
 		Actor    string `json:"actor"`
 		Ref      string `json:"ref"`
@@ -242,7 +246,7 @@ func (s *Server) operations() map[string]operation {
 			}
 			return k.Fire(ctx, r.Actor, r.Ref, r.Trigger)
 		}),
-		"ticket.resume": write(ticketAgain, func(ctx context.Context, r TicketReadyRequest) (any, error) {
+		"ticket.resume": write(ticketAgain, func(ctx context.Context, r TicketResumeRequest) (any, error) {
 			return s.resume(ctx, r.Actor, r.Ref)
 		}),
 		"recover": write(okAgain, func(ctx context.Context, r ActorRequest) (any, error) {

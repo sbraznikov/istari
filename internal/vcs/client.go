@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,20 @@ type NewPullRequest struct {
 type Opened struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
+}
+
+// PullRequestAt reads a pull request's number from its URL
+// (…/pull/<number>), as the journal records it.
+func PullRequestAt(url string) (Opened, bool) {
+	i := strings.LastIndex(url, "/pull/")
+	if i < 0 {
+		return Opened{}, false
+	}
+	n, err := strconv.Atoi(url[i+len("/pull/"):])
+	if err != nil || n <= 0 {
+		return Opened{}, false
+	}
+	return Opened{Number: n, URL: url}, true
 }
 
 // OpenPullRequest opens a pull request that links to its ticket: the body
