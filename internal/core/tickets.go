@@ -234,10 +234,15 @@ func (m *Tickets) SetHold(ctx context.Context, actor, ref, reason string) (Ticke
 }
 
 // ClearHold clears the hold flag; the ticket continues from the same state.
-func (m *Tickets) ClearHold(ctx context.Context, actor, ref string) (Ticket, error) {
+// A non-empty reason clears only a hold of that reason: resume lifts paused,
+// retry lifts attempts_exhausted (spec section 4.1).
+func (m *Tickets) ClearHold(ctx context.Context, actor, ref, reason string) (Ticket, error) {
 	return m.changeHold(ctx, actor, ref, EventTicketHoldCleared, func(ticket *Ticket) (string, error) {
 		if ticket.Hold == "" {
 			return "", errorf(CodeInvalidState, "ticket %s is not on hold", ref)
+		}
+		if reason != "" && ticket.Hold != reason {
+			return "", errorf(CodeInvalidState, "ticket %s is on hold for %s, not %s", ref, ticket.Hold, reason)
 		}
 		reason := ticket.Hold
 		ticket.Hold = ""

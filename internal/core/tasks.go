@@ -214,8 +214,9 @@ func (t *Tasks) Claim(ctx context.Context, actor, id string) (Lease, error) {
 	return lease, err
 }
 
-// ClaimReady claims the oldest ready task of the role. It fails with
-// no_ready_task when there is none. Priority ordering comes later (spec 4.9).
+// ClaimReady claims the oldest ready task of the role, or of any role when
+// role is empty. It fails with no_ready_task when there is none. Priority
+// ordering comes later (spec 4.9).
 func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, error) {
 	var lease Lease
 	err := retry(func() error {
@@ -225,7 +226,7 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 		}
 		var ready []Task
 		for _, task := range all {
-			if task.State == TaskReady && task.Role == role {
+			if task.State == TaskReady && (role == "" || task.Role == role) {
 				ready = append(ready, task)
 			}
 		}
@@ -259,6 +260,20 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 		return Lease{}, err
 	}
 	return Lease{Task: task.ID, Owner: actor, Token: task.token, Until: task.LeaseUntil}, nil
+}
+
+// LeaseOf returns the current lease on a task if owner holds it, and
+// claim_lost otherwise. It lets an owner recover its lease, e.g. when a
+// claim is repeated with the same idempotency key.
+func (t *Tasks) LeaseOf(ctx context.Context, id, owner string) (Lease, error) {
+	task, err := t.Get(ctx, id)
+	if err != nil {
+		return Lease{}, err
+	}
+	if task.State != TaskClaimed || task.Owner != owner || !t.opts.Clock().Before(task.LeaseUntil) {
+		return Lease{}, errorf(CodeClaimLost, "%s holds no claim on task %s", owner, id)
+	}
+	return Lease{Task: id, Owner: owner, Token: task.token, Until: task.LeaseUntil}, nil
 }
 
 // Renew extends the owner's lease by the lease duration from now.
@@ -342,6 +357,20 @@ func (t *Tasks) Unblock(ctx context.Context, actor, id string) error {
 		task.State = TaskReady
 		task.BlockKind = ""
 		return map[string]any{"kind": kind}, nil
+	})
+}
+
+// Retry returns a failed task to ready with no attempts used. It is the
+// human's answer to attempts_exhausted (spec sections 4.1 and 10.5).
+func (t *Tasks) Retry(ctx context.Context, actor, id string) error {
+	return t.byActor(ctx, actor, id, "task.retried", func(task *Task) (map[string]any, error) {
+		if task.State != TaskFailed {
+			return nil, errorf(CodeInvalidState, "task %s is %s, not failed", id, task.State)
+		}
+		payload := map[string]any{"attempts": task.Attempts}
+		task.State = TaskReady
+		task.Attempts = 0
+		return payload, nil
 	})
 }
 

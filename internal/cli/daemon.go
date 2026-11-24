@@ -104,6 +104,9 @@ func newDaemonInstallCommand(opts *Options) *cobra.Command {
 			if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 				return err
 			}
+			if opts.JSON {
+				return render(cmd.OutOrStdout(), opts, map[string]any{"path": path, "enabled": false, "enable": enable}, nil, nil)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\nIt is not enabled. To enable and start it, run:\n  %s\n", path, enable)
 			return nil
 		},

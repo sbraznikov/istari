@@ -23,6 +23,25 @@ var Version = "dev"
 type Options struct {
 	JSON   bool   // print machine-readable JSON instead of a table
 	Config string // config file; empty means ~/.config/istari/config.toml
+	Actor  string // who acts: agent:<profile> or human:<login>
+}
+
+// call performs one daemon operation for a command.
+func (o *Options) call(cmd *cobra.Command, op, key string, req, resp any) error {
+	c, err := newClient(o)
+	if err != nil {
+		return err
+	}
+	return c.call(cmd.Context(), op, key, req, resp)
+}
+
+// writeCommand gives a writing command the --idempotency-key flag (spec
+// section 9) and passes the key to run.
+func writeCommand(opts *Options, cmd *cobra.Command, run func(cmd *cobra.Command, args []string, key string) error) *cobra.Command {
+	var key string
+	cmd.Flags().StringVar(&key, "idempotency-key", "", "perform this write only once for this key")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error { return run(cmd, args, key) }
+	return cmd
 }
 
 // usageError marks an error caused by how the command was invoked.
@@ -47,7 +66,8 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.SetVersionTemplate("istari {{.Version}}\n")
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print JSON instead of a table")
 	root.PersistentFlags().StringVar(&opts.Config, "config", "", "config file (default ~/.config/istari/config.toml)")
-	root.AddCommand(newDaemonCommand(opts))
+	root.PersistentFlags().StringVar(&opts.Actor, "actor", defaultActor(), "who acts (default $ISTARI_ACTOR or human:<login>)")
+	root.AddCommand(newDaemonCommand(opts), newTaskCommand(opts), newTicketCommand(opts), newTailCommand(opts), newWaitCommand(opts))
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{err}
 	})
