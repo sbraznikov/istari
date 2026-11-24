@@ -46,3 +46,51 @@ func TestDoctorWarnsAboutMissingStandardsFiles(t *testing.T) {
 		}
 	}
 }
+
+// writeFiles creates each file, with its parent directories, and each
+// directory ending in "/" under root.
+func writeFiles(t *testing.T, root string, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		if strings.HasSuffix(p, "/") {
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("# "+p+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDoctorShowsTheStandardsOkWhenTheRepositoryHasThemAll(t *testing.T) {
+	for name, adr := range map[string]string{"docs/adr": "docs/adr/", "adr at the root": "adr/"} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			git(t, repo, "init", "-q", "-b", "main")
+			writeFiles(t, repo, "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md", adr)
+			out, code := doctorInRepo(t, repo)
+			row := standardsRow(t, out)
+			if code != 0 || !strings.Contains(row, " ok ") || strings.Contains(row, "missing") {
+				t.Fatalf("doctor with all standards files: exit %d, row %q, want 0 and ok\n%s", code, row, out)
+			}
+		})
+	}
+}
+
+func TestDoctorListsOnlyTheMissingStandardsFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	// A file named adr is not an ADR directory.
+	writeFiles(t, repo, "CODING_STANDARDS.md", "GLOSSARY.md", "adr")
+	out, _ := doctorInRepo(t, repo)
+	row := standardsRow(t, out)
+	if !strings.Contains(row, "missing: CONTRIBUTING.md, adr/ or docs/adr/") || strings.Contains(row, "GLOSSARY") || strings.Contains(row, "CODING_STANDARDS") {
+		t.Fatalf("standards row = %q, want only CONTRIBUTING.md and the ADR directory missing", row)
+	}
+}
