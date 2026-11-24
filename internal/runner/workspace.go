@@ -65,7 +65,10 @@ type WorkspaceOptions struct {
 type Workspaces struct {
 	store store.Store
 	opts  WorkspaceOptions
-	mu    sync.Mutex // one git operation on the clones at a time
+	mu    sync.Mutex // one change of the worktrees and clones at a time
+	// checked is when a kept workspace was last checked for unsaved work;
+	// it is checked again at most once a minute, as each check fetches.
+	checked map[string]time.Time
 }
 
 // NewWorkspaces returns the ticket workspaces.
@@ -73,7 +76,7 @@ func NewWorkspaces(s store.Store, opts WorkspaceOptions) *Workspaces {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Workspaces{store: s, opts: opts}
+	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}}
 }
 
 // Ensure returns the ticket's worktree, creating it when it does not exist:
@@ -84,6 +87,10 @@ func NewWorkspaces(s store.Store, opts WorkspaceOptions) *Workspaces {
 func (w *Workspaces) Ensure(ctx context.Context, tk core.Ticket) (Workspace, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.ensure(ctx, tk)
+}
+
+func (w *Workspaces) ensure(ctx context.Context, tk core.Ticket) (Workspace, error) {
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Workspace{}, err
@@ -98,16 +105,31 @@ func (w *Workspaces) Ensure(ctx context.Context, tk core.Ticket) (Workspace, err
 	if ws.State == WorkspaceActive && isWorktree(ctx, ws.Dir) {
 		return ws, nil
 	}
+	ws.Ticket, ws.Repo = tk.Ref, ref.Repo
+	if ws.Dir == "" {
+		ws.Project = tk.Project
+		if ws.Project == "" {
+			ws.Project = repoName(ref.Repo)
+		}
+		ws.Dir = filepath.Join(w.opts.DataDir, "workspaces", ws.Project, repoName(ref.Repo), strconv.Itoa(ref.Number))
+	}
+	if isWorktree(ctx, ws.Dir) {
+		// The worktree is there: kept at a removal, or made before istari
+		// could record it. It is the ticket's again, as it is.
+		if ws.Branch, err = gitOut(ctx, ws.Dir, "branch", "--show-current"); err != nil {
+			return Workspace{}, err
+		}
+		if err := InstallTicketHook(ctx, ws.Dir, tk.Ref); err != nil {
+			return Workspace{}, err
+		}
+		ws.State, ws.Reason = WorkspaceActive, ""
+		delete(w.checked, ws.Ticket)
+		return ws, w.commit(ctx, &ws, EventWorkspaceCreated, map[string]any{"dir": ws.Dir, "branch": ws.Branch, "from": "the existing worktree"})
+	}
 	clone, err := w.clone(ctx, ref.Repo)
 	if err != nil {
 		return Workspace{}, err
 	}
-	ws.Ticket, ws.Repo = tk.Ref, ref.Repo
-	ws.Project = tk.Project
-	if ws.Project == "" {
-		ws.Project = repoName(ref.Repo)
-	}
-	ws.Dir = filepath.Join(w.opts.DataDir, "workspaces", ws.Project, repoName(ref.Repo), strconv.Itoa(ref.Number))
 	if ws.Branch == "" {
 		if ws.Branch, err = remoteBranch(ctx, clone, ref); err != nil {
 			return Workspace{}, err
@@ -123,11 +145,20 @@ func (w *Workspaces) Ensure(ctx context.Context, tk core.Ticket) (Workspace, err
 		return Workspace{}, err
 	}
 	var from string
+	local, remote := "refs/heads/"+ws.Branch, "refs/remotes/origin/"+ws.Branch
 	switch {
-	case hasRef(ctx, clone, "refs/heads/"+ws.Branch):
+	case hasRef(ctx, clone, local):
 		from = ws.Branch
+		// The remote moved on (another machine pushed): take it, unless the
+		// local branch has commits of its own.
+		if hasRef(ctx, clone, remote) && isAncestor(ctx, clone, local, remote) {
+			if _, err := gitOut(ctx, clone, "update-ref", local, remote); err != nil {
+				return Workspace{}, err
+			}
+			from = "origin/" + ws.Branch
+		}
 		_, err = gitOut(ctx, clone, "worktree", "add", ws.Dir, ws.Branch)
-	case hasRef(ctx, clone, "refs/remotes/origin/"+ws.Branch):
+	case hasRef(ctx, clone, remote):
 		from = "origin/" + ws.Branch
 		_, err = gitOut(ctx, clone, "worktree", "add", "-b", ws.Branch, ws.Dir, from)
 	default:
@@ -145,6 +176,7 @@ func (w *Workspaces) Ensure(ctx context.Context, tk core.Ticket) (Workspace, err
 		return Workspace{}, err
 	}
 	ws.State, ws.Reason = WorkspaceActive, ""
+	delete(w.checked, ws.Ticket)
 	if err := w.commit(ctx, &ws, EventWorkspaceCreated, map[string]any{"dir": ws.Dir, "branch": ws.Branch, "from": from}); err != nil {
 		return Workspace{}, err
 	}
@@ -159,23 +191,42 @@ func (w *Workspaces) Ensure(ctx context.Context, tk core.Ticket) (Workspace, err
 func (w *Workspaces) Remove(ctx context.Context, tk core.Ticket) (Workspace, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	ws, err := w.get(ctx, tk.Ref)
+	return w.remove(ctx, tk.Ref, false)
+}
+
+// remove removes the ticket's worktree; now checks a kept one at once,
+// instead of at most once a minute.
+func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspace, error) {
+	ws, err := w.get(ctx, ref)
 	if err != nil || ws.Ticket == "" || ws.State == WorkspaceRemoved {
 		return ws, err
 	}
-	clone := filepath.Join(w.opts.DataDir, "repos", ws.Repo+".git")
-	if isWorktree(ctx, ws.Dir) {
-		reason, err := unsaved(ctx, ws.Dir)
-		if err != nil {
-			return Workspace{}, err
+	at := w.opts.Clock()
+	if ws.State == WorkspaceKept && !now && at.Sub(w.checked[ref]) < time.Minute {
+		return ws, nil
+	}
+	w.checked[ref] = at
+	clone := w.clonePath(ws.Repo)
+	worktree := isWorktree(ctx, ws.Dir)
+	var reason string
+	switch {
+	case worktree:
+		reason, err = unsaved(ctx, ws.Dir, "HEAD")
+	case hasRef(ctx, clone, "refs/heads/"+ws.Branch):
+		// The directory is gone; the local branch may hold the only copy.
+		reason, err = unsaved(ctx, clone, "refs/heads/"+ws.Branch)
+	}
+	if err != nil {
+		return Workspace{}, err
+	}
+	if reason != "" {
+		if ws.State == WorkspaceKept && ws.Reason == reason {
+			return ws, nil
 		}
-		if reason != "" {
-			if ws.State == WorkspaceKept && ws.Reason == reason {
-				return ws, nil
-			}
-			ws.State, ws.Reason = WorkspaceKept, reason
-			return ws, w.commit(ctx, &ws, EventWorkspaceKept, map[string]any{"dir": ws.Dir, "reason": reason})
-		}
+		ws.State, ws.Reason = WorkspaceKept, reason
+		return ws, w.commit(ctx, &ws, EventWorkspaceKept, map[string]any{"dir": ws.Dir, "reason": reason})
+	}
+	if worktree {
 		if _, err := gitOut(ctx, clone, "worktree", "remove", ws.Dir); err != nil {
 			return Workspace{}, err
 		}
@@ -190,25 +241,30 @@ func (w *Workspaces) Remove(ctx context.Context, tk core.Ticket) (Workspace, err
 			return Workspace{}, err
 		}
 	}
+	delete(w.checked, ref)
 	ws.State, ws.Reason = WorkspaceRemoved, ""
 	return ws, w.commit(ctx, &ws, EventWorkspaceRemoved, map[string]any{"dir": ws.Dir, "branch": ws.Branch})
 }
 
-// unsaved says what in the worktree would be lost by removing it, or "".
-func unsaved(ctx context.Context, dir string) (string, error) {
-	status, err := gitOut(ctx, dir, "status", "--porcelain")
-	if err != nil {
-		return "", err
+// unsaved says what removing would lose, or "": in dir, a worktree,
+// uncommitted changes; in dir, a worktree or the clone, commits of rev that
+// the remote has on no branch. The remote is fetched first.
+func unsaved(ctx context.Context, dir, rev string) (string, error) {
+	if rev == "HEAD" {
+		status, err := gitOut(ctx, dir, "status", "--porcelain")
+		if err != nil {
+			return "", err
+		}
+		if status != "" {
+			return "uncommitted changes", nil
+		}
 	}
-	if status != "" {
-		return "uncommitted changes", nil
-	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
 		return "", err
 	}
 	// Commits are safe once the remote has them on some branch: the ticket
 	// branch, or the main branch after a merge commit.
-	out, err := gitOut(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
+	out, err := gitOut(ctx, dir, "rev-list", "--count", rev, "--not", "--remotes=origin")
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +328,12 @@ func (w *Workspaces) List(ctx context.Context) ([]Workspace, error) {
 // not know, or of a done or canceled ticket that a removal left behind (spec
 // section 7.2: istari doctor finds them).
 func (w *Workspaces) Orphans(ctx context.Context, all []core.Ticket) ([]Workspace, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.orphans(ctx, all)
+}
+
+func (w *Workspaces) orphans(ctx context.Context, all []core.Ticket) ([]Workspace, error) {
 	state := map[string]core.TicketState{}
 	for _, tk := range all {
 		state[tk.Ref] = tk.State
@@ -298,7 +360,7 @@ func (w *Workspaces) Orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 		return nil, err
 	}
 	for _, dir := range dirs {
-		if !recorded[dir] {
+		if !recorded[dir] && isWorktree(ctx, dir) {
 			out = append(out, Workspace{Dir: dir, State: WorkspaceActive, Reason: "no record"})
 		}
 	}
@@ -308,7 +370,9 @@ func (w *Workspaces) Orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 // Prune removes the orphans and returns the ones it removed. An orphan that
 // holds unsaved work is kept, as at any removal.
 func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace, error) {
-	orphans, err := w.Orphans(ctx, all)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	orphans, err := w.orphans(ctx, all)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +384,7 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 		if o.Ticket == "" {
 			ws, err = w.removeUnrecorded(ctx, o)
 		} else {
-			ws, err = w.Remove(ctx, core.Ticket{Ref: o.Ticket})
+			ws, err = w.remove(ctx, o.Ticket, true)
 		}
 		switch {
 		case err != nil:
@@ -335,12 +399,7 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 // removeUnrecorded removes a worktree directory istari has no record of,
 // unless it holds unsaved work. Its clone is the one git names for it.
 func (w *Workspaces) removeUnrecorded(ctx context.Context, o Workspace) (Workspace, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !isWorktree(ctx, o.Dir) {
-		return o, nil // not a worktree: not istari's to delete
-	}
-	reason, err := unsaved(ctx, o.Dir)
+	reason, err := unsaved(ctx, o.Dir, "HEAD")
 	if err != nil || reason != "" {
 		o.State, o.Reason = WorkspaceKept, reason
 		return o, err
@@ -409,16 +468,23 @@ func (w *Workspaces) commit(ctx context.Context, ws *Workspace, typ string, payl
 	return err
 }
 
-// clone returns istari's clone of repo, fetched from its remote just now.
-// Remote branches are kept as origin/*, so fetching never moves a ticket's
-// local branch.
+// remoteBranches fetches the remote's branches as origin/*, so a fetch never
+// moves a ticket's local branch.
+const remoteBranches = "+refs/heads/*:refs/remotes/origin/*"
+
+func (w *Workspaces) clonePath(repo string) string {
+	return filepath.Join(w.opts.DataDir, "repos", repo+".git")
+}
+
+// clone returns istari's clone of repo, fetched from its remote just now. A
+// clone whose setup was cut short is set up again.
 func (w *Workspaces) clone(ctx context.Context, repo string) (string, error) {
-	dir := filepath.Join(w.opts.DataDir, "repos", repo+".git")
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	dir := w.clonePath(repo)
+	if _, err := gitOut(ctx, dir, "remote", "get-url", "origin"); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", err
 		}
-		if _, err := gitOut(ctx, filepath.Dir(dir), "init", "-q", "--bare", dir); err != nil {
+		if _, err := gitOut(ctx, dir, "init", "-q", "--bare"); err != nil {
 			return "", err
 		}
 		// The ticket hooks use per-worktree config; with it, core.bare must
@@ -426,16 +492,16 @@ func (w *Workspaces) clone(ctx context.Context, repo string) (string, error) {
 		// taken for bare too.
 		for _, args := range [][]string{
 			{"config", "extensions.worktreeConfig", "true"},
-			{"config", "--unset", "core.bare"},
 			{"config", "--worktree", "core.bare", "true"},
+			{"config", "--unset-all", "core.bare"},
 			{"remote", "add", "origin", w.remote(repo)},
 		} {
-			if _, err := gitOut(ctx, dir, args...); err != nil {
+			if _, err := gitOut(ctx, dir, args...); err != nil && args[1] != "--unset-all" {
 				return "", err
 			}
 		}
 	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -476,6 +542,11 @@ func remoteBranch(ctx context.Context, clone string, ref tickets.Ref) (string, e
 	}
 	first, _, _ := strings.Cut(out, "\n")
 	return strings.TrimPrefix(first, "refs/remotes/origin/"), nil
+}
+
+func isAncestor(ctx context.Context, dir, a, b string) bool {
+	_, err := gitOut(ctx, dir, "merge-base", "--is-ancestor", a, b)
+	return err == nil
 }
 
 func hasRef(ctx context.Context, dir, ref string) bool {

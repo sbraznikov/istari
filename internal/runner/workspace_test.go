@@ -205,7 +205,9 @@ func TestADirtyOrUnpushedWorktreeIsKept(t *testing.T) {
 		make func(t *testing.T, dir string)
 	}{
 		{"uncommitted", func(t *testing.T, dir string) {
-			os.WriteFile(filepath.Join(dir, "draft.txt"), []byte("draft\n"), 0o644)
+			if err := os.WriteFile(filepath.Join(dir, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{"unpushed", func(t *testing.T, dir string) {
 			gitIn(t, dir, "commit", "-q", "--allow-empty", "-m", "Not pushed")
@@ -350,5 +352,105 @@ func TestAWorktreeLeftOnDiskWithoutARecordIsAnOrphanToo(t *testing.T) {
 	}
 	if pruned, err := ws.Prune(ctx, nil); err != nil || len(pruned) != 1 || exists(w.Dir) {
 		t.Fatalf("Prune = %+v, %v; the directory exists: %v", pruned, err, exists(w.Dir))
+	}
+}
+
+func TestUnpushedCommitsOfAWorktreeDeletedByHandAreKept(t *testing.T) {
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 9, "Only local")
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, w.Dir, "commit", "-q", "--allow-empty", "-m", "Not pushed")
+	if err := os.RemoveAll(w.Dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.ws.Remove(ctx, tk)
+	if err != nil || got.State != runner.WorkspaceKept {
+		t.Fatalf("Remove = %+v, %v; want kept: the local branch holds the only copy", got, err)
+	}
+	clone := filepath.Join(f.data, "repos", "acme", "web.git")
+	if out := gitIn(t, clone, "branch", "--list", w.Branch); strings.TrimSpace(out) == "" {
+		t.Fatal("the local branch with unpushed commits was deleted")
+	}
+}
+
+func TestRecreatingTakesTheRemoteBranchWhenItIsAhead(t *testing.T) {
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 10, "Moved on")
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, w.Dir, "push", "-q", "origin", "HEAD:refs/heads/"+w.Branch)
+	if err := os.RemoveAll(w.Dir); err != nil {
+		t.Fatal(err)
+	}
+	// Elsewhere (another machine) the branch moved on.
+	other := filepath.Join(f.root, "other")
+	gitIn(t, f.root, "clone", "-q", "-b", w.Branch, "file://"+filepath.Join(f.root, "remotes", "acme", "web.git"), other)
+	gitIn(t, other, "commit", "-q", "--allow-empty", "-m", "Elsewhere")
+	gitIn(t, other, "push", "-q", "origin", w.Branch)
+	ahead := strings.TrimSpace(gitIn(t, other, "rev-parse", "HEAD"))
+
+	again, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(gitIn(t, again.Dir, "rev-parse", "HEAD")); got != ahead {
+		t.Fatalf("recreated at %s, want the remote's %s", got, ahead)
+	}
+}
+
+func TestAKeptWorktreeIsUsedAgainWhenTheTicketIsReopened(t *testing.T) {
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 11, "Back again")
+	f.fire(t, tk.Ref, "accept", "start")
+	f.reconcile(t)
+	if err := os.WriteFile(filepath.Join(f.dir(11), "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.fire(t, tk.Ref, "cancel")
+	f.reconcile(t) // kept: it holds a draft
+	f.fire(t, tk.Ref, "reopen", "accept", "start")
+	f.reconcile(t)
+	list, err := f.ws.List(ctx)
+	if err != nil || len(list) != 1 || list[0].State != runner.WorkspaceActive {
+		t.Fatalf("workspaces = %+v, %v; want the one worktree active again", list, err)
+	}
+	if !exists(filepath.Join(f.dir(11), "draft.txt")) {
+		t.Fatal("the draft was lost")
+	}
+}
+
+func TestAWorktreeWithoutARecordIsAdoptedByItsTicket(t *testing.T) {
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 12, "Half made")
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// istari's database is new, as if it died before recording the worktree.
+	fresh, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { fresh.Close() })
+	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	again, err := ws.Ensure(ctx, tk)
+	if err != nil || again.Dir != w.Dir || again.Branch != w.Branch || again.State != runner.WorkspaceActive {
+		t.Fatalf("Ensure over an unrecorded worktree = %+v, %v; want it adopted", again, err)
+	}
+}
+
+func TestADirectoryThatIsNoWorktreeIsNoOrphan(t *testing.T) {
+	f := newWorkspaces(t)
+	stray := filepath.Join(f.data, "workspaces", "web", "web", "notes")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if orphans, err := f.ws.Orphans(ctx, nil); err != nil || len(orphans) != 0 {
+		t.Fatalf("Orphans = %+v, %v; a plain directory is not istari's", orphans, err)
 	}
 }
