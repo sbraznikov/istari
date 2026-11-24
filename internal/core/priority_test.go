@@ -157,3 +157,26 @@ func TestATaskOfAHeldTicketIsNotHandedOut(t *testing.T) {
 		t.Fatal("a task of the paused ticket was handed out")
 	}
 }
+
+func TestATicketNeededByAMoreUrgentTicketRunsAtItsPriority(t *testing.T) {
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.ticketAt(t, tickets, 1, "P1")
+	f.ticketAt(t, tickets, 2, "P3")
+	// Ticket 3 (P0, no task yet) waits for ticket 2: spec 4.9.
+	if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#3", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.SetPriority(ctx, "human:alex", "gh:acme/web#3", "P0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.SetNeeds(ctx, "system", "gh:acme/web#3", []string{"gh:acme/web#2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.claimOrder(t, 2); got[0] != "t_2" {
+		t.Fatalf("claim order = %v, want the P3 ticket a P0 ticket needs first", got)
+	}
+	if tk, _ := tickets.Get(ctx, "gh:acme/web#3"); len(tk.Needs) != 1 || tk.Needs[0] != "gh:acme/web#2" {
+		t.Fatalf("needs = %v", tk.Needs)
+	}
+}

@@ -39,6 +39,7 @@ const (
 	EventTicketHoldCleared  = "ticket.hold_cleared"
 	EventTicketPrioritized  = "ticket.prioritized"
 	EventTicketSized        = "ticket.sized"
+	EventTicketNeedsSet     = "ticket.needs_set"
 )
 
 // Sizes are the T-shirt sizes of a ticket, smallest first (spec section 4.7).
@@ -62,8 +63,14 @@ type Ticket struct {
 	State   TicketState `json:"state"`
 	Hold    string      `json:"hold,omitempty"` // a hold reason, or empty
 	// Priority is P0…P3, set by a human; empty means the default.
-	Priority string    `json:"priority,omitempty"`
-	Size     string    `json:"size,omitempty"` // XS…XL, or empty
+	Priority string `json:"priority,omitempty"`
+	Size     string `json:"size,omitempty"` // XS…XL, or empty
+	// Needs are the tickets this one waits for (spec section 4.9), as its
+	// text names them.
+	Needs []string `json:"needs,omitempty"`
+	// BudgetOf is the ticket whose budget this one shares: it was created by
+	// an agent at work on that ticket (spec section 4.5).
+	BudgetOf string    `json:"budget_of,omitempty"`
 	Updated  time.Time `json:"updated"`
 
 	version int64
@@ -192,6 +199,7 @@ func (m *Tickets) List(ctx context.Context) ([]Ticket, error) {
 // NewTicket describes a ticket to create, as the tracker has it.
 type NewTicket struct {
 	Ref, Project, Title, Author, URL string
+	BudgetOf                         string // the admitted ticket whose budget it shares, if any
 }
 
 // Create is transition T1: a new ticket in state new.
@@ -205,8 +213,12 @@ func (m *Tickets) CreateWith(ctx context.Context, actor string, nt NewTicket) (T
 	if ref == "" {
 		return Ticket{}, errorf(CodeInvalidTicket, "a ticket needs a reference")
 	}
-	ticket := Ticket{Ref: ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, State: TicketNew, Updated: m.opts.Clock()}
-	err := m.commit(ctx, actor, EventTicketTransitioned, ticket, transitionPayload("", TicketNew, "create", actor))
+	ticket := Ticket{Ref: ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, BudgetOf: nt.BudgetOf, State: TicketNew, Updated: m.opts.Clock()}
+	payload := transitionPayload("", TicketNew, "create", actor)
+	if nt.BudgetOf != "" {
+		payload["budget_of"] = nt.BudgetOf
+	}
+	err := m.commit(ctx, actor, EventTicketTransitioned, ticket, payload)
 	if errors.Is(err, store.ErrConflict) {
 		return Ticket{}, errorf(CodeInvalidTicket, "ticket %s already exists", ref)
 	}
@@ -365,6 +377,34 @@ func (m *Tickets) SetSize(ctx context.Context, actor, ref, size string) (Ticket,
 	return ticket, nil
 }
 
+// SetNeeds records the tickets this one waits for. The same needs record
+// nothing.
+func (m *Tickets) SetNeeds(ctx context.Context, actor, ref string, needs []string) (Ticket, error) {
+	needs = slices.Clone(needs)
+	slices.Sort(needs)
+	needs = slices.Compact(needs)
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		if slices.Equal(ticket.Needs, needs) {
+			return nil
+		}
+		if slices.Contains(needs, ref) {
+			return errorf(CodeInvalidTicket, "ticket %s cannot need itself", ref)
+		}
+		ticket.Needs = needs
+		ticket.Updated = m.opts.Clock()
+		return m.commit(ctx, actor, EventTicketNeedsSet, ticket, map[string]any{"needs": needs, "actor": actor})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
 func transitionPayload(from, to TicketState, trigger, actor string) map[string]any {
 	return map[string]any{"from": from, "to": to, "trigger": trigger, "actor": actor}
 }
@@ -404,7 +444,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized:
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet:
 		default:
 			continue
 		}
@@ -415,6 +455,8 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			Reason   string      `json:"reason"`
 			Priority string      `json:"priority"`
 			Size     string      `json:"size"`
+			Needs    []string    `json:"needs"`
+			BudgetOf string      `json:"budget_of"`
 		}
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			return Ticket{}, invalid(e, "%v", err)
@@ -423,7 +465,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			if e.Type != EventTicketTransitioned || p.Trigger != "create" {
 				return Ticket{}, invalid(e, "the history does not start with create")
 			}
-			ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, Updated: e.At}
+			ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, BudgetOf: p.BudgetOf, Updated: e.At}
 			continue
 		}
 		if e.Ticket != ticket.Ref {
@@ -447,6 +489,8 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			ticket.Priority = p.Priority
 		case EventTicketSized:
 			ticket.Size = p.Size
+		case EventTicketNeedsSet:
+			ticket.Needs = p.Needs
 		}
 		ticket.Updated = e.At
 	}

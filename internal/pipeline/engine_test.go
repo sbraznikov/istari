@@ -278,3 +278,47 @@ func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 		t.Fatal("a GitHub review approval is a gate for istari gate approve")
 	}
 }
+
+func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	other := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", other, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetNeeds(ctx, "system", ref, []string{other}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketReady {
+		t.Fatalf("with its need open the ticket is %s, want ready", st)
+	}
+	if _, err := f.tickets.Fire(ctx, "system", other, "cancel"); err != nil { // finished, not done
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketReady {
+		t.Fatalf("with its need canceled the ticket is %s, want ready", st)
+	}
+}
+
+func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	done := "gh:acme/web#3"
+	if _, err := f.tickets.Create(ctx, "human:alex", done, "web"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		if _, err := f.tickets.Fire(ctx, "system", done, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetNeeds(ctx, "system", ref, []string{done}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketPlanning {
+		t.Fatalf("with its need done the ticket is %s, want planning", st)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -320,6 +321,7 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "start") },
 		func() (core.Ticket, error) { return tickets.SetPriority(ctx, "human:alex", ref, "P0") },
 		func() (core.Ticket, error) { return tickets.SetSize(ctx, "agent:planner-1", ref, "M") },
+		func() (core.Ticket, error) { return tickets.SetNeeds(ctx, "system", ref, []string{"gh:acme/web#999"}) },
 		func() (core.Ticket, error) { return tickets.SetHold(ctx, "system", ref, "waiting_zone") },
 		func() (core.Ticket, error) { return tickets.ClearHold(ctx, "system", ref, "") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "plan_accepted") },
@@ -334,7 +336,7 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReplayTicket: %v", err)
 		}
-		if replayed.State != projected.State || replayed.Hold != projected.Hold || replayed.Priority != projected.Priority || replayed.Size != projected.Size {
+		if replayed.State != projected.State || replayed.Hold != projected.Hold || replayed.Priority != projected.Priority || replayed.Size != projected.Size || strings.Join(replayed.Needs, ",") != strings.Join(projected.Needs, ",") {
 			t.Fatalf("after step to %s/%q/%q/%q the replay gives %s/%q/%q/%q", projected.State, projected.Hold, projected.Priority, projected.Size, replayed.State, replayed.Hold, replayed.Priority, replayed.Size)
 		}
 	}

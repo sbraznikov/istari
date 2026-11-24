@@ -42,6 +42,8 @@ type Engine struct {
 
 	mu    sync.Mutex
 	cache map[string]cached
+
+	states map[string]core.TicketState // of this reconcile's tickets
 }
 
 type cached struct {
@@ -197,6 +199,10 @@ func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 	if err != nil {
 		return err
 	}
+	e.states = map[string]core.TicketState{}
+	for _, tk := range all {
+		e.states[tk.Ref] = tk.State
+	}
 	var errs []error
 	for _, tk := range all {
 		if err := e.reconcile(ctx, tk, tasks); err != nil {
@@ -219,7 +225,13 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
 		// ticket its worktree and its planner task (spec section 4.1). A
-		// ticket whose pipeline is invalid does not start.
+		// ticket whose pipeline is invalid does not start, nor one whose
+		// needs are not done (T3: "the tickets in needs are completed").
+		for _, need := range tk.Needs {
+			if e.state(ctx, need) != core.TicketDone {
+				return nil
+			}
+		}
 		ref, err := tickets.ParseRef(tk.Ref)
 		if err != nil {
 			return err
@@ -259,6 +271,17 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 	}
 	return nil
+}
+
+// state returns a ticket's state, from this reconcile or the store.
+func (e *Engine) state(ctx context.Context, ref string) core.TicketState {
+	if st, ok := e.states[ref]; ok {
+		return st
+	}
+	if tk, err := e.tickets.Get(ctx, ref); err == nil {
+		return tk.State
+	}
+	return ""
 }
 
 // expand creates the tasks of a round; from, if set, keeps only those

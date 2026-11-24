@@ -40,7 +40,7 @@ func newSync(t *testing.T, trusted ...string) *syncFixture {
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	k := core.NewTickets(s, core.TicketOptions{Clock: clock})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
-	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}})
+	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}, Needs: standard.Needs})
 	return &syncFixture{gh: gh, store: s, tickets: k, sync: syncer, adapter: adapter}
 }
 

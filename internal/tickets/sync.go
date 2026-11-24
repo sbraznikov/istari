@@ -61,6 +61,9 @@ type SyncOptions struct {
 	// Standards turns on admission (T2) and the re-check on edit (T15);
 	// without it the sync only mirrors states.
 	Standards Standards
+	// Needs reads the tickets a ticket's text depends on (spec 4.9); nil
+	// leaves the needs alone.
+	Needs func(body, repo string) []string
 }
 
 // Codes of admission refusals.
@@ -301,6 +304,13 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 	}
 	if err := s.size(ctx, x); err != nil {
 		return err
+	}
+	if s.opts.Needs != nil {
+		tk, err := s.tickets.SetNeeds(ctx, "system", x.tk.Ref, s.opts.Needs(x.t.Body, x.repo.Repo))
+		if err != nil {
+			return err
+		}
+		x.tk = tk
 	}
 	if err := s.comments(ctx, x); err != nil {
 		return err
@@ -737,6 +747,68 @@ func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority strin
 		return tk, err
 	}
 	return s.tickets.Get(ctx, refText)
+}
+
+// Created mirrors tickets istari just created in the tracker. With budgetOf,
+// an admitted ticket an agent was working on, each is admitted when it meets
+// the standard and shares that ticket's budget (spec section 4.5: it
+// inherits the parent's admission and budget).
+func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inherit := false
+	if budgetOf != "" {
+		parent, err := s.tickets.Get(ctx, budgetOf)
+		if err != nil {
+			return err
+		}
+		inherit = parent.State != core.TicketNew && parent.State != core.TicketCanceled
+	}
+	var errs []error
+	for _, ref := range refs {
+		if err := s.created(ctx, ref, budgetOf, inherit); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit bool) error {
+	repo, ok := s.repoOf(ref)
+	if !ok {
+		return nil // a repository istari does not sync
+	}
+	t, err := s.provider.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if inherit {
+		_, err := s.tickets.CreateWith(ctx, "human:"+t.Author, core.NewTicket{Ref: ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL, BudgetOf: budgetOf})
+		var ce *core.Error
+		if err != nil && !(errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket) {
+			return err
+		}
+	}
+	var report SyncReport
+	if err := s.reconcile(ctx, repo, t, &report); err != nil {
+		return err
+	}
+	if !inherit {
+		return nil
+	}
+	tk, err := s.tickets.Get(ctx, ref.String())
+	if err != nil || tk.State != core.TicketNew {
+		return err
+	}
+	conf, err := s.conformance(ctx, repo, t)
+	if err != nil || len(conf.Deviations) > 0 {
+		return err // it waits for the refiner like any other
+	}
+	base, version, err := s.base(ctx, ref.String())
+	if err != nil {
+		return err
+	}
+	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf.Hash)
 }
 
 // Ready admits a ticket by hand (istari ticket ready): login must be a

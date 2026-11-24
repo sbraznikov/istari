@@ -82,6 +82,18 @@ func Hash(std Standard, body string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Needs returns the tickets a ticket's text names on its dependency line of
+// the default standard ("- Needs: …"), resolved against repo.
+func Needs(body, repo string) []string {
+	var out []string
+	for _, r := range needsRefs(parse(body).prose, Default().Dependencies, repo) {
+		if r.full != "" {
+			out = append(out, r.full)
+		}
+	}
+	return out
+}
+
 // Draft is a ticket to check: an existing one (Ref set, labels from the
 // tracker) or a file not yet created.
 type Draft struct {
