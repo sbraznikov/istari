@@ -213,6 +213,8 @@ type baseRecord struct {
 	// Hash is the digest of the required sections when the ticket was
 	// admitted; an edit that changes it in ready is T15.
 	Hash string `json:"hash,omitempty"`
+	// Priority is the priority label the tracker had at the last sync.
+	Priority string `json:"priority,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -240,6 +242,9 @@ type syncing struct {
 	base    baseRecord
 	version int64
 	report  *SyncReport
+	wrote   bool    // istari wrote its labels to the tracker in this reconcile
+	refused *change // a priority change to revert, and why
+	reason  string
 }
 
 // record appends a sync event together with the ticket's new base.
@@ -285,7 +290,16 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 			x.base.FirstComment = max(x.base.FirstComment, c.ID)
 		}
 	}
+	if err := s.priorityRequest(ctx, x); err != nil {
+		return err
+	}
 	if err := s.reconcileState(ctx, x); err != nil {
+		return err
+	}
+	if err := s.settlePriority(ctx, x); err != nil {
+		return err
+	}
+	if err := s.size(ctx, x); err != nil {
 		return err
 	}
 	if err := s.comments(ctx, x); err != nil {
@@ -339,12 +353,133 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 	}
 }
 
-// push writes istari's state of tk to the tracker.
-func (s *Syncer) push(ctx context.Context, x *syncing, tk core.Ticket) error {
-	if err := s.provider.SetState(ctx, x.t.Ref, State{State: tk.State, Hold: tk.Hold}); err != nil {
+// labelValues returns the values of the ticket's labels prefix+value whose
+// value is one of values.
+func labelValues(labels []string, prefix string, values []string) []string {
+	var out []string
+	for _, l := range labels {
+		if v, ok := strings.CutPrefix(l, prefix); ok && slices.Contains(values, v) && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// requested returns the one label value that differs from istari's: a human
+// who adds a label next to the old one leaves both. Several differing values
+// make the request unclear.
+func requested(values []string, local string) (value string, several bool) {
+	other := slices.DeleteFunc(slices.Clone(values), func(v string) bool { return v == local })
+	switch len(other) {
+	case 0:
+		return "", false
+	case 1:
+		return other[0], false
+	default:
+		return "", true
+	}
+}
+
+// priorityRequest handles a priority label a human set or changed since the
+// last sync: a request to change the priority. It is applied when they are
+// the ticket's author or have write access (spec 4.9: the author or a project
+// member sets it); otherwise it is kept for settlePriority to revert. It runs
+// before the state is reconciled, so every label write carries the outcome.
+func (s *Syncer) priorityRequest(ctx context.Context, x *syncing) error {
+	tracker, several := requested(labelValues(x.t.Labels, "priority:", core.Priorities()), x.tk.Priority)
+	if several {
+		x.refused, x.reason = &change{what: "the priority labels"}, "the issue carries several priority labels, so the requested one is unclear"
+		return nil
+	}
+	if tracker == "" || tracker == x.base.Priority {
+		return nil
+	}
+	c := change{what: "the label `priority:" + tracker + "`"}
+	who, err := s.provider.LastActor(ctx, x.t.Ref, "labeled", "priority:"+tracker)
+	if err != nil {
 		return err
 	}
-	return s.record(ctx, x, EventSyncPushed, "system", tk, map[string]any{"state": tk.State, "hold": tk.Hold})
+	c.who = who
+	switch {
+	case who == "":
+		x.refused, x.reason = &c, "who made the change is unknown, so its right to make it cannot be checked"
+		return nil
+	case who != x.t.Author:
+		allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			x.refused, x.reason = &c, fmt.Sprintf("@%s has no write access to %s", who, x.repo.Repo)
+			return nil
+		}
+	}
+	tk, err := s.tickets.SetPriority(ctx, "human:"+who, x.tk.Ref, tracker)
+	if err != nil {
+		return err
+	}
+	x.tk = tk
+	return nil
+}
+
+// size takes the ticket's size from its size label; the refiner keeps the
+// label in step with the standard (spec 4.7).
+func (s *Syncer) size(ctx context.Context, x *syncing) error {
+	size, _ := requested(labelValues(x.t.Labels, "size:", core.Sizes()), x.tk.Size)
+	if size == "" {
+		return nil
+	}
+	tk, err := s.tickets.SetSize(ctx, "system", x.tk.Ref, size)
+	if err == nil {
+		x.tk = tk
+	}
+	return err
+}
+
+// settlePriority makes the tracker show istari's priority once the state is
+// reconciled: it reverts a refused request, and writes a priority set in
+// istari unless a state write already carried it.
+func (s *Syncer) settlePriority(ctx context.Context, x *syncing) error {
+	if x.refused != nil {
+		return s.revert(ctx, x, *x.refused, x.reason)
+	}
+	if x.wrote {
+		return nil
+	}
+	var want []string
+	if x.tk.Priority != "" {
+		want = []string{x.tk.Priority}
+	}
+	if !slices.Equal(labelValues(x.t.Labels, "priority:", core.Priorities()), want) {
+		if err := s.push(ctx, x, x.tk); err != nil {
+			return err
+		}
+		x.report.Pushed++
+		return nil
+	}
+	if x.base.Priority != x.tk.Priority {
+		x.base.Priority = x.tk.Priority
+		return s.record(ctx, x, EventSyncObserved, "system", x.tk, map[string]any{"priority": x.tk.Priority})
+	}
+	return nil
+}
+
+// writeLabels writes tk's state, hold and priority to the tracker.
+func (s *Syncer) writeLabels(ctx context.Context, x *syncing, tk core.Ticket) error {
+	if err := s.provider.SetState(ctx, x.t.Ref, State{State: tk.State, Hold: tk.Hold, Priority: tk.Priority}); err != nil {
+		return err
+	}
+	x.wrote = true
+	x.base.Priority = tk.Priority
+	return nil
+}
+
+// push writes istari's state of tk to the tracker.
+func (s *Syncer) push(ctx context.Context, x *syncing, tk core.Ticket) error {
+	if err := s.writeLabels(ctx, x, tk); err != nil {
+		return err
+	}
+	return s.record(ctx, x, EventSyncPushed, "system", tk, map[string]any{"state": tk.State, "hold": tk.Hold, "priority": tk.Priority})
 }
 
 // humanTriggers are the transitions a human may request by editing the
@@ -441,7 +576,7 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 
 // revert restores istari's state in the tracker and says why in a comment.
 func (s *Syncer) revert(ctx context.Context, x *syncing, c change, reason string) error {
-	if err := s.provider.SetState(ctx, x.t.Ref, State{State: x.tk.State, Hold: x.tk.Hold}); err != nil {
+	if err := s.writeLabels(ctx, x, x.tk); err != nil {
 		return err
 	}
 	by, actor := "", "system"
@@ -567,6 +702,43 @@ func (s *Syncer) admit(ctx context.Context, x *syncing, actor, hash string) erro
 	return nil
 }
 
+// repoOf returns the synced repository of ref.
+func (s *Syncer) repoOf(ref Ref) (SyncRepo, bool) {
+	for _, r := range s.repos {
+		if strings.EqualFold(r.Repo, ref.Repo) {
+			return r, true
+		}
+	}
+	return SyncRepo{}, false
+}
+
+// SetPriority sets a ticket's priority as core.Tickets.SetPriority does and,
+// for a ticket of a synced repository, writes its label at once.
+func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority string) (core.Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tk, err := s.tickets.SetPriority(ctx, actor, refText, priority)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	ref, err := ParseRef(refText)
+	if err != nil {
+		return tk, nil // not a tracker reference: nothing to write
+	}
+	repo, ok := s.repoOf(ref)
+	if !ok {
+		return tk, nil
+	}
+	t, err := s.provider.Get(ctx, ref)
+	if err != nil {
+		return tk, err
+	}
+	if err := s.reconcile(ctx, repo, t, &SyncReport{}); err != nil {
+		return tk, err
+	}
+	return s.tickets.Get(ctx, refText)
+}
+
 // Ready admits a ticket by hand (istari ticket ready): login must be a
 // trusted member and the ticket must meet the standard.
 func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
@@ -576,13 +748,8 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	if err != nil {
 		return &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
 	}
-	var repo SyncRepo
-	for _, r := range s.repos {
-		if strings.EqualFold(r.Repo, ref.Repo) {
-			repo = r
-		}
-	}
-	if repo.Repo == "" {
+	repo, ok := s.repoOf(ref)
+	if !ok {
 		return &core.Error{Code: core.CodeNotFound, Message: fmt.Sprintf("%s is in no synced repository", ref)}
 	}
 	t, err := s.provider.Get(ctx, ref)

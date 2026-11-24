@@ -37,7 +37,18 @@ const (
 	EventTicketTransitioned = "ticket.transitioned"
 	EventTicketHoldSet      = "ticket.hold_set"
 	EventTicketHoldCleared  = "ticket.hold_cleared"
+	EventTicketPrioritized  = "ticket.prioritized"
+	EventTicketSized        = "ticket.sized"
 )
+
+// Sizes are the T-shirt sizes of a ticket, smallest first (spec section 4.7).
+func Sizes() []string { return []string{"XS", "S", "M", "L", "XL"} }
+
+// Priorities are the ticket priorities, most urgent first (spec section 4.9).
+func Priorities() []string { return []string{"P0", "P1", "P2", "P3"} }
+
+// DefaultPriority is the priority of a ticket nobody gave one (spec 4.9).
+const DefaultPriority = "P2"
 
 const ticketKind = "ticket"
 
@@ -50,7 +61,10 @@ type Ticket struct {
 	URL     string      `json:"url,omitempty"`
 	State   TicketState `json:"state"`
 	Hold    string      `json:"hold,omitempty"` // a hold reason, or empty
-	Updated time.Time   `json:"updated"`
+	// Priority is P0…P3, set by a human; empty means the default.
+	Priority string    `json:"priority,omitempty"`
+	Size     string    `json:"size,omitempty"` // XS…XL, or empty
+	Updated  time.Time `json:"updated"`
 
 	version int64
 }
@@ -298,6 +312,59 @@ func (m *Tickets) changeHold(ctx context.Context, actor, ref, typ string, mutate
 	return ticket, nil
 }
 
+// SetPriority sets the ticket's priority. Only a human sets it (spec 4.9):
+// an actor other than human:<login> is refused with human_only. Setting the
+// priority a ticket already has records nothing.
+func (m *Tickets) SetPriority(ctx context.Context, actor, ref, priority string) (Ticket, error) {
+	if !strings.HasPrefix(actor, "human:") {
+		return Ticket{}, errorf(CodeHumanOnly, "only a human sets the priority of %s, not %s", ref, actor)
+	}
+	if !slices.Contains(Priorities(), priority) {
+		return Ticket{}, errorf(CodeInvalidTicket, "priority %q is not one of %s", priority, strings.Join(Priorities(), ", "))
+	}
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		from := ticket.Priority
+		if from == priority {
+			return nil // already set: nothing to record
+		}
+		ticket.Priority = priority
+		ticket.Updated = m.opts.Clock()
+		return m.commit(ctx, actor, EventTicketPrioritized, ticket, map[string]any{"from": from, "priority": priority, "actor": actor})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
+// SetSize sets the ticket's size. The refiner, the planner and humans may
+// change it (spec 4.7); every change is an event.
+func (m *Tickets) SetSize(ctx context.Context, actor, ref, size string) (Ticket, error) {
+	if !slices.Contains(Sizes(), size) {
+		return Ticket{}, errorf(CodeInvalidTicket, "size %q is not one of %s", size, strings.Join(Sizes(), ", "))
+	}
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		from := ticket.Size
+		ticket.Size = size
+		ticket.Updated = m.opts.Clock()
+		return m.commit(ctx, actor, EventTicketSized, ticket, map[string]any{"from": from, "size": size, "actor": actor})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
 func transitionPayload(from, to TicketState, trigger, actor string) map[string]any {
 	return map[string]any{"from": from, "to": to, "trigger": trigger, "actor": actor}
 }
@@ -337,15 +404,17 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared:
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized:
 		default:
 			continue
 		}
 		var p struct {
-			From    TicketState `json:"from"`
-			To      TicketState `json:"to"`
-			Trigger string      `json:"trigger"`
-			Reason  string      `json:"reason"`
+			From     TicketState `json:"from"`
+			To       TicketState `json:"to"`
+			Trigger  string      `json:"trigger"`
+			Reason   string      `json:"reason"`
+			Priority string      `json:"priority"`
+			Size     string      `json:"size"`
 		}
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			return Ticket{}, invalid(e, "%v", err)
@@ -374,6 +443,10 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			ticket.Hold = p.Reason
 		case EventTicketHoldCleared:
 			ticket.Hold = ""
+		case EventTicketPrioritized:
+			ticket.Priority = p.Priority
+		case EventTicketSized:
+			ticket.Size = p.Size
 		}
 		ticket.Updated = e.At
 	}

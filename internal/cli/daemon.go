@@ -39,7 +39,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
-			daemonOpts := api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg), Repos: syncRepos(cfg)}
+			daemonOpts := api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg), Priority: cfg.Defaults.Priority, Repos: syncRepos(cfg)}
 			if len(daemonOpts.Repos) > 0 {
 				tracker, err := github.FromEnvironment(ctx)
 				if err != nil {

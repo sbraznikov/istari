@@ -69,6 +69,9 @@ func (r Ref) String() string {
 type State struct {
 	State core.TicketState
 	Hold  string
+	// Priority is the ticket's priority; "" means none, and the tracker
+	// shows none.
+	Priority string
 }
 
 // Ticket is a ticket as the tracker has it.

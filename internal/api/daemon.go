@@ -34,6 +34,7 @@ const shutdownTimeout = 30 * time.Second
 type DaemonOptions struct {
 	DataDir      string
 	Limits       core.Limits
+	Priority     string               // the default ticket priority; "" means core.DefaultPriority
 	Tracker      tickets.SyncProvider // nil: no ticket sync
 	Repos        []tickets.SyncRepo
 	Standards    tickets.Standards // nil: no admission
@@ -69,7 +70,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	defer os.Remove(socket)
 
-	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards})
+	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards})
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)

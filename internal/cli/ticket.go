@@ -64,6 +64,17 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 		},
 	})
+	cmd.AddCommand(writeCommand(opts, &cobra.Command{
+		Use:   "priority <ref> <P0|P1|P2|P3>",
+		Short: "Set the ticket's priority (humans only)",
+		Args:  Args(cobra.ExactArgs(2)),
+	}, func(cmd *cobra.Command, args []string, key string) error {
+		var ticket core.Ticket
+		if err := opts.call(cmd, "ticket.priority", key, api.TicketPriorityRequest{Actor: opts.Actor, Ref: args[0], Priority: args[1]}, &ticket); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+	}))
 	// The human actions on a ticket (spec sections 4.1 and 10.5).
 	for _, a := range []struct {
 		name, short, op string
