@@ -368,6 +368,33 @@ func sameSet(a, b []string) bool {
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
+// SetSize replaces the ticket's size label (spec section 4.7: the size is a
+// label in GitHub Issues).
+func (p *Provider) SetSize(ctx context.Context, ref tickets.Ref, size string) error {
+	if !slices.Contains(core.Sizes(), size) {
+		return fmt.Errorf("github: %q is not a size", size)
+	}
+	current, err := p.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	labels := slices.DeleteFunc(slices.Clone(current.Labels), func(l string) bool {
+		s, ok := strings.CutPrefix(l, "size:")
+		return ok && slices.Contains(core.Sizes(), s)
+	})
+	labels = append(labels, "size:"+size)
+	if sameSet(labels, current.Labels) {
+		return nil
+	}
+	if err := p.ensureLabels(ctx, ref.Repo, labels); err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodPut, issuePath(ref, "/labels"), map[string]any{"labels": labels}, nil); err != nil {
+		return fmt.Errorf("github: set the size of %s: %w", ref, err)
+	}
+	return nil
+}
+
 // SetBody replaces the ticket's text; the journal keeps its work state block
 // there (spec section 4.6).
 func (p *Provider) SetBody(ctx context.Context, ref tickets.Ref, body string) error {

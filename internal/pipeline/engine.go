@@ -27,6 +27,9 @@ type EngineOptions struct {
 	Defaults config.Defaults
 	Files    Files // nil: every repository has the default pipeline
 	Actor    string
+	// NeedsRefine tells whether a new ticket falls short of the ticket
+	// standard and needs the refiner (spec section 4.5); nil: no refining.
+	NeedsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -244,6 +247,19 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	switch tk.State {
+	case core.TicketNew:
+		// A ticket below the standard gets one refine task; the refiner
+		// brings it to the standard or asks (spec section 4.5).
+		id := taskID(tk.Ref, 0, "refine")
+		if e.opts.NeedsRefine == nil || slices.ContainsFunc(all, func(t core.Task) bool { return t.ID == id }) {
+			return nil
+		}
+		needs, err := e.opts.NeedsRefine(ctx, tk)
+		if err != nil || !needs {
+			return err
+		}
+		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: id, Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
+		return err
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
 		// ticket its worktree and its planner task (spec section 4.1). A

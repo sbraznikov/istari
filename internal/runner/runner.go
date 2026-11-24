@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,9 +50,11 @@ type RunnerOptions struct {
 	Socket        string        // the daemon's socket, for the agent's istari commands
 	TranscriptMax int64         // 0: DefaultTranscriptMax
 	Clock         func() time.Time
-	// Tickets gives the ticket's text for the brief; nil: the title only.
+	// Tickets gives the ticket's text for the brief, and the refiner's
+	// duplicate candidates; nil: the title only.
 	Tickets interface {
 		Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, error)
+		List(ctx context.Context, q tickets.Query) ([]tickets.Ticket, error)
 	}
 	// Checkpoints, when set, saves the work of a run stopped on its timeout,
 	// its budget or by a human (spec section 7.2, step 6).
@@ -339,6 +342,8 @@ func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (re
 	switch {
 	case err != nil:
 		return err.Error(), r.failWith(err.Error()), false
+	case run.Rejected != "":
+		return "rejected: " + run.Rejected, r.failWith("rejected: " + run.Rejected), false
 	case run.Completed != "" && res.ExitCode == 0 && !res.Failed:
 		return "completed: " + run.Completed, r.tasks.Complete, true
 	case run.Completed == "":
@@ -412,6 +417,15 @@ func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket) stri
 	if r.opts.Tickets != nil {
 		if t, err := r.opts.Tickets.Get(ctx, ref); err == nil {
 			in.Title, in.Body = t.Title, t.Body
+			if task.Role == "refiner" {
+				cands, err := tickets.Candidates(ctx, r.opts.Tickets, t)
+				if err != nil {
+					log.Printf("istari: brief of %s: candidates: %v", tk.Ref, err)
+				}
+				for _, c := range cands {
+					in.Candidates = append(in.Candidates, fmt.Sprintf("%s %s (shares %s)", c.Ref, c.Title, strings.Join(c.Shared, ", ")))
+				}
+			}
 		} else {
 			log.Printf("istari: brief of %s: the ticket text: %v", tk.Ref, err)
 		}

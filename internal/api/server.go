@@ -49,6 +49,7 @@ type Server struct {
 	vcs       *vcs.Client
 	watch     *vcs.Watcher
 	saves     *runner.Checkpoints
+	refines   *runner.Refines
 	tracker   tickets.SyncProvider
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
@@ -143,7 +144,29 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		srv.vcs = opts.VCS
 		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock)
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock})
+	var needsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
+	if opts.Tracker != nil && opts.Standards != nil {
+		needsRefine = func(ctx context.Context, tk core.Ticket) (bool, error) {
+			ref, err := tickets.ParseRef(tk.Ref)
+			if err != nil {
+				return false, nil
+			}
+			t, err := opts.Tracker.Get(ctx, ref)
+			if err != nil {
+				return false, err
+			}
+			conf, err := opts.Standards.Check(ctx, ref.Repo, t)
+			return len(conf.Deviations) > 0, err
+		}
+		if rt, ok := opts.Tracker.(runner.RefineTracker); ok {
+			var jt journal.Tracker
+			if t, ok := opts.Tracker.(journal.Tracker); ok {
+				jt = t
+			}
+			srv.refines = runner.NewRefines(rt, journal.New(jt, ns, opts.Clock), srv.tickets, opts.Standards)
+		}
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine})
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

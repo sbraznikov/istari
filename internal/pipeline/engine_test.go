@@ -345,3 +345,21 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 		t.Fatalf("after its need is done the ticket = %s, hold %q; want planning, no hold", tk.State, tk.Hold)
 	}
 }
+
+func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
+	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
+	if _, err := f.tickets.Create(ctx, "human:bob", ref, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Create(ctx, "human:bob", "gh:acme/web#2", "web"); err != nil { // meets it
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.reconcile(t)
+	all, _ := f.tasks.List(ctx)
+	if len(all) != 1 || all[0].Ticket != ref || all[0].Role != "refiner" || all[0].State != core.TaskReady {
+		t.Fatalf("tasks = %+v, want one ready refiner task for %s", all, ref)
+	}
+}

@@ -156,3 +156,17 @@ func TestCuttingTheTicketNeverSplitsACharacter(t *testing.T) {
 		}
 	}
 }
+
+func TestTheRefinerGetsTheCandidatesCodeChose(t *testing.T) {
+	in := briefInput()
+	in.Role = "refiner"
+	in.Candidates = []string{"gh:acme/web#2 Faster exports (shares internal/export/limit.go)"}
+	b := runner.Brief(in)
+	if !strings.Contains(b, "## Duplicate candidates") || !strings.Contains(b, "gh:acme/web#2 Faster exports") {
+		t.Fatal("the brief lacks the candidates")
+	}
+	in.Candidates = nil
+	if b := runner.Brief(in); !strings.Contains(b, "No other ticket") {
+		t.Fatal("without candidates the brief must say there are none, so the refiner does not search")
+	}
+}

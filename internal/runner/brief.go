@@ -24,6 +24,9 @@ type BriefInput struct {
 	Body        string // the ticket's text; its work state block is left out
 	Journal     []journal.Entry
 	PullRequest string // the pull request's state, if there is one
+	// Candidates are the possible duplicates code chose for the refiner
+	// (spec section 4.5); it reads only these.
+	Candidates []string
 }
 
 // Brief assembles the first message of a run from a template, by code alone
@@ -43,6 +46,16 @@ func Brief(in BriefInput) string {
 	head.WriteString("## Work state\n\n" + workState(state) + "\n## Next step\n\n" + next + "\n\n")
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
+	if in.Role == "refiner" {
+		pr := "## Duplicate candidates\n\n"
+		if len(in.Candidates) == 0 {
+			pr += "No other ticket shares paths, identifiers or title words with this one: there is no candidate to compare.\n\n"
+		} else {
+			pr += "Code chose these tickets as possible duplicates or contradictions; compare the ticket with these only:\n\n" +
+				untrusted("candidates", "- "+strings.Join(in.Candidates, "\n- ")) + "\n"
+		}
+		head.WriteString(pr)
+	}
 	var pr string
 	if in.PullRequest != "" {
 		pr = "## Pull request\n\n" + untrusted("pull request", in.PullRequest) + "\n"

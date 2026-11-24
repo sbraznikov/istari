@@ -60,6 +60,7 @@ type Run struct {
 	BudgetUSD  float64       `json:"budget_usd,omitempty"` // 0: none
 	Usage      harness.Usage `json:"usage"`
 	Completed  string        `json:"completed,omitempty"` // what the agent said with istari complete
+	Rejected   string        `json:"rejected,omitempty"`  // why code rejected what the agent submitted: the run fails
 	ExitCode   int           `json:"exit_code"`
 	Reason     string        `json:"reason,omitempty"` // how the run ended
 
@@ -163,6 +164,12 @@ func (r *Runs) Complete(ctx context.Context, id, message string) (Run, error) {
 		return Run{}, &core.Error{Code: core.CodeInvalidState, Message: "run " + id + " has ended"}
 	}
 	return r.update(ctx, id, EventRunCompleted, map[string]any{"run": id, "message": message}, func(run *Run) { run.Completed = message })
+}
+
+// Reject records that code rejected what the run's agent submitted, e.g. a
+// malformed result: the task fails when the run ends, whatever it says.
+func (r *Runs) Reject(ctx context.Context, id, reason string) (Run, error) {
+	return r.update(ctx, id, "run.rejected", map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Rejected = reason })
 }
 
 // create records a new run and its token.
