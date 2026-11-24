@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/sbraznikov/istari/internal/cli"
+	_ "github.com/sbraznikov/istari/internal/harness/claudecode" // registers the harness
 )
 
 func main() {

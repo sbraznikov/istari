@@ -70,3 +70,28 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
+	empty := t.TempDir()
+	cmd := exec.Command(binary, "doctor")
+	cmd.Env = append(os.Environ(), "PATH="+empty)
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("doctor without the harness binary: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "not found in PATH") {
+		t.Fatalf("doctor output does not explain what is missing:\n%s", out)
+	}
+
+	withFake := t.TempDir()
+	fake := "#!/bin/sh\necho 1.0.0\n"
+	if err := os.WriteFile(filepath.Join(withFake, "claude"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(binary, "doctor")
+	cmd.Env = append(os.Environ(), "PATH="+withFake+":/usr/bin:/bin")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("doctor with the harness binary: %v\n%s", err, out)
+	}
+}

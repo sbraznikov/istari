@@ -1,0 +1,170 @@
+// Package harness runs coding agents as external programs (spec section 7.3).
+// A Harness starts one run without a terminal; its Session yields the run's
+// events and its result. Adapters live in subpackages and register
+// themselves, so the rest of istari depends only on this package.
+package harness
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"time"
+)
+
+// RunSpec is everything a harness needs to start one run.
+type RunSpec struct {
+	Workdir        string            // the ticket's worktree; the run starts there
+	Brief          string            // the first message
+	Instructions   string            // the role instruction (system prompt)
+	Env            map[string]string // the agent's own variables (ISTARI_*); nothing else of the daemon's environment is passed
+	Model          string
+	PermissionMode string
+	AllowedTools   []string
+	MaxBudgetUSD   float64 // the harness-side spending cap; 0 means none
+}
+
+// EventKind is the kind of a harness event.
+type EventKind string
+
+// Event kinds.
+const (
+	EventMessage  EventKind = "message"   // text the agent wrote
+	EventToolCall EventKind = "tool_call" // a tool the agent called
+	EventUsage    EventKind = "usage"     // tokens of one model call
+)
+
+// Event is one thing that happened in a run.
+type Event struct {
+	Kind      EventKind       `json:"kind"`
+	Text      string          `json:"text,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	ToolInput json.RawMessage `json:"tool_input,omitempty"`
+	Usage     Usage           `json:"usage,omitzero"`
+}
+
+// Usage counts tokens and cost.
+type Usage struct {
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// Add returns the sum of u and o.
+func (u Usage) Add(o Usage) Usage {
+	return Usage{
+		InputTokens:      u.InputTokens + o.InputTokens,
+		OutputTokens:     u.OutputTokens + o.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + o.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + o.CacheWriteTokens,
+		CostUSD:          u.CostUSD + o.CostUSD,
+	}
+}
+
+// Result is how a run ended.
+type Result struct {
+	ExitCode  int    // the process exit code; -1 if it was killed by a signal
+	Usage     Usage  // the run's totals
+	SessionID string // for Resume
+}
+
+// Session is one running harness process.
+type Session interface {
+	// ID is the harness's session id, known once the harness reports it.
+	ID() string
+	// Events yields the run's events in order and closes when the process's
+	// output ends.
+	Events() <-chan Event
+	// Send passes a human's reply into the running session.
+	Send(msg string) error
+	// Stop asks the process to end, and kills it after grace.
+	Stop(grace time.Duration) error
+	// Wait waits for the process to end and returns its result.
+	Wait() (Result, error)
+}
+
+// Harness starts runs of one agent program.
+type Harness interface {
+	// Name is the name the config uses, e.g. in a pipeline stage.
+	Name() string
+	Start(ctx context.Context, spec RunSpec) (Session, error)
+	// Check tells whether the harness can run here (istari doctor).
+	Check(ctx context.Context) error
+}
+
+// Resumer is a harness that can continue an earlier session. It speeds up
+// continuation but is not required (spec section 7.3).
+type Resumer interface {
+	Resume(ctx context.Context, sessionID string, spec RunSpec) (Session, error)
+}
+
+// ErrSendNotSupported means the session cannot take input while it runs.
+var ErrSendNotSupported = errors.New("harness: this session does not accept messages while it runs; resume it instead")
+
+// Profile is how one role runs: which harness, model and permissions.
+type Profile struct {
+	Harness        string
+	Model          string
+	PermissionMode string
+	AllowedTools   []string
+}
+
+// Apply fills the profile's settings into a run spec.
+func (p Profile) Apply(spec RunSpec) RunSpec {
+	spec.Model = p.Model
+	spec.PermissionMode = p.PermissionMode
+	spec.AllowedTools = slices.Clone(p.AllowedTools)
+	return spec
+}
+
+var (
+	mu        sync.Mutex
+	harnesses = map[string]Harness{}
+)
+
+// Register makes a harness available by its name. Adapters call it from init.
+func Register(h Harness) {
+	mu.Lock()
+	defer mu.Unlock()
+	if _, dup := harnesses[h.Name()]; dup {
+		panic(fmt.Sprintf("harness: %s registered twice", h.Name()))
+	}
+	harnesses[h.Name()] = h
+}
+
+// Get returns a registered harness.
+func Get(name string) (Harness, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	h, ok := harnesses[name]
+	if !ok {
+		return nil, fmt.Errorf("harness: no harness named %q", name)
+	}
+	return h, nil
+}
+
+// All returns the registered harnesses ordered by name.
+func All() []Harness {
+	mu.Lock()
+	defer mu.Unlock()
+	all := make([]Harness, 0, len(harnesses))
+	for _, h := range harnesses {
+		all = append(all, h)
+	}
+	slices.SortFunc(all, func(a, b Harness) int { return compare(a.Name(), b.Name()) })
+	return all
+}
+
+func compare(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
