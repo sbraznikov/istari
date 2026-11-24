@@ -351,3 +351,42 @@ func TestAPullRequestIsFoundByItsURL(t *testing.T) {
 		}
 	}
 }
+
+func TestADraftPullRequestIsReadyForReviewAfterMarkReady(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gh.Issue(pr.Number).Draft {
+		t.Fatal("the pull request was not opened as a draft")
+	}
+	if err := c.MarkReady(ctx, githubtest.Repo, pr.Number); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if gh.Issue(pr.Number).Draft {
+		t.Fatal("the pull request is still a draft")
+	}
+	if err := c.MarkReady(ctx, githubtest.Repo, pr.Number); err != nil {
+		t.Fatalf("MarkReady on a ready pull request: %v", err)
+	}
+	if err := c.MarkReady(ctx, githubtest.Repo, 999); err == nil {
+		t.Fatal("MarkReady on a missing pull request succeeded")
+	}
+}
+
+func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
+	gh := githubtest.New(t, githubtest.Prefix("/api/v3"))
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.MarkReady(ctx, githubtest.Repo, pr.Number); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if gh.Issue(pr.Number).Draft {
+		t.Fatal("the pull request is still a draft")
+	}
+}

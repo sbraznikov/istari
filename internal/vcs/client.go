@@ -243,7 +243,49 @@ func (c *Client) Merge(ctx context.Context, repo string, n int, method string) e
 	return err
 }
 
+// MarkReady marks a draft pull request ready for review; a pull request
+// that is no draft is left as it is. GitHub's REST API cannot end a draft,
+// so this goes through its GraphQL API.
+func (c *Client) MarkReady(ctx context.Context, repo string, n int) error {
+	var pr struct {
+		NodeID string `json:"node_id"`
+		Draft  bool   `json:"draft"`
+	}
+	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
+		return err
+	}
+	if !pr.Draft {
+		return nil
+	}
+	var res struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	query := `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }`
+	if err := c.request(ctx, repo, http.MethodPost, c.graphqlURL(), map[string]any{"query": query, "variables": map[string]string{"id": pr.NodeID}}, &res); err != nil {
+		return err
+	}
+	if len(res.Errors) > 0 {
+		return fmt.Errorf("github: mark pull request %d ready: %s", n, res.Errors[0].Message)
+	}
+	return nil
+}
+
+// graphqlURL is the GraphQL endpoint next to the REST base: /graphql on
+// api.github.com, /api/graphql on GitHub Enterprise (REST at /api/v3).
+func (c *Client) graphqlURL() string {
+	if b, ok := strings.CutSuffix(c.base, "/v3"); ok {
+		return b + "/graphql"
+	}
+	return c.base + "/graphql"
+}
+
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
+	return c.request(ctx, repo, method, c.base+path, body, out)
+}
+
+func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
 		return err
@@ -253,7 +295,7 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 		data, _ := json.Marshal(body)
 		reader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
 		return err
 	}
@@ -269,7 +311,7 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
-		return fmt.Errorf("github: %s %s: %d %s", method, path, res.StatusCode, e.Message)
+		return fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
