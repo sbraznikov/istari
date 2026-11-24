@@ -2,10 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 )
 
@@ -15,7 +18,7 @@ import (
 func newDoctorCommand(opts *Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Check that istari can run here: tracker and harnesses",
+		Short: "Check that istari can run here: tracker, harnesses and worktrees",
 		Args:  Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			type check struct {
@@ -37,6 +40,21 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				c := check{Name: "harness " + h.Name(), OK: true}
 				if err := h.Check(cmd.Context()); err != nil {
 					c.OK, c.Detail = false, err.Error()
+					failed++
+				}
+				checks = append(checks, c)
+			}
+			// Worktrees without a ticket or of a finished ticket (spec 7.2),
+			// as the running daemon sees them.
+			var orphans []runner.Workspace
+			if err := opts.call(cmd, "workspace.orphans", "", api.Empty{}, &orphans); err == nil {
+				c := check{Name: "workspaces", OK: len(orphans) == 0}
+				if !c.OK {
+					var names []string
+					for _, o := range orphans {
+						names = append(names, orDash(o.Ticket)+" "+o.Dir)
+					}
+					c.Detail = fmt.Sprintf("%d orphan(s), remove with istari workspace prune: %s", len(orphans), strings.Join(names, "; "))
 					failed++
 				}
 				checks = append(checks, c)
