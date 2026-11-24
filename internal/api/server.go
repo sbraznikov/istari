@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -167,15 +168,21 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			srv.refines = runner.NewRefines(rt, journal.New(jt, ns, opts.Clock), srv.tickets, opts.Standards)
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine})
+	hasPlan := func(ctx context.Context, ref string) (bool, error) {
+		r, err := tickets.ParseRef(ref)
+		if err != nil {
+			return false, nil
+		}
+		entries, err := journal.New(nil, ns, nil).Stored(ctx, r)
+		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan})
 	if srv.spaces != nil {
 		var jt journal.Tracker
 		if t, ok := opts.Tracker.(journal.Tracker); ok {
 			jt = t
 		}
-		var sizer interface {
-			SetSize(ctx context.Context, ref tickets.Ref, size string) error
-		}
+		var sizer runner.Sizer
 		if t, ok := opts.Tracker.(runner.RefineTracker); ok {
 			sizer = t
 		}

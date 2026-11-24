@@ -481,17 +481,21 @@ func (w *Workspaces) PushTarget(repo string) (url, private string) {
 	return w.remote(repo), filepath.Join(w.opts.DataDir, "push", repo+".git")
 }
 
-// MainHas tells whether the repository's main branch, as last fetched, has a
-// file or directory at path.
-func (w *Workspaces) MainHas(ctx context.Context, repo, path string) (bool, error) {
+// MainHas tells what the repository's main branch, as last fetched, has at
+// path: "blob" for a file, "tree" for a directory, "" for nothing.
+func (w *Workspaces) MainHas(ctx context.Context, repo, path string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	clone := w.clonePath(repo)
 	main, err := mainBranch(ctx, clone)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	return hasRef(ctx, clone, "origin/"+main+":"+strings.TrimSuffix(path, "/")), nil
+	kind, err := gitOut(ctx, clone, "cat-file", "-t", "origin/"+main+":"+strings.TrimSuffix(path, "/"))
+	if err != nil {
+		return "", nil
+	}
+	return kind, nil
 }
 
 // MainFile reads a file of the repository's main branch, as last fetched;

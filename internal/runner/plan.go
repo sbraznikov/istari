@@ -78,18 +78,19 @@ type Plans struct {
 	ws      *Workspaces
 	journal *journal.Journal
 	tickets *core.Tickets
-	sizer   interface {
-		SetSize(ctx context.Context, ref tickets.Ref, size string) error
-	}
+	sizer   Sizer
 	tasks   *core.Tasks
 	creator tickets.Creator
 	created func(ctx context.Context, refs []tickets.Ref, budgetOf string) error
 }
 
-// NewPlans returns the plan checker; sizer writes the size label (nil: istari only).
-func NewPlans(ws *Workspaces, j *journal.Journal, k *core.Tickets, sizer interface {
+// Sizer writes a ticket's size label to its tracker.
+type Sizer interface {
 	SetSize(ctx context.Context, ref tickets.Ref, size string) error
-}) *Plans {
+}
+
+// NewPlans returns the plan checker; sizer writes the size label (nil: istari only).
+func NewPlans(ws *Workspaces, j *journal.Journal, k *core.Tickets, sizer Sizer) *Plans {
 	return &Plans{ws: ws, journal: j, tickets: k, sizer: sizer}
 }
 
@@ -108,11 +109,14 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 		if isNew {
 			continue
 		}
-		ok, err := p.ws.MainHas(ctx, ref.Repo, path)
+		kind, err := p.ws.MainHas(ctx, ref.Repo, path)
 		if err != nil {
 			return PlanResult{}, err
 		}
-		if !ok {
+		if kind == "tree" {
+			return PlanResult{}, fmt.Errorf("plan: the zone's %s is a directory; list the files the change touches", path)
+		}
+		if kind == "" {
 			return PlanResult{}, fmt.Errorf("plan: the zone's path %s does not exist on the main branch; mark it \"%s (new)\" if the change creates it", path, path)
 		}
 	}

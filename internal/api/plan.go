@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -122,18 +123,25 @@ func (s *Server) applyPlan(ctx context.Context, run runner.Run, raw string) (Pla
 	if err != nil {
 		return PlanAnswer{}, err
 	}
+	if tk, err := s.tickets.Get(ctx, run.Ticket); err != nil || tk.State != core.TicketPlanning {
+		if err != nil {
+			return PlanAnswer{}, err
+		}
+		return PlanAnswer{}, fmt.Errorf("plan: %s is %s; a plan is submitted in planning", run.Ticket, tk.State)
+	}
 	ps := runner.PlanSettings{MaxSize: settings.MaxSize, Gate: settings.PlanGate}
 	if res, err = s.plans.Check(ctx, run, res, ps); err != nil {
 		return PlanAnswer{}, err
 	}
-	if err := s.plans.Record(ctx, run, res, ps); err != nil {
-		return PlanAnswer{}, err
-	}
 	answer := PlanAnswer{Size: res.Size}
 	if res.Split != nil && len(res.Split.Tickets) > 0 {
+		// The split goes first: if it fails, the journal has no plan for it.
 		if answer.Children, err = s.plans.Split(withoutKey(ctx), run, *res.Split); err != nil {
 			return PlanAnswer{}, err
 		}
+	}
+	if err := s.plans.Record(ctx, run, res, ps); err != nil {
+		return PlanAnswer{}, err
 	}
 	return answer, nil
 }

@@ -126,7 +126,14 @@ func TestATicketAboveMaxSizeMustBeSplit(t *testing.T) {
 	if _, err := f.plans.Check(ctx, f.run, split, runner.PlanSettings{MaxSize: "M"}); err != nil {
 		t.Fatalf("a split plan: %v", err)
 	}
-	_ = core.TicketNew
+}
+
+func TestADirectoryInTheZoneIsRefused(t *testing.T) {
+	f := newPlans(t)
+	res, _ := runner.ParsePlanResult([]byte(strings.Replace(goodPlan, "cache/cache.go,", "cache/,", 1)))
+	if _, err := f.plans.Check(ctx, f.run, res, runner.PlanSettings{MaxSize: "L"}); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("Check = %v, want a directory refused: the zone lists files", err)
+	}
 }
 
 func TestASplitMakesAdmittedChildrenAndLeavesTheParentWithoutTasks(t *testing.T) {
