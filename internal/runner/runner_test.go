@@ -397,3 +397,28 @@ func TestARunStoppedOnTimeoutLeavesACheckpointWithItsWork(t *testing.T) {
 		t.Fatalf("checkpoint entries = %d, want one for the stopped run", len(events))
 	}
 }
+
+func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		DataDir: f.data, Projects: []string{"web"}, Lease: 600 * time.Millisecond,
+		Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+		Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
+	})
+	tk, task := f.readyTask(t, 14)
+	f.start(t)
+	s := f.session(t)
+	os.WriteFile(filepath.Join(s.spec.Workdir, "paused-work.txt"), []byte("x\n"), 0o644)
+	if _, err := f.tickets.SetHold(ctx, "human:alex", tk.Ref, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	f.waitTask(t, task.ID, core.TaskReady) // released, and not taken again while paused
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
+		t.Fatalf("checkpoints = %d, want one on pausing", len(events))
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskReady {
+		t.Fatalf("the paused ticket's task is %s, want ready and left alone", got.State)
+	}
+}

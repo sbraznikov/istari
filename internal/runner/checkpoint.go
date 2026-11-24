@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -70,16 +72,29 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 	if err != nil {
 		return journal.Entry{}, err
 	}
-	entry.Commit = head[:min(12, len(head))]
-	if out, err := gitOut(ctx, run.Dir, "diff", "--name-only", prev, head); err == nil && out != "" {
-		entry.Files = strings.Split(out, "\n")
-		slices.Sort(entry.Files)
+	if head == prev {
+		return journal.Entry{}, &core.Error{Code: core.CodeInvalidState, Message: "nothing changed since the last checkpoint"}
 	}
-	var tests []string
-	for _, f := range entry.Files {
-		if isTestFile(f) {
-			tests = append(tests, f)
+	entry.Commit = head[:min(12, len(head))]
+	var tests, gone []string // the slice's tests, as they are now; the test files it removed
+	if out, err := gitOut(ctx, run.Dir, "diff", "--name-status", "-M", prev, head); err == nil && out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Split(line, "\t")
+			status, paths := fields[0], fields[1:]
+			entry.Files = append(entry.Files, paths[len(paths)-1])
+			switch {
+			case status == "D":
+				if isTestFile(paths[0]) {
+					gone = append(gone, paths[0])
+				}
+			case strings.HasPrefix(status, "R") && isTestFile(paths[0]):
+				gone = append(gone, paths[0])
+			}
+			if status != "D" && isTestFile(paths[len(paths)-1]) {
+				tests = append(tests, paths[len(paths)-1])
+			}
 		}
+		slices.Sort(entry.Files)
 	}
 	if len(tests) == 0 {
 		entry.Notes = append(entry.Notes, "no test change in this slice")
@@ -95,19 +110,28 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Notes = append(entry.Notes, name+": no command in the main branch's "+pipeline.Path)
 			continue
 		}
-		if runCheck(ctx, run.Dir, cmd) {
+		if passed, output := runCheck(ctx, run.Dir, cmd); passed {
 			entry.Checks[name] = "green"
 		} else {
 			entry.Checks[name], entry.Red = "red", true
+			if entry.Failures == nil {
+				entry.Failures = map[string]string{}
+			}
+			entry.Failures[name] = output
 		}
 	}
-	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 && prev != head {
-		passed, err := c.onPrevious(ctx, ws.Repo, run.Dir, prev, tests, cmd)
-		if err != nil {
+	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 {
+		judged, passed, err := c.onPrevious(ctx, ws.Repo, run.Dir, prev, tests, gone, cmd)
+		switch {
+		case err != nil:
 			return journal.Entry{}, err
-		}
-		if passed {
+		case !judged:
+			entry.Notes = append(entry.Notes, "verify_red: the tests already fail on the code of the previous checkpoint, so red first cannot be judged")
+		case passed:
+			entry.Checks["verify_red"], entry.Red = "red", true
 			entry.Notes = append(entry.Notes, "verify_red: the new tests ("+strings.Join(tests, ", ")+") pass on the code of the previous checkpoint: the slice is not counted")
+		default:
+			entry.Checks["verify_red"] = "green"
 		}
 	}
 
@@ -178,13 +202,14 @@ func (c *Checkpoints) checks(ctx context.Context, repo string) (map[string]strin
 	return out, verifyRed, nil
 }
 
-// onPrevious runs the test command on the previous checkpoint's code with
-// the slice's tests added, in a scratch checkout. It reports whether the
-// tests passed there.
-func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev string, tests []string, cmd string) (bool, error) {
+// onPrevious runs the test command on the previous checkpoint's code in a
+// scratch checkout: first as it is, which must pass for red first to be
+// judged; then with the slice's tests in place, which must fail. It reports
+// whether it could judge, and whether the slice's tests passed there.
+func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev string, tests, gone []string, cmd string) (judged, passed bool, err error) {
 	scratch, err := os.MkdirTemp("", "istari-red-")
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	os.Remove(scratch)
 	clone := c.ws.clonePath(repo)
@@ -192,7 +217,7 @@ func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev string, te
 	_, err = gitOut(ctx, clone, "worktree", "add", "--detach", scratch, prev)
 	c.ws.mu.Unlock()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer func() {
 		c.ws.mu.Lock()
@@ -200,23 +225,27 @@ func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev string, te
 		gitOut(context.WithoutCancel(ctx), clone, "worktree", "remove", "--force", scratch)
 		os.RemoveAll(scratch)
 	}()
+	if ok, _ := runCheck(ctx, scratch, cmd); !ok {
+		return false, false, nil
+	}
+	for _, t := range gone {
+		os.Remove(filepath.Join(scratch, t))
+	}
 	for _, t := range tests {
 		data, err := os.ReadFile(filepath.Join(dir, t))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // a test the slice deleted
-		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		target := filepath.Join(scratch, t)
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := os.WriteFile(target, data, 0o644); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
-	return runCheck(ctx, scratch, cmd), nil
+	ok, _ := runCheck(ctx, scratch, cmd)
+	return true, ok, nil
 }
 
 // commitLeftovers commits what the agent left uncommitted.
@@ -231,27 +260,60 @@ func commitLeftovers(ctx context.Context, run Run, message string) error {
 	cmd := exec.CommandContext(ctx, "git", "commit", "-q", "-m", message)
 	cmd.Dir = run.Dir
 	who := run.Profile + " (istari)"
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME="+who, "GIT_AUTHOR_EMAIL=istari@localhost", "GIT_COMMITTER_NAME="+who, "GIT_COMMITTER_EMAIL=istari@localhost")
+	cmd.Env = append(checkEnv(), "GIT_AUTHOR_NAME="+who, "GIT_AUTHOR_EMAIL=istari@localhost", "GIT_COMMITTER_NAME="+who, "GIT_COMMITTER_EMAIL=istari@localhost")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git commit: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// runCheck runs a check command in dir and tells whether it passed.
-func runCheck(ctx context.Context, dir, command string) bool {
+// runCheck runs a check command in dir and tells whether it passed, with
+// the end of its output. The agent wrote the code it runs, so it runs without
+// the daemon's secrets, and its whole process group ends at the timeout.
+func runCheck(ctx context.Context, dir, command string) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
-	return cmd.Run() == nil
+	cmd.Env = checkEnv()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	tail := string(out)
+	if len(tail) > 1500 {
+		tail = "…" + tail[len(tail)-1500:]
+	}
+	if ctx.Err() != nil {
+		tail += "\n[stopped after " + checkTimeout.String() + "]"
+	}
+	return err == nil, strings.TrimSpace(tail)
+}
+
+// checkEnv is the daemon's environment without its secrets: tokens, keys,
+// passwords and istari's own variables.
+func checkEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		upper := strings.ToUpper(name)
+		secret := strings.HasPrefix(upper, "ISTARI_") || strings.HasPrefix(upper, "SLACK_") || strings.HasPrefix(upper, "ANTHROPIC_") ||
+			strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GITHUB_") || strings.HasPrefix(upper, "GIT_CONFIG_")
+		for _, part := range []string{"TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY", "CREDENTIAL"} {
+			secret = secret || strings.Contains(upper, part)
+		}
+		if !secret {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // isTestFile tells whether a path is a test by the usual conventions.
 func isTestFile(p string) bool {
 	base := path.Base(p)
 	for _, part := range strings.Split(path.Dir(p), "/") {
-		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" || part == "testdata" {
+		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" {
 			return true
 		}
 	}

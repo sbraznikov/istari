@@ -91,9 +91,11 @@ type CheckpointEntry struct {
 	Commit string            `json:"commit,omitempty"`
 	Checks map[string]string `json:"checks,omitempty"` // check name → its result, as code ran it
 	Red    bool              `json:"red,omitempty"`    // a check failed: code calls the checkpoint red, whatever the agent said
-	Notes  []string          `json:"notes,omitempty"`  // what code found, e.g. a slice without a test change
-	Files  []string          `json:"files,omitempty"`
-	PR     string            `json:"pr,omitempty"`
+	// Failures is the end of a red check's output, by check.
+	Failures map[string]string `json:"failures,omitempty"`
+	Notes    []string          `json:"notes,omitempty"` // what code found, e.g. a slice without a test change
+	Files    []string          `json:"files,omitempty"`
+	PR       string            `json:"pr,omitempty"`
 }
 
 // ReviewEntry is the result of the review stage; the details are in the PR.

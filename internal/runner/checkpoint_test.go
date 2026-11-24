@@ -25,11 +25,13 @@ type cpFixture struct {
 	head func() string
 }
 
-func newCheckpoints(t *testing.T) *cpFixture {
+func newCheckpoints(t *testing.T) *cpFixture { return newCheckpointsWith(t, pipelineFile) }
+
+func newCheckpointsWith(t *testing.T, pipelineToml string) *cpFixture {
 	t.Helper()
 	f := newWorkspaces(t)
 	seed := filepath.Join(f.root, "seed")
-	write(t, filepath.Join(seed, ".istari", "pipeline.toml"), pipelineFile)
+	write(t, filepath.Join(seed, ".istari", "pipeline.toml"), pipelineToml)
 	write(t, filepath.Join(seed, "run-tests.sh"), runTests)
 	write(t, filepath.Join(seed, "src.txt"), "old\n")
 	gitIn(t, seed, "add", ".")
@@ -94,9 +96,13 @@ func TestACheckpointCommitsLeftoverWorkWithTheTrailerAndPushesIt(t *testing.T) {
 
 func TestFailingTestsMakeTheCheckpointRedWhateverTheAgentSays(t *testing.T) {
 	f := newCheckpoints(t)
-	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt\n")
-	if c := f.checkpoint(t, "All tests are green"); !c.Red || c.Checks["test"] != "red" {
+	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt || { echo MISSING FEATURE; exit 1; }\n")
+	c := f.checkpoint(t, "All tests are green")
+	if !c.Red || c.Checks["test"] != "red" {
 		t.Fatalf("checks = %v red %v, want red", c.Checks, c.Red)
+	}
+	if !strings.Contains(c.Failures["test"], "MISSING FEATURE") {
+		t.Fatalf("failures = %v, want the test's output", c.Failures)
 	}
 }
 
@@ -104,8 +110,8 @@ func TestANewTestThatPassesOnThePreviousCodeDoesNotCount(t *testing.T) {
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "always.sh"), "true\n")
 	c := f.checkpoint(t, "Added a test")
-	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "not counted") || !strings.Contains(notes, "tests/always.sh") {
-		t.Fatalf("notes = %v, want the slice not counted", c.Notes)
+	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "not counted") || !strings.Contains(notes, "tests/always.sh") || !c.Red {
+		t.Fatalf("notes = %v red %v, want the slice not counted and the checkpoint red", c.Notes, c.Red)
 	}
 }
 
@@ -145,5 +151,45 @@ func TestAfterACrashOnlyWorkAfterTheLastCheckpointIsLost(t *testing.T) {
 	}
 	if !exists(filepath.Join(w.Dir, "tests", "feature.sh")) || exists(filepath.Join(w.Dir, "later.txt")) {
 		t.Fatal("want the checkpointed work back and nothing after it")
+	}
+}
+
+func TestACheckpointWithNothingNewIsRefused(t *testing.T) {
+	f := newCheckpoints(t)
+	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
+	f.checkpoint(t, "First")
+	if _, err := f.cp.Make(ctx, f.run, "Again"); err == nil || !strings.Contains(err.Error(), "nothing") {
+		t.Fatalf("a second checkpoint without changes: %v", err)
+	}
+}
+
+func TestTestDataAloneIsNoTestChange(t *testing.T) {
+	f := newCheckpoints(t)
+	write(t, filepath.Join(f.ws.Dir, "testdata", "input.txt"), "data\n")
+	if c := f.checkpoint(t, "Fixtures"); !strings.Contains(strings.Join(c.Notes, " "), "no test change") {
+		t.Fatalf("notes = %v, want the slice flagged", c.Notes)
+	}
+}
+
+func TestChecksRunWithoutTheDaemonsSecrets(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "daemon-secret")
+	t.Setenv("ISTARI_TOKEN", "run-secret")
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"env > env.out; test -z \\\"$GITHUB_TOKEN$ISTARI_TOKEN\\\"\"\ntest = \"true\"\n")
+	write(t, filepath.Join(f.ws.Dir, "tests", "x.sh"), "true\n")
+	if c := f.checkpoint(t, "Env"); c.Checks["typecheck"] != "green" {
+		out, _ := os.ReadFile(filepath.Join(f.ws.Dir, "env.out"))
+		t.Fatalf("a check saw the daemon's secrets:\n%s", out)
+	}
+}
+
+func TestARedPreviousCheckpointCannotJudgeRedFirst(t *testing.T) {
+	f := newCheckpoints(t)
+	write(t, filepath.Join(f.ws.Dir, "tests", "broken.sh"), "exit 1\n")
+	f.checkpoint(t, "Broken on purpose") // red
+	os.Remove(filepath.Join(f.ws.Dir, "tests", "broken.sh"))
+	write(t, filepath.Join(f.ws.Dir, "tests", "always.sh"), "true\n")
+	c := f.checkpoint(t, "A vacuous test")
+	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "cannot be judged") {
+		t.Fatalf("notes = %v, want verify_red reported as not judged", c.Notes)
 	}
 }

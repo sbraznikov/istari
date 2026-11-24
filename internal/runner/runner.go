@@ -280,6 +280,12 @@ loop:
 		case res = <-waited:
 			break loop
 		case <-renew.C:
+			if held, err := r.tickets.Get(bg, task.Ticket); err == nil && held.Hold != "" {
+				// The ticket was put on hold (paused): the run stops, its work
+				// is saved, and the task waits until the hold is lifted.
+				stopWith(ending{reason: "the ticket is on hold (" + held.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
+				continue
+			}
 			l, err := r.tasks.Renew(bg, lease)
 			var e *core.Error
 			switch {
