@@ -79,7 +79,7 @@ type Project struct {
 	Repos   []ProjectRepo `toml:"repos"`
 	// Trusted are the tracker logins whose tickets are admitted without a
 	// human and who may admit others' (spec section 4.5). Empty: everyone
-	// with write access to the repository (spec section 15.3).
+	// with write access to the repository.
 	Trusted []string `toml:"trusted"`
 	// MaxConcurrentRuns limits claimed tasks at once in this project; nil
 	// (the key absent) means no limit of its own.

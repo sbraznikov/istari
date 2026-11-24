@@ -40,8 +40,7 @@ type SyncRepo struct {
 	Repo    string // owner/repo
 	Project string
 	// Trusted are the logins admitted without a human, who may also admit
-	// others' tickets; empty means everyone with write access (spec 4.5,
-	// 15.3; maintainer decision on #19).
+	// others' tickets; empty means everyone with write access (spec 4.5).
 	Trusted []string
 }
 

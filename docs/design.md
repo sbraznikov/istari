@@ -324,7 +324,7 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket was created by an agent while working on an already admitted ticket; it inherits the parent's admission and budget;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`.
 
-Trusted members are the project's `trusted` list (section 12); a project without the list trusts everyone with write access to the repository.
+Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
