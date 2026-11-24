@@ -436,5 +436,7 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 	if failed := f.waitEvent(t, "task.failed"); !strings.Contains(string(failed.Payload), "huge") {
 		t.Fatalf("task.failed = %s, want the rejection", failed.Payload)
 	}
-	_ = task
+	if failed := f.waitEvent(t, "task.failed"); failed.Task != task.ID && failed.Ticket != task.Ticket {
+		t.Fatalf("the failure is of another task: %+v", failed)
+	}
 }

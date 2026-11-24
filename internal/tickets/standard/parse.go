@@ -20,16 +20,16 @@ type body struct {
 
 var headingRe = regexp.MustCompile(`^##\s+(.+?)\s*#*\s*$`)
 
-// parse splits a markdown body into sections, the prose outside code fences,
-// and the metadata table: the last table outside fences whose header names
-// Type and Size, with a separator row. The table and a --- rule right before
-// it are not part of any section; any other --- is content.
 // The block a refiner keeps the original text of a ticket in (spec 4.5).
 const (
 	OriginalStart = "<details><summary>Original text</summary>"
 	OriginalEnd   = "</details>"
 )
 
+// parse splits a markdown body into sections, the prose outside code fences,
+// and the metadata table: the last table outside fences whose header names
+// Type and Size, with a separator row. The table and a --- rule right before
+// it are not part of any section; any other --- is content.
 func parse(src string) body {
 	// The work state block is istari's summary, not the ticket's text: it
 	// changes with every journal entry (spec section 4.6).

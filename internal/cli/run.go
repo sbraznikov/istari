@@ -169,12 +169,8 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		if err != nil {
 			return err
 		}
-		res, err := runner.ParseRefine(data)
-		if err != nil {
-			return err
-		}
-		var ok api.OK
-		if err := opts.call(cmd, "refine.submit", key, api.RefineSubmitRequest{Actor: opts.Actor, Result: res}, &ok); err != nil {
+		var ok api.OK // istari parses and judges it; a malformed result fails the run
+		if err := opts.call(cmd, "refine.submit", key, api.RefineSubmitRequest{Actor: opts.Actor, Result: string(data)}, &ok); err != nil {
 			return err
 		}
 		return render(cmd.OutOrStdout(), opts, ok, []string{"OK"}, [][]string{{"refine result applied"}})

@@ -151,6 +151,7 @@ type issue struct {
 	HTMLURL     string          `json:"html_url"`
 	PullRequest json.RawMessage `json:"pull_request"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+	ClosedAt    time.Time       `json:"closed_at"`
 	Comments    int             `json:"comments"`
 }
 
@@ -165,7 +166,7 @@ func (i issue) ticket(repo string) tickets.Ticket {
 		t.Labels = append(t.Labels, l.Name)
 	}
 	if t.Closed {
-		t.ClosedAs = i.StateReason
+		t.ClosedAs, t.ClosedAt = i.StateReason, i.ClosedAt
 	}
 	t.State = stateOf(t.Labels)
 	for _, l := range t.Labels {
@@ -246,6 +247,9 @@ func (p *Provider) List(ctx context.Context, q tickets.Query) ([]tickets.Ticket,
 	}
 	if len(q.Labels) > 0 {
 		v.Set("labels", strings.Join(q.Labels, ","))
+	}
+	if !q.Since.IsZero() {
+		v.Set("since", q.Since.UTC().Format(time.RFC3339))
 	}
 	path := fmt.Sprintf("/repos/%s/issues?%s", q.Repo, v.Encode())
 	var out []tickets.Ticket

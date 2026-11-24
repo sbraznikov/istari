@@ -79,8 +79,8 @@ type (
 		Plan  tickets.Plan `json:"plan"`
 	}
 	RefineSubmitRequest struct {
-		Actor  string              `json:"actor"`
-		Result runner.RefineResult `json:"result"`
+		Actor  string `json:"actor"`
+		Result string `json:"result"` // the YAML the refiner wrote, as written: code parses it
 	}
 	CheckpointRequest struct {
 		Actor   string `json:"actor"`
@@ -312,7 +312,11 @@ func (s *Server) operations() map[string]operation {
 			case s.refines == nil:
 				return nil, &core.Error{Code: core.CodeInvalidState, Message: "refining is off: istari has no ticket tracker"}
 			}
-			if err := s.refines.Apply(ctx, run, r.Result); err != nil {
+			res, err := runner.ParseRefine([]byte(r.Result))
+			if err == nil {
+				err = s.refines.Apply(ctx, run, res)
+			}
+			if err != nil {
 				if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
 					return nil, rerr
 				}

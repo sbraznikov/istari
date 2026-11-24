@@ -29,6 +29,7 @@ const maxCandidates = 5
 
 var (
 	backticked = regexp.MustCompile("`([^`\\s]+)`")
+	extension  = regexp.MustCompile(`\.[a-z]{1,5}$`)
 	word       = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]{3,}`)
 	stopwords  = map[string]bool{"with": true, "from": true, "that": true, "this": true, "into": true, "when": true, "make": true,
 		"have": true, "will": true, "should": true, "their": true, "them": true, "they": true, "about": true, "after": true}
@@ -43,7 +44,7 @@ func signatureOf(t Ticket) signature {
 	var s signature
 	for _, m := range backticked.FindAllStringSubmatch(t.Title+"\n"+t.Body, -1) {
 		tok := strings.Trim(m[1], ".,;:")
-		if strings.Contains(tok, "/") || regexp.MustCompile(`\.[a-z]{1,5}$`).MatchString(tok) && !strings.Contains(tok, "(") {
+		if strings.Contains(tok, "/") || extension.MatchString(tok) && !strings.Contains(tok, "(") {
 			s.paths = append(s.paths, tok)
 		} else {
 			s.idents = append(s.idents, tok)
@@ -67,9 +68,22 @@ func signatureOf(t Ticket) signature {
 // words (1) with it, the most alike first: at most five, each with a score
 // of at least two (one identifier, or two words).
 func Candidates(ctx context.Context, p Lister, t Ticket) ([]Candidate, error) {
-	all, err := p.List(ctx, Query{Repo: t.Ref.Repo, Closed: true})
+	open, err := p.List(ctx, Query{Repo: t.Ref.Repo})
 	if err != nil {
 		return nil, err
+	}
+	// Closed ones: only those touched lately need reading; the window is
+	// counted from when they were closed.
+	since := time.Now().Add(-candidateWindow)
+	recent, err := p.List(ctx, Query{Repo: t.Ref.Repo, Closed: true, Since: since})
+	if err != nil {
+		return nil, err
+	}
+	all := open
+	for _, o := range recent {
+		if o.Closed {
+			all = append(all, o)
+		}
 	}
 	mine := signatureOf(t)
 	type scored struct {
@@ -78,7 +92,7 @@ func Candidates(ctx context.Context, p Lister, t Ticket) ([]Candidate, error) {
 	}
 	var out []scored
 	for _, o := range all {
-		if o.Ref == t.Ref || o.Closed && (o.ClosedAs != "completed" || time.Since(o.Updated) > candidateWindow) {
+		if o.Ref == t.Ref || o.Closed && (o.ClosedAs != "completed" || o.ClosedAt.Before(since)) {
 			continue
 		}
 		theirs := signatureOf(o)

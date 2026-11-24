@@ -248,17 +248,32 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	}
 	switch tk.State {
 	case core.TicketNew:
-		// A ticket below the standard gets one refine task; the refiner
-		// brings it to the standard or asks (spec section 4.5).
-		id := taskID(tk.Ref, 0, "refine")
-		if e.opts.NeedsRefine == nil || slices.ContainsFunc(all, func(t core.Task) bool { return t.ID == id }) {
+		// A ticket below the standard gets a refine task; the refiner brings
+		// it to the standard or asks. While it still falls short, the check is
+		// repeated (after an answer, an edit or a failed run, spec 4.5) up to
+		// maxRefines times; then it waits for a human.
+		if e.opts.NeedsRefine == nil {
 			return nil
+		}
+		done := 0
+		for _, t := range all {
+			if t.Ticket != tk.Ref || !strings.HasPrefix(StageOf(t), "refine-") {
+				continue
+			}
+			if t.State != core.TaskCompleted && t.State != core.TaskFailed && t.State != core.TaskCanceled {
+				return nil // a refine is under way
+			}
+			done++
 		}
 		needs, err := e.opts.NeedsRefine(ctx, tk)
 		if err != nil || !needs {
 			return err
 		}
-		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: id, Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
+		if done >= maxRefines {
+			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
+			return err
+		}
+		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, fmt.Sprintf("refine-%d", done+1)), Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
 		return err
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
@@ -306,6 +321,9 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 }
 
 const waitingDependency = "waiting_dependency"
+
+// maxRefines bounds how often a ticket below the standard is refined.
+const maxRefines = 3
 
 // state returns a ticket's state, from this reconcile or the store.
 func (e *Engine) state(ctx context.Context, ref string) core.TicketState {

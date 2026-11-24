@@ -124,11 +124,15 @@ func TestMissingInformationBecomesAQuestionAndTheHold(t *testing.T) {
 
 func TestAnXLTicketIsMarkedForASplit(t *testing.T) {
 	f := newRefine(t)
-	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "meets", Size: "XL"}); err != nil {
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "needs_input", Size: "XL", Questions: []string{"Which part comes first?"}}); err != nil {
 		t.Fatal(err)
 	}
 	issue := f.gh.Issue(f.n)
-	if !contains(issue.Labels, "size:XL") || !strings.Contains(issue.Comments[len(issue.Comments)-1].Body, "split") {
+	all := ""
+	for _, c := range issue.Comments {
+		all += c.Body
+	}
+	if !contains(issue.Labels, "size:XL") || !strings.Contains(all, "must split it") {
 		t.Fatalf("labels %v, comments %+v; want XL marked for a split", issue.Labels, issue.Comments)
 	}
 }
@@ -155,4 +159,65 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestMeetsIsRefusedForATicketBelowTheStandard(t *testing.T) {
+	f := newRefine(t)
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "meets", Size: "S"}); err == nil || !strings.Contains(err.Error(), "standard") {
+		t.Fatalf("meets on a raw ticket: %v", err)
+	}
+}
+
+func TestABadCardIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	f := newRefine(t)
+	card := &journal.DecisionEntry{Problem: "p", State: "s", Recommendation: "A", Recommended: "A", Status: "proposed",
+		Options: []journal.Option{{Letter: "A", Gist: "only one"}}}
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "duplicate", Size: "S", Card: card}); err == nil {
+		t.Fatal("a card with one option was accepted")
+	}
+	if issue := f.gh.Issue(f.n); len(issue.Comments) != 0 || contains(issue.Labels, "size:S") {
+		t.Fatalf("a refused result wrote: comments %d, labels %v", len(issue.Comments), issue.Labels)
+	}
+}
+
+func TestARewriteKeepsTheWorkStateAndJournalsASizeChange(t *testing.T) {
+	f := newRefine(t)
+	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: f.n}
+	f.gh.HumanSetLabels(f.n, "bob", "size:M")
+	withState := journal.WithWorkState(rawTicket, journal.WorkState{Stage: "new"})
+	f.gh.HumanEditBody(f.n, "bob", withState)
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", SizeReason: "one module", Body: standardBody(rawTicket), Changes: []string{"sections"}}); err != nil {
+		t.Fatal(err)
+	}
+	if body := f.gh.Issue(f.n).Body; !strings.Contains(body, "<!-- istari:work-state:start -->") {
+		t.Fatalf("the rewrite dropped the work state block:\n%s", body)
+	}
+	entries, _ := f.refines.Journal().Stored(ctx, ref)
+	found := false
+	for _, e := range entries {
+		found = found || strings.Contains(e.Text, "M → S")
+	}
+	if !found {
+		t.Fatalf("the size change is not in the journal: %+v", entries)
+	}
+}
+
+func TestTheOriginalBlockMustEndTheTicket(t *testing.T) {
+	f := newRefine(t)
+	body := standardBody(rawTicket) + "\n## Afterwards\n\nMore.\n"
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", Body: body, Changes: []string{"x"}}); err == nil {
+		t.Fatal("an original block followed by more text was accepted")
+	}
+}
+
+func TestARewriteWithNothingToJournalStillKeepsTheWorkState(t *testing.T) {
+	f := newRefine(t)
+	f.gh.HumanSetLabels(f.n, "bob", "size:S")
+	f.gh.HumanEditBody(f.n, "bob", journal.WithWorkState(rawTicket, journal.WorkState{Stage: "new"}))
+	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", Body: standardBody(rawTicket), Changes: []string{"sections"}}); err != nil {
+		t.Fatal(err)
+	}
+	if body := f.gh.Issue(f.n).Body; !strings.Contains(body, "<!-- istari:work-state:start -->") {
+		t.Fatalf("the rewrite dropped the work state block:\n%s", body)
+	}
 }
