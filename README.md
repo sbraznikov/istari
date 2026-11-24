@@ -6,7 +6,7 @@
 
 istari is a self-hosted system that runs the software development lifecycle for coding agents. It takes a ticket and carries it to a merged pull request through a fixed pipeline of stages that agents execute under human control.
 
-> **Status: design stage.** The repository contains the spec and the TUI mockups. There is no code yet. Implementation is tracked in the issues, starting with [M1 Core](https://github.com/sbraznikov/istari/issues/1).
+> **Status: early, M1–M3 implemented.** istari syncs tickets from GitHub Issues, runs agents from a task queue in a git worktree per ticket, and takes a ticket through the refine, plan and implement stages to a draft pull request. Slack, the TUI, and the review and merge stages are not built yet. To try it, follow the [setup guide](docs/setup.md).
 
 ![The Agents screen of the istari TUI](docs/tui/agents.png)
 
@@ -37,6 +37,7 @@ istari is a self-hosted system that runs the software development lifecycle for 
 
 ## Documentation
 
+- [Setup guide](docs/setup.md): install, configure and run istari, from the first ticket to a draft pull request.
 - [Design spec](docs/design.md): architecture, ticket state machine, ticket standard, pipeline, Slack, agents, CLI, TUI, configuration.
 - [TUI mockups](docs/tui/mockups.html): the four screens. They are part of the spec.
 - [AGENTS.md](AGENTS.md): rules for coding agents that work in this repository.
