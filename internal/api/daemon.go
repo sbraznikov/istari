@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
@@ -39,6 +40,7 @@ type DaemonOptions struct {
 	Repos        []tickets.SyncRepo
 	Standards    tickets.Standards // nil: no admission
 	SyncInterval time.Duration     // 0: tickets.DefaultSyncInterval
+	GitServer    string            // where repositories are cloned from; "": https://github.com
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -70,11 +72,14 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	defer os.Remove(socket)
 
-	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards})
+	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}})
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)
 	go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
+	background.Add(1)
+	go func() { defer background.Done(); srv.RunWorkspaces(bgCtx) }()
 	if srv.Syncer() != nil {
 		background.Add(1)
 		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval) }()

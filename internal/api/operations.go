@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
@@ -53,6 +54,9 @@ type (
 		Ref    string `json:"ref"`
 		Reason string `json:"reason"` // hold: the reason; unhold: only a hold of this reason ("" = any)
 	}
+	ActorRequest struct {
+		Actor string `json:"actor"`
+	}
 	DispatchRequest struct {
 		Actor   string `json:"actor"`
 		Project string `json:"project,omitempty"` // empty: all projects
@@ -94,6 +98,7 @@ func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketReadyRequest) validate() error  { return needActor(r.Actor) }
 func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
+func (r *ActorRequest) validate() error        { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -112,6 +117,17 @@ const CodeSyncDisabled = "sync_disabled"
 // OK is the response of operations that return nothing else.
 type OK struct {
 	OK bool `json:"ok"`
+}
+
+// orEmpty answers an empty list as [], not null.
+func orEmpty(list []runner.Workspace, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []runner.Workspace{}
+	}
+	return list, nil
 }
 
 func ok(err error) (any, error) {
@@ -186,6 +202,33 @@ func (s *Server) operations() map[string]operation {
 				return s.syncer.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
 			}
 			return k.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
+		}),
+		// Ticket worktrees (spec section 7.2).
+		"workspace.list": read(func(ctx context.Context, _ Empty) (any, error) {
+			if s.spaces == nil {
+				return []runner.Workspace{}, nil
+			}
+			return s.spaces.List(ctx)
+		}),
+		"workspace.orphans": read(func(ctx context.Context, _ Empty) (any, error) {
+			if s.spaces == nil {
+				return []runner.Workspace{}, nil
+			}
+			all, err := k.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return orEmpty(s.spaces.Orphans(ctx, all))
+		}),
+		"workspace.prune": write(okAgain, func(ctx context.Context, _ ActorRequest) (any, error) {
+			if s.spaces == nil {
+				return []runner.Workspace{}, nil
+			}
+			all, err := k.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return orEmpty(s.spaces.Prune(ctx, all))
 		}),
 		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
 		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -36,6 +37,8 @@ type Server struct {
 	tickets *core.Tickets
 	sched   *scheduler.Scheduler
 	syncer  *tickets.Syncer
+	spaces  *runner.Workspaces
+	repos   map[string]bool // the configured repositories: only their tickets get worktrees
 	ops     map[string]operation
 	changed *notifier
 	clock   func() time.Time
@@ -57,6 +60,8 @@ type ServerOptions struct {
 	Repos   []tickets.SyncRepo
 	// Standards turns on admission and the re-check on edit.
 	Standards tickets.Standards
+	// Workspaces turns on ticket worktrees when its DataDir is set.
+	Workspaces runner.WorkspaceOptions
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -79,6 +84,15 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
 		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards})
+	}
+	srv.repos = map[string]bool{}
+	for _, r := range opts.Repos {
+		srv.repos[strings.ToLower(r.Repo)] = true
+	}
+	if opts.Workspaces.DataDir != "" {
+		ws := opts.Workspaces
+		ws.Clock = opts.Clock
+		srv.spaces = runner.NewWorkspaces(ns, ws)
 	}
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +117,45 @@ func (s *Server) Tickets() *core.Tickets { return s.tickets }
 
 // Syncer returns the ticket sync, or nil when no tracker is configured.
 func (s *Server) Syncer() *tickets.Syncer { return s.syncer }
+
+// RunWorkspaces gives every ticket of a configured repository the worktree its
+// state calls for, at once
+// and after every change, and once a minute to repair what was missed, until
+// ctx ends. Without workspaces it returns at once.
+func (s *Server) RunWorkspaces(ctx context.Context) {
+	if s.spaces == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		changed := s.changed.wait()
+		all, err := s.tickets.List(ctx)
+		if err == nil {
+			err = s.spaces.Reconcile(ctx, s.configured(all))
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Printf("istari: workspaces: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		case <-ticker.C:
+		}
+	}
+}
+
+// configured returns the tickets of the configured repositories.
+func (s *Server) configured(all []core.Ticket) []core.Ticket {
+	var out []core.Ticket
+	for _, tk := range all {
+		if ref, err := tickets.ParseRef(tk.Ref); err == nil && s.repos[strings.ToLower(ref.Repo)] {
+			out = append(out, tk)
+		}
+	}
+	return out
+}
 
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }
