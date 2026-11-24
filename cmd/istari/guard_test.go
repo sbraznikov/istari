@@ -11,7 +11,7 @@ func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
 	wt := t.TempDir()
 	hook := func(input string, env ...string) (string, int) {
 		t.Helper()
-		cmd := exec.Command(binary, "hook", "git-guard")
+		cmd := exec.Command(binary, "hook", "git-guard", "--harness", "claude-code")
 		cmd.Env = append(os.Environ(), env...)
 		cmd.Stdin = strings.NewReader(input)
 		var stderr strings.Builder
@@ -42,5 +42,21 @@ func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
 	}
 	if _, code := hook(call("git status"), "ISTARI_WORKTREE="); code != 2 {
 		t.Fatalf("git without a known worktree: exit %d, want 2", code)
+	}
+}
+
+func TestTheGitGuardHookKeepsFileToolsOutOfGitDirectories(t *testing.T) {
+	wt := t.TempDir()
+	for path, want := range map[string]int{wt + "/src/a.go": 0, wt + "/.git": 2, "/data/repos/acme/web.git/config": 2} {
+		cmd := exec.Command(binary, "hook", "git-guard", "--harness", "claude-code")
+		cmd.Env = append(os.Environ(), "ISTARI_WORKTREE="+wt)
+		cmd.Stdin = strings.NewReader(`{"tool_name":"Write","cwd":"` + wt + `","tool_input":{"file_path":"` + path + `","content":"x"}}`)
+		code := 0
+		if err := cmd.Run(); err != nil {
+			code = err.(*exec.ExitError).ExitCode()
+		}
+		if code != want {
+			t.Errorf("writing %s: exit %d, want %d", path, code, want)
+		}
 	}
 }

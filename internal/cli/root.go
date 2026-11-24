@@ -89,6 +89,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	fmt.Fprintln(stderr, "istari:", err)
+	if isDenied(err) {
+		return ExitDenied
+	}
 	if errors.As(err, new(usageError)) {
 		return ExitUsage
 	}

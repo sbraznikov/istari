@@ -487,7 +487,7 @@ func TestTheGuardRunsAsAHookBeforeEveryShellCommandAndCannotBeSwitchedOff(t *tes
 		t.Fatalf("settings %q: %v", args[i+1], err)
 	}
 	pre := settings.Hooks.PreToolUse
-	if len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" || pre[0].Hooks[0].Command != spec.Guard {
+	if len(pre) != 1 || pre[0].Matcher != "Bash|Write|Edit|MultiEdit|NotebookEdit" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" || pre[0].Hooks[0].Command != spec.Guard+" --harness claude-code" {
 		t.Fatalf("hooks = %+v", settings.Hooks)
 	}
 	if settings.DisableAllHooks == nil || *settings.DisableAllHooks {

@@ -1,56 +1,74 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
 )
+
+// denied is a tool call a hook refuses: istari exits with ExitDenied and
+// the reason goes to the agent.
+type denied struct{ error }
+
+// ExitDenied is the exit code with which a harness hook denies a tool call.
+const ExitDenied = 2
 
 // newHookCommand returns istari hook, the commands harnesses run as hooks
 // around the agent's tool calls.
 func newHookCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "hook", Short: "Hooks a harness runs around the agent's tool calls", Hidden: true, Args: Args(cobra.NoArgs)}
-	cmd.AddCommand(&cobra.Command{
+	var name string
+	guard := &cobra.Command{
 		Use:   "git-guard",
-		Short: "Deny shell commands whose git reaches beyond the run's worktree (exit 2)",
+		Short: "Deny the agent's tool calls that reach beyond its worktree (the harness's hook input on stdin; exit 2 denies)",
 		Args:  Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			deny := func(why string) error {
-				fmt.Fprintln(cmd.ErrOrStderr(), "istari: "+why)
-				os.Exit(2) // the harness's code for a denied tool call
-				return nil
+			h, err := harness.Get(name)
+			if err != nil {
+				return denied{err}
+			}
+			reader, ok := h.(harness.HookReader)
+			if !ok {
+				return denied{errors.New("harness " + name + " has no hooks")}
 			}
 			raw, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
-				return deny("the hook input could not be read: " + err.Error())
+				return denied{err}
 			}
-			var in struct {
-				Tool  string `json:"tool_name"`
-				Cwd   string `json:"cwd"`
-				Input struct {
-					Command string `json:"command"`
-				} `json:"tool_input"`
+			call, err := reader.ReadHook(raw)
+			if err != nil {
+				return denied{err}
 			}
-			if err := json.Unmarshal(raw, &in); err != nil {
-				return deny("the hook input is not JSON: " + err.Error())
+			worktree := os.Getenv("ISTARI_WORKTREE")
+			switch {
+			case call.Command != "":
+				cwd := call.Cwd
+				if cwd == "" {
+					cwd, _ = os.Getwd()
+				}
+				err = runner.GitGuard(call.Command, worktree, cwd)
+			case call.Path != "":
+				path := call.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(call.Cwd, path)
+				}
+				err = runner.FileGuard(path)
 			}
-			if in.Tool != "Bash" {
-				return nil
-			}
-			cwd := in.Cwd
-			if cwd == "" {
-				cwd, _ = os.Getwd()
-			}
-			if err := runner.GitGuard(in.Input.Command, os.Getenv("ISTARI_WORKTREE"), cwd); err != nil {
-				return deny(err.Error())
+			if err != nil {
+				return denied{err}
 			}
 			return nil
 		},
-	})
+	}
+	guard.Flags().StringVar(&name, "harness", "", "the harness whose hook input is read")
+	cmd.AddCommand(guard)
 	return cmd
 }
+
+func isDenied(err error) bool { return errors.As(err, new(denied)) }

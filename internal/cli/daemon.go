@@ -106,11 +106,13 @@ func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
 	}
 	// The git boundaries are a hook the harness runs: this binary's istari
 	// hook git-guard (spec section 7.7).
-	if exe, err := os.Executable(); err == nil {
-		opts.Guard = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook git-guard"
-	} else {
-		log.Printf("istari: runner: no git guard, the istari binary is not known: %v", err)
+	exe, err := os.Executable()
+	if err != nil {
+		// No run goes without its guard.
+		log.Printf("istari: runner: off, the istari binary for the git guard is not known: %v", err)
+		return runner.RunnerOptions{}
 	}
+	opts.Guard = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook git-guard"
 	defaults := harness.Defaults()
 	roles := make([]string, 0, len(defaults))
 	for role := range defaults {

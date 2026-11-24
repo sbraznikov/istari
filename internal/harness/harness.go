@@ -104,6 +104,21 @@ type Harness interface {
 	Check(ctx context.Context) error
 }
 
+// HookCall is what a guard hook is asked about: a shell command, or the file
+// a file tool writes; both empty for any other tool.
+type HookCall struct {
+	Command string // the shell command line
+	Path    string // the file a file tool writes
+	Cwd     string // where the agent works
+}
+
+// HookReader is a harness that runs RunSpec.Guard as a hook: it reads its
+// own hook input. The guard command it runs gets "--harness <name>"
+// appended, so istari knows whose input it reads.
+type HookReader interface {
+	ReadHook(raw []byte) (HookCall, error)
+}
+
 // Resumer is a harness that can continue an earlier session. It speeds up
 // continuation but is not required (spec section 7.3).
 type Resumer interface {

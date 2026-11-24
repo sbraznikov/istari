@@ -240,14 +240,6 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			}
 		}
 	}
-	// Preparing the worktree (a fetch, a merge) took part of the lease:
-	// the run starts with a whole one.
-	renewed, err := r.tasks.Renew(bg, lease)
-	if err != nil {
-		fail("the lease ran out while the worktree was prepared: " + err.Error())
-		return
-	}
-	lease = renewed
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
 	token, err := r.runs.create(bg, &run)
 	if err != nil {
@@ -260,6 +252,21 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	}
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
+	}
+	// The agent's git and gh see none of the user's settings or logins:
+	// pushing goes through istari, and the hook is not the only barrier
+	// (spec sections 7.7 and 11). Commits are the run's own.
+	ghDir := filepath.Join(r.opts.DataDir, "runs", run.ID, "gh")
+	if err := os.MkdirAll(ghDir, 0o700); err != nil {
+		fail("run: " + err.Error())
+		return
+	}
+	who := slot.Profile + " (istari)"
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": ghDir,
+		"GIT_AUTHOR_NAME": who, "GIT_AUTHOR_EMAIL": "istari@localhost", "GIT_COMMITTER_NAME": who, "GIT_COMMITTER_EMAIL": "istari@localhost",
+	} {
+		env[k] = v
 	}
 	// The instruction comes from the main branch: the ticket's own branch
 	// must not rewrite the instructions of the roles that check it.
