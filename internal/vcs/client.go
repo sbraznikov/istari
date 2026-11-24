@@ -216,6 +216,36 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 	return s, nil
 }
 
+// Axis is one axis of a review: its summary line and its findings.
+type Axis struct {
+	Summary  string
+	Findings []string
+}
+
+// Review is the report istari publishes on a pull request (spec 7.6): the
+// axes Standards and Spec apart, neither ranked against the other.
+type Review struct {
+	Standards, Spec Axis
+}
+
+// PublishReview posts the review as a comment review: the verdict is
+// istari's, so the review neither approves nor requests changes.
+func (c *Client) PublishReview(ctx context.Context, repo string, n int, r Review) error {
+	var b strings.Builder
+	for _, a := range []struct {
+		name string
+		axis Axis
+	}{{"Standards", r.Standards}, {"Spec", r.Spec}} {
+		fmt.Fprintf(&b, "## %s\n\n%s\n", a.name, a.axis.Summary)
+		for _, f := range a.axis.Findings {
+			b.WriteString("\n- " + f)
+		}
+		b.WriteString("\n\n")
+	}
+	body := map[string]string{"body": strings.TrimSpace(b.String()), "event": "COMMENT"}
+	return c.do(ctx, repo, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, n), body, nil)
+}
+
 // Merge merges the pull request with the method (squash, merge or rebase)
 // and deletes its branch.
 func (c *Client) Merge(ctx context.Context, repo string, n int, method string) error {

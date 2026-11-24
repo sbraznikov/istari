@@ -37,6 +37,10 @@ type EngineOptions struct {
 	// Checks tells the CI state of a ticket's pull request (pending, success
 	// or failure); ok is false while it has none. nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
+	// Review tells how many findings code accepted in the reviewer's report
+	// of a review task; submitted is false while it has none (spec 7.6:
+	// the verdict is code's). nil: the review task's completion passes.
+	Review func(ctx context.Context, ref, task string) (findings int, submitted bool, err error)
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -365,9 +369,13 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			return fire("children_done") // T12
 		}
 	case core.TicketInReview:
-		if r.done("review") {
+		if !r.done("review") {
+			return nil
+		}
+		if e.opts.Review == nil {
 			return fire("review_passed") // T8
 		}
+		return e.verdict(ctx, tk, r, fire)
 	case core.TicketAwaitingApproval:
 		if r.done(StageMerge) {
 			return fire("merged") // T11
@@ -444,6 +452,36 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		return err
 	}
 	return nil
+}
+
+// verdict computes the review's verdict from the accepted report (spec
+// sections 4.1 and 7.6): any accepted finding returns the ticket for rework
+// (T7) while rounds are left, else it is held; none passes it once CI is
+// green (T8). Without a report there is no verdict: a reviewer cannot
+// complete its task without one.
+func (e *Engine) verdict(ctx context.Context, tk core.Ticket, r round, fire func(string) error) error {
+	findings, submitted, err := e.opts.Review(ctx, tk.Ref, r.tasks["review"].ID)
+	switch {
+	case err != nil:
+		return err
+	case !submitted:
+		return nil
+	case findings > 0:
+		err := e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
+		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
+			return nil // the ticket is held for a human
+		}
+		if err != nil {
+			return err
+		}
+		return fire("changes_requested") // T7
+	}
+	if e.opts.Checks != nil {
+		if state, ok := e.opts.Checks(ctx, tk.Ref); !ok || state != "success" {
+			return nil
+		}
+	}
+	return fire("review_passed") // T8
 }
 
 // tooLarge tells whether a ticket is larger than its pipeline's max_size.

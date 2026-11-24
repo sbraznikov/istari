@@ -199,3 +199,18 @@ func TestConflictsWithTheMainBranchComeBeforeTheNextStep(t *testing.T) {
 		t.Fatalf("brief:\n%s", b[:min(len(b), 2000)])
 	}
 }
+
+func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchema(t *testing.T) {
+	in := briefInput()
+	in.Role = "reviewer"
+	in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go", "go.mod"}, OutsideZone: []string{"go.mod"}, Standards: []string{"CODING_STANDARDS.md"}}
+	b := runner.Brief(in)
+	for _, want := range []string{"abc1234", "cache/cache.go", "`go.mod` (outside the plan's zone)", "CODING_STANDARDS.md", "istari review submit", "source: ticket | instructions | the standard's path"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the reviewer's brief lacks %q:\n%s", want, b)
+		}
+	}
+	if strings.Contains(b, "`cache/cache.go` (outside") {
+		t.Errorf("a file of the zone is marked outside it:\n%s", b)
+	}
+}

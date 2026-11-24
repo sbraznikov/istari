@@ -100,9 +100,12 @@ type CheckpointEntry struct {
 
 // ReviewEntry is the result of the review stage; the details are in the PR.
 type ReviewEntry struct {
-	Verdict string `json:"verdict"`
-	Summary string `json:"summary,omitempty"`
-	PR      string `json:"pr,omitempty"`
+	Verdict  string   `json:"verdict"`
+	Summary  string   `json:"summary,omitempty"`
+	PR       string   `json:"pr,omitempty"`
+	Task     string   `json:"task,omitempty"`     // the review task the report is of
+	Findings []string `json:"findings,omitempty"` // accepted by code
+	Dropped  []string `json:"dropped,omitempty"`  // dropped by code, with why
 }
 
 // TransitionEntry is a change of the ticket's state or hold.
@@ -288,7 +291,14 @@ func Text(e Entry) string {
 		}
 		return s
 	case Review:
-		return "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
+		s := "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
+		if len(e.Review.Findings) > 0 {
+			s += "\n\nFindings:" + bullets(e.Review.Findings)
+		}
+		if len(e.Review.Dropped) > 0 {
+			s += "\n\nDropped by istari:" + bullets(e.Review.Dropped)
+		}
+		return s
 	case Transition:
 		t := e.Transition
 		s := "**Transition**" + by + ": `" + t.To + "`"

@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -33,6 +34,8 @@ type BriefInput struct {
 	// Conflicts are the files where merging the main branch into the
 	// worktree conflicted: resolving them is the first step (spec 4.6).
 	Conflicts []string
+	// Review is what code prepared for the reviewer (spec section 7.7).
+	Review *ReviewInput
 }
 
 // Brief assembles the first message of a run from a template, by code alone
@@ -80,6 +83,9 @@ func Brief(in BriefInput) string {
 				untrusted("candidates", "- "+strings.Join(in.Candidates, "\n- ")) + "\n"
 		}
 		head.WriteString(pr)
+	}
+	if in.Role == "reviewer" {
+		head.WriteString(reviewSection(in.Review))
 	}
 	var pr string
 	if in.PullRequest != "" {
@@ -197,4 +203,35 @@ var closing = regexp.MustCompile(`(?i)</untrusted`)
 func untrusted(source, text string) string {
 	text = closing.ReplaceAllString(text, "<\\/untrusted")
 	return "<untrusted source=\"" + strings.ReplaceAll(source, "\"", "'") + "\">\n" + text + "\n</untrusted>\n"
+}
+
+// reviewSection tells the reviewer what code prepared and how to submit the
+// report (spec sections 7.6 and 7.7).
+func reviewSection(r *ReviewInput) string {
+	var b strings.Builder
+	b.WriteString("## The review\n\n")
+	if r != nil {
+		fmt.Fprintf(&b, "Review the diff against the base `%s` (`git diff %s HEAD`). The changed files:\n\n", r.Base, r.Base)
+		for _, f := range r.Files {
+			mark := ""
+			if slices.Contains(r.OutsideZone, f) {
+				mark = " (outside the plan's zone)"
+			}
+			b.WriteString("- `" + f + "`" + mark + "\n")
+		}
+		b.WriteString("\nThe standards of the repository on the main branch: ")
+		if len(r.Standards) == 0 {
+			b.WriteString("none; only the baseline of code smells in your instructions applies.\n\n")
+		} else {
+			b.WriteString("`" + strings.Join(r.Standards, "`, `") + "`.\n\n")
+		}
+	}
+	b.WriteString("## Your result\n\nSubmit the report with `istari review submit --file - <<'EOF'` … `EOF` before `istari complete`:\n\n" +
+		"```yaml\nstandards: one line, the number of findings and the most serious one\nspec: one line, the number of findings and the most serious one\n" +
+		"findings:\n  - axis: standards | spec\n    kind: standard | smell  # standards; spec: missing | partial | wrong | extra\n" +
+		"    file: a path of the diff\n    line: a line of the new version the diff shows\n" +
+		"    source: ticket | instructions | the standard's path  # spec: ticket; standard: its standards file; smell: instructions\n" +
+		"    quote: verbatim from the source  # a smell's starts with its name\n    text: the finding\n```\n\n" +
+		"Code drops a finding whose place is not in the diff or whose quote is not in its source, and computes the verdict: any finding it accepts returns the ticket for rework.\n\n")
+	return b.String()
 }

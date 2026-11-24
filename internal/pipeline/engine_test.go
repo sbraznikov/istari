@@ -558,3 +558,90 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 		}
 	}
 }
+
+// reports are the findings code accepted in the report of each review task.
+type reports map[string]int
+
+func (r reports) of(_ context.Context, _, task string) (int, bool, error) {
+	n, ok := r[task]
+	return n, ok, nil
+}
+
+// inReview takes the ticket to in_review with the given CI and reports.
+func inReview(t *testing.T, defaults config.Defaults, ci map[string]string, r reports) *engineFixture {
+	t.Helper()
+	checks := func(_ context.Context, ref string) (string, bool) { s, ok := ci[ref]; return s, ok }
+	f := newEngine(t, defaults, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Review: r.of})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	ci[ref] = "success"
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("the ticket is %s, want in_review", st)
+	}
+	return f
+}
+
+func TestOneAcceptedFindingReturnsTheTicketForRework(t *testing.T) {
+	r := reports{}
+	f := inReview(t, config.Defaults{}, map[string]string{}, r)
+	review := f.stage(t, ref, "review")
+	r[review.ID] = 1
+	f.finish(t, ref, "review", "agent:reviewer-1")
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with one accepted finding the ticket is %s, want in_progress (T7)", st)
+	}
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+}
+
+func TestNoAcceptedFindingsAndGreenCIMoveTheTicketToAwaitingApproval(t *testing.T) {
+	r, ci := reports{}, map[string]string{}
+	f := inReview(t, config.Defaults{}, ci, r)
+	r[f.stage(t, ref, "review").ID] = 0
+	f.finish(t, ref, "review", "agent:reviewer-1")
+	ci[ref] = "pending" // a new push after the review
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("with CI pending the ticket is %s, want in_review until it is green", st)
+	}
+	ci[ref] = "success"
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("with no findings and CI green the ticket is %s, want awaiting_approval (T8)", st)
+	}
+}
+
+func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
+	r, ci := reports{}, map[string]string{}
+	f := inReview(t, config.Defaults{MaxReviewRounds: 1}, ci, r)
+	r[f.stage(t, ref, "review").ID] = 2
+	f.finish(t, ref, "review", "agent:reviewer-1")
+	f.reconcile(t)
+	tk, err := f.tickets.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.State != core.TicketInReview || tk.Hold != "attempts_exhausted" {
+		t.Fatalf("after the last round the ticket is %s, hold %q; want in_review on hold attempts_exhausted", tk.State, tk.Hold)
+	}
+}
+
+func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
+	f := inReview(t, config.Defaults{}, map[string]string{}, reports{})
+	f.finish(t, ref, "review", "human:alex") // only a human can: a reviewer's complete needs a report
+	f.reconcile(t)
+	tk, err := f.tickets.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review, no verdict and no hold", tk.State, tk.Hold)
+	}
+}

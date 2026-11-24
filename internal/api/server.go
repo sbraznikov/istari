@@ -52,6 +52,7 @@ type Server struct {
 	saves     *runner.Checkpoints
 	refines   *runner.Refines
 	plans     *runner.Plans
+	reviews   *runner.Reviews
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
 	firstRepo string          // the first configured repository: where a plan goes without its own
@@ -191,7 +192,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			return pr.Checks, true
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Review: srv.reviewOf})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
@@ -211,6 +212,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			sizer = t
 		}
 		srv.plans = runner.NewPlans(srv.spaces, journal.New(jt, ns, opts.Clock), srv.tickets, sizer)
+		srv.reviews = runner.NewReviews(srv.spaces, journal.New(jt, ns, opts.Clock))
 		if srv.syncer != nil {
 			srv.plans.WithSplit(srv.tasks, opts.Tracker, srv.syncer.Created)
 		}
