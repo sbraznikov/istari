@@ -484,7 +484,7 @@ func (e *Engine) state(ctx context.Context, ref string) core.TicketState {
 
 // expand creates the tasks of a round; from, if set, keeps only those
 // stages (a new review round starts at implement).
-func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(TaskSpec) bool) error {
+func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(TaskSpec) bool, after ...string) error {
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return err
@@ -510,6 +510,9 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(Ta
 			if kept[need] {
 				needs = append(needs, taskID(tk.Ref, n, need))
 			}
+		}
+		if len(needs) == 0 {
+			needs = append(needs, after...) // the round's first tasks wait for what came before
 		}
 		id := taskID(tk.Ref, n, spec.Stage)
 		if _, err := e.tasks.Get(ctx, id); err == nil {
@@ -559,9 +562,15 @@ func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) erro
 			}
 		}
 	}
+	// The rework needs the work it reworks (spec 4.3): the round's
+	// implement task, when it was done.
+	var after []string
+	if impl, ok := r.tasks["implement"]; ok && impl.State == core.TaskCompleted {
+		after = []string{impl.ID}
+	}
 	started := false
 	return e.expand(ctx, tk, r.n+1, func(spec TaskSpec) bool {
 		started = started || spec.Stage == "implement"
 		return started
-	})
+	}, after...)
 }
