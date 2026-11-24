@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 )
 
 // File names inside the daemon's data directory.
@@ -30,8 +32,11 @@ const shutdownTimeout = 30 * time.Second
 
 // DaemonOptions configures RunDaemon.
 type DaemonOptions struct {
-	DataDir string
-	Limits  core.Limits
+	DataDir      string
+	Limits       core.Limits
+	Tracker      tickets.SyncProvider // nil: no ticket sync
+	Repos        []tickets.SyncRepo
+	SyncInterval time.Duration // 0: tickets.DefaultSyncInterval
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -63,11 +68,16 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	defer os.Remove(socket)
 
-	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits})
-	schedCtx, stopScheduler := context.WithCancel(context.Background())
-	scheduled := make(chan struct{})
-	go func() { defer close(scheduled); srv.Scheduler().Run(schedCtx) }()
-	defer func() { stopScheduler(); <-scheduled }()
+	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Tracker: opts.Tracker, Repos: opts.Repos})
+	bgCtx, stopBackground := context.WithCancel(context.Background())
+	var background sync.WaitGroup
+	background.Add(1)
+	go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
+	if srv.Syncer() != nil {
+		background.Add(1)
+		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval, nil) }()
+	}
+	defer func() { stopBackground(); background.Wait() }()
 	httpSrv := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	httpSrv.RegisterOnShutdown(srv.Close)
 	served := make(chan error, 1)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/github"
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
@@ -35,11 +38,40 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
-			return api.RunDaemon(ctx, api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg)})
+			daemonOpts := api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg), Repos: syncRepos(cfg)}
+			if len(daemonOpts.Repos) > 0 {
+				tracker, err := github.FromEnvironment(ctx)
+				if err != nil {
+					// The daemon still runs; istari doctor and istari sync say why
+					// tickets are not synced.
+					log.Printf("istari: ticket sync is off: %v", err)
+				} else {
+					daemonOpts.Tracker = tracker
+				}
+			}
+			return api.RunDaemon(ctx, daemonOpts)
 		},
 	}
 	cmd.AddCommand(newDaemonInstallCommand(opts))
 	return cmd
+}
+
+// syncRepos lists the repositories of the projects whose tracker is GitHub
+// Issues (the default, spec section 12).
+func syncRepos(cfg *config.Config) []tickets.SyncRepo {
+	var repos []tickets.SyncRepo
+	for _, p := range cfg.Projects {
+		if p.Tickets.Provider != "" && p.Tickets.Provider != "github" {
+			continue
+		}
+		if p.Repo != "" {
+			repos = append(repos, tickets.SyncRepo{Repo: p.Repo, Project: p.Name})
+		}
+		for _, r := range p.Repos {
+			repos = append(repos, tickets.SyncRepo{Repo: r.Repo, Project: p.Name})
+		}
+	}
+	return repos
 }
 
 // loadConfig loads the config at path. Without an explicit path a missing

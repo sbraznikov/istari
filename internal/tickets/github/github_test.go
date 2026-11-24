@@ -10,14 +10,15 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
+	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
 var ctx = context.Background()
 
-func newProvider(t *testing.T) (*github.Provider, *fakeGitHub) {
+func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 	t.Helper()
-	fake, srv := newFakeGitHub(t)
-	return github.New(github.Options{BaseURL: srv.URL, Token: fake.token}), fake
+	fake := githubtest.New(t)
+	return github.New(github.Options{BaseURL: fake.URL, Token: fake.Token}), fake
 }
 
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
@@ -41,16 +42,16 @@ func TestCreateMakesAnIssueInStateNewWithItsLabels(t *testing.T) {
 	if ticket.Ref.String() != "gh:acme/web#1" || ticket.State.State != core.TicketNew {
 		t.Fatalf("created %s in %s, want gh:acme/web#1 in new", ticket.Ref, ticket.State.State)
 	}
-	issue := fake.snapshot(1)
+	issue := fake.Issue(1)
 	slices.Sort(issue.Labels)
 	if want := []string{"bug", "istari:new", "size:S"}; !slices.Equal(issue.Labels, want) {
 		t.Fatalf("issue labels = %v, want %v", issue.Labels, want)
 	}
 	// Missing labels were created in the repository, istari's with a description.
-	if l, ok := fake.label("istari:new"); !ok || l.Color == "" || l.Description == "" {
+	if l, ok := fake.Label("istari:new"); !ok || l.Color == "" || l.Description == "" {
 		t.Fatalf("label istari:new = %+v, %v; want it created with a colour and a description", l, ok)
 	}
-	if _, ok := fake.label("size:S"); !ok {
+	if _, ok := fake.Label("size:S"); !ok {
 		t.Fatal("label size:S was not created")
 	}
 }
@@ -61,11 +62,11 @@ func TestCreateKeepsExactlyOneStateLabelAndNoticesDroppedLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if i := fake.snapshot(ticket.Ref.Number); !slices.Equal(i.Labels, []string{"bug", "istari:new"}) {
+	if i := fake.Issue(ticket.Ref.Number); !slices.Equal(i.Labels, []string{"bug", "istari:new"}) {
 		t.Fatalf("labels = %v, want the caller's istari labels replaced by istari:new", i.Labels)
 	}
 	// Without push access GitHub creates the issue but drops its labels.
-	fake.set(func(f *fakeGitHub) { f.dropLabels = true })
+	fake.DropLabels(true)
 	if _, err := p.Create(ctx, tickets.Draft{Repo: "acme/web", Title: "t"}); err == nil {
 		t.Fatal("Create succeeded although the state label was dropped")
 	}
@@ -76,23 +77,24 @@ func TestCreateKeepsExactlyOneStateLabelAndNoticesDroppedLabels(t *testing.T) {
 
 func TestSetStateRejectsAnUnknownStateOrHold(t *testing.T) {
 	p, fake := newProvider(t)
-	n := fake.seed("t", "", "alex", "istari:new")
+	n := fake.Seed("t", "", "alex", "istari:new")
 	for _, s := range []tickets.State{{}, {State: "sleeping"}, {State: core.TicketNew, Hold: "bored"}} {
 		if err := p.SetState(ctx, ref(n), s); err == nil {
 			t.Errorf("SetState(%+v) succeeded", s)
 		}
 	}
-	if i := fake.snapshot(n); !slices.Equal(i.Labels, []string{"istari:new"}) {
+	if i := fake.Issue(n); !slices.Equal(i.Labels, []string{"istari:new"}) {
 		t.Fatalf("a rejected SetState changed the labels: %v", i.Labels)
 	}
 }
 
 func TestMovedAndDeletedIssuesAreNotFoundAndNeverWrittenThrough(t *testing.T) {
 	p, fake := newProvider(t)
-	fake.seed("the redirect target", "", "alex", "istari:new")
-	moved := fake.seed("moved", "", "alex", "istari:new")
-	deleted := fake.seed("deleted", "", "alex", "istari:new")
-	fake.set(func(f *fakeGitHub) { f.moved[moved] = true; f.deleted[deleted] = true })
+	fake.Seed("the redirect target", "", "alex", "istari:new")
+	moved := fake.Seed("moved", "", "alex", "istari:new")
+	deleted := fake.Seed("deleted", "", "alex", "istari:new")
+	fake.Move(moved)
+	fake.Delete(deleted)
 	for _, n := range []int{moved, deleted} {
 		if _, err := p.Get(ctx, ref(n)); !errors.Is(err, tickets.ErrNotFound) {
 			t.Errorf("Get #%d: %v, want ErrNotFound", n, err)
@@ -107,12 +109,12 @@ func TestMovedAndDeletedIssuesAreNotFoundAndNeverWrittenThrough(t *testing.T) {
 }
 
 func TestListPagesUnderAnAPIPathPrefix(t *testing.T) {
-	fake, srv := newFakeGitHubAt(t, "/api/v3") // GitHub Enterprise
-	fake.pageSize = 2
+	fake := githubtest.New(t, githubtest.Prefix("/api/v3")) // GitHub Enterprise
+	fake.SetPageSize(2)
 	for range 5 {
-		fake.seed("ready", "", "alex", "istari:ready")
+		fake.Seed("ready", "", "alex", "istari:ready")
 	}
-	p := github.New(github.Options{BaseURL: srv.URL + "/api/v3", Token: fake.token})
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token})
 	got, err := p.List(ctx, tickets.Query{Repo: "acme/web", Labels: []string{"istari:ready"}})
 	if err != nil || len(got) != 5 {
 		t.Fatalf("List = %d, %v; want 5 tickets over three pages", len(got), err)
@@ -124,7 +126,7 @@ func TestListPagesUnderAnAPIPathPrefix(t *testing.T) {
 
 func TestGetRoundTripsTitleBodyLabelsAndAuthor(t *testing.T) {
 	p, fake := newProvider(t)
-	n := fake.seed("Flaky test", "Steps:\n1. run\n", "alex", "bug", "istari:in_progress", "istari:hold:paused")
+	n := fake.Seed("Flaky test", "Steps:\n1. run\n", "alex", "bug", "istari:in_progress", "istari:hold:paused")
 	ticket, err := p.Get(ctx, ref(n))
 	if err != nil {
 		t.Fatal(err)
@@ -146,12 +148,12 @@ func TestGetRoundTripsTitleBodyLabelsAndAuthor(t *testing.T) {
 func TestSetStateLeavesExactlyOneStateLabel(t *testing.T) {
 	p, fake := newProvider(t)
 	// A human left two state labels; istari's write repairs that.
-	n := fake.seed("t", "", "alex", "bug", "istari:new", "istari:ready")
+	n := fake.Seed("t", "", "alex", "bug", "istari:new", "istari:ready")
 	for _, s := range []core.TicketState{core.TicketPlanning, core.TicketInProgress, core.TicketInReview} {
 		if err := p.SetState(ctx, ref(n), tickets.State{State: s}); err != nil {
 			t.Fatalf("SetState %s: %v", s, err)
 		}
-		issue := fake.snapshot(n)
+		issue := fake.Issue(n)
 		if got := stateLabels(issue.Labels); !slices.Equal(got, []string{"istari:" + string(s)}) {
 			t.Fatalf("after SetState %s the state labels are %v", s, got)
 		}
@@ -163,55 +165,55 @@ func TestSetStateLeavesExactlyOneStateLabel(t *testing.T) {
 
 func TestDoneClosesAsCompletedAndCanceledAsNotPlanned(t *testing.T) {
 	p, fake := newProvider(t)
-	done := fake.seed("a", "", "alex", "istari:awaiting_approval")
-	canceled := fake.seed("b", "", "alex", "istari:in_progress")
+	done := fake.Seed("a", "", "alex", "istari:awaiting_approval")
+	canceled := fake.Seed("b", "", "alex", "istari:in_progress")
 	if err := p.SetState(ctx, ref(done), tickets.State{State: core.TicketDone}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.SetState(ctx, ref(canceled), tickets.State{State: core.TicketCanceled}); err != nil {
 		t.Fatal(err)
 	}
-	if i := fake.snapshot(done); i.State != "closed" || i.StateReason != "completed" {
+	if i := fake.Issue(done); i.State != "closed" || i.StateReason != "completed" {
 		t.Fatalf("done issue = %s/%s, want closed/completed", i.State, i.StateReason)
 	}
-	if i := fake.snapshot(canceled); i.State != "closed" || i.StateReason != "not_planned" {
+	if i := fake.Issue(canceled); i.State != "closed" || i.StateReason != "not_planned" {
 		t.Fatalf("canceled issue = %s/%s, want closed/not_planned", i.State, i.StateReason)
 	}
 	// Reopening a canceled ticket (T14) reopens the issue.
 	if err := p.SetState(ctx, ref(canceled), tickets.State{State: core.TicketNew}); err != nil {
 		t.Fatal(err)
 	}
-	if i := fake.snapshot(canceled); i.State != "open" || !slices.Equal(stateLabels(i.Labels), []string{"istari:new"}) {
+	if i := fake.Issue(canceled); i.State != "open" || !slices.Equal(stateLabels(i.Labels), []string{"istari:new"}) {
 		t.Fatalf("reopened issue = %s %v, want open with istari:new", i.State, i.Labels)
 	}
 }
 
 func TestAHoldLabelComesAndGoesWithoutTouchingTheStateLabel(t *testing.T) {
 	p, fake := newProvider(t)
-	n := fake.seed("t", "", "alex", "istari:in_review")
+	n := fake.Seed("t", "", "alex", "istari:in_review")
 	if err := p.SetState(ctx, ref(n), tickets.State{State: core.TicketInReview, Hold: "needs_input"}); err != nil {
 		t.Fatal(err)
 	}
-	if i := fake.snapshot(n); !slices.Equal(i.Labels, []string{"istari:in_review", "istari:hold:needs_input"}) {
+	if i := fake.Issue(n); !slices.Equal(i.Labels, []string{"istari:in_review", "istari:hold:needs_input"}) {
 		t.Fatalf("held labels = %v", i.Labels)
 	}
 	if err := p.SetState(ctx, ref(n), tickets.State{State: core.TicketInReview}); err != nil {
 		t.Fatal(err)
 	}
-	if i := fake.snapshot(n); !slices.Equal(i.Labels, []string{"istari:in_review"}) {
+	if i := fake.Issue(n); !slices.Equal(i.Labels, []string{"istari:in_review"}) {
 		t.Fatalf("after clearing the hold the labels are %v", i.Labels)
 	}
 }
 
 func TestListFiltersByLabelsAcrossPagesAndSkipsPullRequests(t *testing.T) {
 	p, fake := newProvider(t)
-	fake.pageSize = 2
+	fake.SetPageSize(2)
 	for range 5 {
-		fake.seed("ready", "", "alex", "istari:ready")
+		fake.Seed("ready", "", "alex", "istari:ready")
 	}
-	fake.seed("other", "", "alex", "bug")
-	pr := fake.seed("a PR", "", "alex", "istari:ready")
-	fake.set(func(f *fakeGitHub) { f.issues[pr].PullRequest = true })
+	fake.Seed("other", "", "alex", "bug")
+	pr := fake.Seed("a PR", "", "alex", "istari:ready")
+	fake.MarkPullRequest(pr)
 	got, err := p.List(ctx, tickets.Query{Repo: "acme/web", Labels: []string{"istari:ready"}})
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +230,8 @@ func TestListFiltersByLabelsAcrossPagesAndSkipsPullRequests(t *testing.T) {
 
 func TestCommentAndLink(t *testing.T) {
 	p, fake := newProvider(t)
-	parent := fake.seed("parent", "", "alex", "istari:in_progress")
-	child := fake.seed("child", "", "alex", "istari:new")
+	parent := fake.Seed("parent", "", "alex", "istari:in_progress")
+	child := fake.Seed("child", "", "alex", "istari:new")
 	c, err := p.Comment(ctx, ref(parent), "Plan published.")
 	if err != nil || c.ID == 0 || !strings.Contains(c.URL, "issuecomment") {
 		t.Fatalf("Comment = %+v, %v", c, err)
@@ -237,14 +239,14 @@ func TestCommentAndLink(t *testing.T) {
 	if err := p.Link(ctx, ref(parent), tickets.Link{Kind: tickets.LinkChild, Child: ref(child)}); err != nil {
 		t.Fatalf("Link child: %v", err)
 	}
-	if got, childID := fake.subIssuesOf(parent, child); len(got) != 1 || got[0] != childID {
+	if got, childID := fake.SubIssues(parent), fake.Issue(child).ID; len(got) != 1 || got[0] != childID {
 		t.Fatalf("sub-issues of the parent = %v, want the child's id %d", got, childID)
 	}
 	if err := p.Link(ctx, ref(parent), tickets.Link{Kind: tickets.LinkPullRequest, URL: "https://github.com/acme/web/pull/9"}); err != nil {
 		t.Fatal(err)
 	}
-	if cs := fake.commentsOf(parent); len(cs) != 2 || !strings.Contains(cs[1], "https://github.com/acme/web/pull/9") {
-		t.Fatalf("comments = %q, want the pull request linked in one", cs)
+	if cs := fake.Issue(parent).Comments; len(cs) != 2 || !strings.Contains(cs[1].Body, "https://github.com/acme/web/pull/9") {
+		t.Fatalf("comments = %+v, want the pull request linked in one", cs)
 	}
 	if caps := p.Capabilities(); !caps.SubIssues || caps.CustomStates || caps.Webhooks { // webhooks come with #16
 		t.Fatalf("Capabilities = %+v", caps)
@@ -252,8 +254,8 @@ func TestCommentAndLink(t *testing.T) {
 }
 
 func TestAWrongTokenIsAnError(t *testing.T) {
-	_, srv := newFakeGitHub(t)
-	p := github.New(github.Options{BaseURL: srv.URL, Token: "wrong"})
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: "wrong"})
 	if _, err := p.Get(ctx, ref(1)); err == nil || errors.Is(err, tickets.ErrNotFound) {
 		t.Fatalf("Get with a wrong token: %v, want an authentication error", err)
 	}

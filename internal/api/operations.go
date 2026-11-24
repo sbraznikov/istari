@@ -94,6 +94,9 @@ func (r *TimerScheduleRequest) validate() error {
 	return needActor(r.Actor)
 }
 
+// CodeSyncDisabled refuses istari sync when no tracker is configured.
+const CodeSyncDisabled = "sync_disabled"
+
 // OK is the response of operations that return nothing else.
 type OK struct {
 	OK bool `json:"ok"`
@@ -162,6 +165,14 @@ func (s *Server) operations() map[string]operation {
 		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
 		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {
 			return ok(t.Resume(ctx, r.Actor, r.Project))
+		}),
+		// sync.run polls the tracker now. It writes, but a repeat is harmless,
+		// so it takes no idempotency key.
+		"sync.run": read(func(ctx context.Context, _ Empty) (any, error) {
+			if s.syncer == nil {
+				return nil, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker to sync"}
+			}
+			return s.syncer.Sync(ctx)
 		}),
 		"timer.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.sched.List(ctx) }),
 		"timer.schedule": write(timerAgain, func(ctx context.Context, r TimerScheduleRequest) (any, error) {

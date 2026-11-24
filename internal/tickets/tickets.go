@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 )
@@ -72,14 +73,40 @@ type State struct {
 
 // Ticket is a ticket as the tracker has it.
 type Ticket struct {
-	Ref    Ref
-	Title  string
-	Body   string
-	Labels []string // every label, including istari's own
+	Ref      Ref
+	Title    string
+	Body     string
+	Labels   []string // every label, including istari's own
+	Author   string
+	State    State // as read from the tracker
+	Closed   bool
+	URL      string
+	Updated  time.Time // last change of anything on the ticket
+	Comments int       // number of comments
+}
+
+// Comment is a comment on a ticket.
+type Comment struct {
+	ID     int64
 	Author string
-	State  State // as read from the tracker
-	Closed bool
+	Body   string
 	URL    string
+	Own    bool // written by istari
+}
+
+// History tells who did what on a ticket.
+type History interface {
+	// LastActor returns the login of who last did kind on the ticket: labeled
+	// (with label), closed or reopened. It is "" if nobody did.
+	LastActor(ctx context.Context, ref Ref, kind, label string) (string, error)
+	// Comments returns the ticket's comments in order.
+	Comments(ctx context.Context, ref Ref) ([]Comment, error)
+}
+
+// Access tells who may change a repository's tickets.
+type Access interface {
+	// CanWrite tells whether login has write access to repo.
+	CanWrite(ctx context.Context, repo, login string) (bool, error)
 }
 
 // Query selects tickets of one repository.

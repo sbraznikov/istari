@@ -17,6 +17,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 )
 
 // Server serves the daemon API over HTTP + JSON:
@@ -34,6 +35,7 @@ type Server struct {
 	tasks   *core.Tasks
 	tickets *core.Tickets
 	sched   *scheduler.Scheduler
+	syncer  *tickets.Syncer
 	ops     map[string]operation
 	changed *notifier
 	clock   func() time.Time
@@ -48,6 +50,9 @@ type ServerOptions struct {
 	Clock  func() time.Time
 	Limits core.Limits
 	Tick   time.Duration // scheduler tick; 0 means scheduler.DefaultTick
+	// Tracker and Repos turn on the ticket sync; without a tracker there is none.
+	Tracker tickets.SyncProvider
+	Repos   []tickets.SyncRepo
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -68,6 +73,9 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		mux:     http.NewServeMux(),
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
+	if opts.Tracker != nil {
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock})
+	}
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -88,6 +96,9 @@ func (s *Server) Tasks() *core.Tasks { return s.tasks }
 
 // Tickets returns the ticket machine.
 func (s *Server) Tickets() *core.Tickets { return s.tickets }
+
+// Syncer returns the ticket sync, or nil when no tracker is configured.
+func (s *Server) Syncer() *tickets.Syncer { return s.syncer }
 
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }

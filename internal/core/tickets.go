@@ -45,6 +45,9 @@ const ticketKind = "ticket"
 type Ticket struct {
 	Ref     string      `json:"ref"` // e.g. gh:acme/web#123
 	Project string      `json:"project,omitempty"`
+	Title   string      `json:"title,omitempty"`
+	Author  string      `json:"author,omitempty"` // the tracker login of who created it
+	URL     string      `json:"url,omitempty"`
 	State   TicketState `json:"state"`
 	Hold    string      `json:"hold,omitempty"` // a hold reason, or empty
 	Updated time.Time   `json:"updated"`
@@ -84,6 +87,18 @@ var transitions = func() []transition {
 	}
 	return rows
 }()
+
+// TriggerTo returns the trigger of the transition from one state to another,
+// e.g. accept for new → ready. Where two rows connect the same states (T9 and
+// T10), the first row of the table is taken.
+func TriggerTo(from, to TicketState) (string, bool) {
+	for _, row := range transitions {
+		if row.from == from && row.to == to {
+			return row.trigger, true
+		}
+	}
+	return "", false
+}
 
 func findTransition(from TicketState, trigger string) (transition, bool) {
 	for _, row := range transitions {
@@ -160,12 +175,23 @@ func (m *Tickets) List(ctx context.Context) ([]Ticket, error) {
 	return tickets, nil
 }
 
+// NewTicket describes a ticket to create, as the tracker has it.
+type NewTicket struct {
+	Ref, Project, Title, Author, URL string
+}
+
 // Create is transition T1: a new ticket in state new.
 func (m *Tickets) Create(ctx context.Context, actor, ref, project string) (Ticket, error) {
+	return m.CreateWith(ctx, actor, NewTicket{Ref: ref, Project: project})
+}
+
+// CreateWith is Create with what the tracker knows about the ticket.
+func (m *Tickets) CreateWith(ctx context.Context, actor string, nt NewTicket) (Ticket, error) {
+	ref := nt.Ref
 	if ref == "" {
 		return Ticket{}, errorf(CodeInvalidTicket, "a ticket needs a reference")
 	}
-	ticket := Ticket{Ref: ref, Project: project, State: TicketNew, Updated: m.opts.Clock()}
+	ticket := Ticket{Ref: ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, State: TicketNew, Updated: m.opts.Clock()}
 	err := m.commit(ctx, actor, EventTicketTransitioned, ticket, transitionPayload("", TicketNew, "create", actor))
 	if errors.Is(err, store.ErrConflict) {
 		return Ticket{}, errorf(CodeInvalidTicket, "ticket %s already exists", ref)
