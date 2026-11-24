@@ -78,6 +78,10 @@ type (
 		Actor string       `json:"actor"`
 		Plan  tickets.Plan `json:"plan"`
 	}
+	RefineSubmitRequest struct {
+		Actor  string `json:"actor"`
+		Result string `json:"result"` // the YAML the refiner wrote, as written: code parses it
+	}
 	CheckpointRequest struct {
 		Actor   string `json:"actor"`
 		Message string `json:"message"` // "<done>; <next>"
@@ -132,6 +136,7 @@ func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
 func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
 func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
+func (r *RefineSubmitRequest) validate() error { return needActor(r.Actor) }
 func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
@@ -295,6 +300,30 @@ func (s *Server) operations() map[string]operation {
 		// there (spec sections 2.1 and 11): the implementer's run alone.
 		"vcs.push": write(okAgain, func(ctx context.Context, r PushRequest) (any, error) { return ok(s.push(ctx, r)) }),
 		"whoami":   read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
+		// refine.submit is the refiner's structured result (spec 4.5): code
+		// checks and applies it; what it rejects fails the run.
+		"refine.submit": write(okAgain, func(ctx context.Context, r RefineSubmitRequest) (any, error) {
+			run, isAgent := runOf(ctx)
+			switch {
+			case !isAgent:
+				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari refine submit is for the refiner: it needs the run token in ISTARI_TOKEN"}
+			case run.Role != "refiner":
+				return nil, &core.Error{Code: CodeTokenForbidden, Message: "only the refiner submits a refine result, not the " + run.Role}
+			case s.refines == nil:
+				return nil, &core.Error{Code: core.CodeInvalidState, Message: "refining is off: istari has no ticket tracker"}
+			}
+			res, err := runner.ParseRefine([]byte(r.Result))
+			if err == nil {
+				err = s.refines.Apply(ctx, run, res)
+			}
+			if err != nil {
+				if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
+					return nil, rerr
+				}
+				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+			}
+			return OK{OK: true}, nil
+		}),
 		// checkpoint is istari checkpoint (spec sections 4.6 and 7.7): commit,
 		// checks run by code, push, journal entry. The implementer's.
 		"checkpoint": write(okAgain, func(ctx context.Context, r CheckpointRequest) (any, error) {

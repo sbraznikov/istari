@@ -86,7 +86,8 @@ type Ticket struct {
 	// human who adds a label without removing the old one leaves two.
 	StateLabels []core.TicketState
 	Closed      bool
-	ClosedAs    string // completed or not_planned, when closed
+	ClosedAs    string    // completed or not_planned, when closed
+	ClosedAt    time.Time // when it was closed
 	URL         string
 	Updated     time.Time // last change of anything on the ticket
 	Comments    int       // number of comments
@@ -124,9 +125,10 @@ type Access interface {
 
 // Query selects tickets of one repository.
 type Query struct {
-	Repo   string   // gh: owner/repo
-	Labels []string // all of them must be set
-	Closed bool     // include closed tickets
+	Repo   string    // gh: owner/repo
+	Labels []string  // all of them must be set
+	Closed bool      // include closed tickets
+	Since  time.Time // only tickets updated since; zero: all
 }
 
 // Draft is a ticket to create. It is created in state new (T1).

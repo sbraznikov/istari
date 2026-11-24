@@ -76,6 +76,7 @@ type Issue struct {
 	Reviews     []Review // a pull request's reviews
 	Merged      bool
 	MergeMethod string
+	ClosedAt    time.Time
 	Commits     []string // a pull request's commit messages
 	Updated     time.Time
 	Events      []Event
@@ -184,6 +185,9 @@ func (s *Server) issueJSON(i *Issue) map[string]any {
 	if i.PullRequest {
 		m["pull_request"] = map[string]string{"url": "x"}
 	}
+	if !i.ClosedAt.IsZero() {
+		m["closed_at"] = i.ClosedAt.Format(time.RFC3339)
+	}
 	return m
 }
 
@@ -240,6 +244,10 @@ func (s *Server) setState(i *Issue, actor, state, reason string) {
 		return
 	}
 	i.State, i.StateReason = state, reason
+	i.Updated = s.tick()
+	if state == "closed" {
+		i.ClosedAt = i.Updated
+	}
 	kind := "closed"
 	if state == "open" {
 		kind = "reopened"
@@ -292,6 +300,9 @@ func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !containsAll(i.Labels, want) {
+			continue
+		}
+		if since, err := time.Parse(time.RFC3339, q.Get("since")); err == nil && i.Updated.Before(since) {
 			continue
 		}
 		all = append(all, s.issueJSON(i))

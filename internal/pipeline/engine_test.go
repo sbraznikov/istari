@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -343,5 +344,44 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 	f.reconcile(t)
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "" || tk.State != core.TicketPlanning {
 		t.Fatalf("after its need is done the ticket = %s, hold %q; want planning, no hold", tk.State, tk.Hold)
+	}
+}
+
+func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
+	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
+	if _, err := f.tickets.Create(ctx, "human:bob", ref, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Create(ctx, "human:bob", "gh:acme/web#2", "web"); err != nil { // meets it
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.reconcile(t)
+	all, _ := f.tasks.List(ctx)
+	if len(all) != 1 || all[0].Ticket != ref || all[0].Role != "refiner" || all[0].State != core.TaskReady || pipeline.StageOf(all[0]) != "refine-1" {
+		t.Fatalf("tasks = %+v, want one ready refiner task for %s", all, ref)
+	}
+}
+
+func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
+	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return true, nil }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
+	if _, err := f.tickets.Create(ctx, "human:bob", ref, "web"); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		f.reconcile(t)
+		refine := f.stage(t, ref, fmt.Sprintf("refine-%d", attempt))
+		if refine.State != core.TaskReady {
+			t.Fatalf("attempt %d: %+v", attempt, refine)
+		}
+		f.finish(t, ref, refine.ID[strings.LastIndex(refine.ID, "_")+1:], "agent:refiner-1")
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "attempts_exhausted" {
+		t.Fatalf("after three refines the ticket's hold is %q, want attempts_exhausted", tk.Hold)
 	}
 }

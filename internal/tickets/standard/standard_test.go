@@ -265,3 +265,15 @@ func TestTheWorkStateBlockIsNotPartOfTheTicketText(t *testing.T) {
 		t.Fatal("a new work state changes the hash")
 	}
 }
+
+func TestTheOriginalTextARefinerKeptIsNotPartOfTheTicket(t *testing.T) {
+	f := newFixture(t)
+	plain := body(nil)
+	kept := plain + "\n" + standard.OriginalStart + "\n\n## Context\n\nThe old words.\n\n## Out of scope\n\n- Nothing.\n\n" + standard.OriginalEnd + "\n"
+	if standard.Hash(standard.Default(), kept) != standard.Hash(standard.Default(), plain) {
+		t.Fatal("the original-text block changes the required sections")
+	}
+	if res := f.check(t, standard.Draft{Body: kept}); len(res.Deviations) != 0 {
+		t.Fatalf("with the block: deviations %q", rules(res))
+	}
+}

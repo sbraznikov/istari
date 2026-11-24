@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -159,7 +160,24 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, cp, []string{"WHAT", "VALUE"}, rows)
 	})
-	return []*cobra.Command{whoami, complete, checkpoint}
+	refine := &cobra.Command{Use: "refine", Short: "For the refiner: submit the result of refining a ticket", Args: Args(cobra.NoArgs)}
+	var file string
+	submit := writeCommand(opts, &cobra.Command{
+		Use: "submit --file <result.yaml>", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		var ok api.OK // istari parses and judges it; a malformed result fails the run
+		if err := opts.call(cmd, "refine.submit", key, api.RefineSubmitRequest{Actor: opts.Actor, Result: string(data)}, &ok); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ok, []string{"OK"}, [][]string{{"refine result applied"}})
+	})
+	submit.Flags().StringVar(&file, "file", "", "the result, YAML")
+	refine.AddCommand(submit)
+	return []*cobra.Command{whoami, complete, checkpoint, refine}
 }
 
 func budgetText(w api.Whoami) string {

@@ -24,6 +24,9 @@ type BriefInput struct {
 	Body        string // the ticket's text; its work state block is left out
 	Journal     []journal.Entry
 	PullRequest string // the pull request's state, if there is one
+	// Candidates are the possible duplicates code chose for the refiner
+	// (spec section 4.5); it reads only these.
+	Candidates []string
 }
 
 // Brief assembles the first message of a run from a template, by code alone
@@ -43,6 +46,20 @@ func Brief(in BriefInput) string {
 	head.WriteString("## Work state\n\n" + workState(state) + "\n## Next step\n\n" + next + "\n\n")
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
+	if in.Role == "refiner" {
+		pr := "## Your result\n\nSubmit it with `istari refine submit --file result.yaml` before `istari complete`:\n\n" +
+			"```yaml\nverdict: meets | rewrite | needs_input | duplicate\nsize: XS | S | M | L | XL\nsize_reason: why, when it differs from the author's\n" +
+			"deviations: [what falls short]\nassumptions: [what you inferred]\nbody: the rewritten text, ending with the original kept verbatim in <details><summary>Original text</summary> … </details>  # rewrite\n" +
+			"changes: [what you changed]  # rewrite\nquestions: [for the author]  # needs_input\ncard: {problem, state, options: [{letter, gist, consequences, size, risks, changes}], recommendation, recommended, status: proposed}  # duplicate\n```\n\n" +
+			"A result code rejects fails this run.\n\n## Duplicate candidates\n\n"
+		if len(in.Candidates) == 0 {
+			pr += "No other ticket shares paths, identifiers or title words with this one: there is no candidate to compare.\n\n"
+		} else {
+			pr += "Code chose these tickets as possible duplicates or contradictions; compare the ticket with these only:\n\n" +
+				untrusted("candidates", "- "+strings.Join(in.Candidates, "\n- ")) + "\n"
+		}
+		head.WriteString(pr)
+	}
 	var pr string
 	if in.PullRequest != "" {
 		pr = "## Pull request\n\n" + untrusted("pull request", in.PullRequest) + "\n"

@@ -151,6 +151,7 @@ type issue struct {
 	HTMLURL     string          `json:"html_url"`
 	PullRequest json.RawMessage `json:"pull_request"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+	ClosedAt    time.Time       `json:"closed_at"`
 	Comments    int             `json:"comments"`
 }
 
@@ -165,7 +166,7 @@ func (i issue) ticket(repo string) tickets.Ticket {
 		t.Labels = append(t.Labels, l.Name)
 	}
 	if t.Closed {
-		t.ClosedAs = i.StateReason
+		t.ClosedAs, t.ClosedAt = i.StateReason, i.ClosedAt
 	}
 	t.State = stateOf(t.Labels)
 	for _, l := range t.Labels {
@@ -246,6 +247,9 @@ func (p *Provider) List(ctx context.Context, q tickets.Query) ([]tickets.Ticket,
 	}
 	if len(q.Labels) > 0 {
 		v.Set("labels", strings.Join(q.Labels, ","))
+	}
+	if !q.Since.IsZero() {
+		v.Set("since", q.Since.UTC().Format(time.RFC3339))
 	}
 	path := fmt.Sprintf("/repos/%s/issues?%s", q.Repo, v.Encode())
 	var out []tickets.Ticket
@@ -366,6 +370,33 @@ func sameSet(a, b []string) bool {
 	slices.Sort(a)
 	slices.Sort(b)
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
+}
+
+// SetSize replaces the ticket's size label (spec section 4.7: the size is a
+// label in GitHub Issues).
+func (p *Provider) SetSize(ctx context.Context, ref tickets.Ref, size string) error {
+	if !slices.Contains(core.Sizes(), size) {
+		return fmt.Errorf("github: %q is not a size", size)
+	}
+	current, err := p.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	labels := slices.DeleteFunc(slices.Clone(current.Labels), func(l string) bool {
+		s, ok := strings.CutPrefix(l, "size:")
+		return ok && slices.Contains(core.Sizes(), s)
+	})
+	labels = append(labels, "size:"+size)
+	if sameSet(labels, current.Labels) {
+		return nil
+	}
+	if err := p.ensureLabels(ctx, ref.Repo, labels); err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodPut, issuePath(ref, "/labels"), map[string]any{"labels": labels}, nil); err != nil {
+		return fmt.Errorf("github: set the size of %s: %w", ref, err)
+	}
+	return nil
 }
 
 // SetBody replaces the ticket's text; the journal keeps its work state block

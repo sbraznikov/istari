@@ -422,3 +422,21 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 		t.Fatalf("the paused ticket's task is %s, want ready and left alone", got.State)
 	}
 }
+
+func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 15)
+	f.start(t)
+	s := f.session(t)
+	if _, err := f.runner.Runs().Reject(ctx, s.spec.Env["ISTARI_RUN"], "refine result: size \"huge\" is not a size"); err != nil {
+		t.Fatal(err)
+	}
+	f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done")
+	s.finish <- harness.Result{ExitCode: 0}
+	if failed := f.waitEvent(t, "task.failed"); !strings.Contains(string(failed.Payload), "huge") {
+		t.Fatalf("task.failed = %s, want the rejection", failed.Payload)
+	}
+	if failed := f.waitEvent(t, "task.failed"); failed.Task != task.ID && failed.Ticket != task.Ticket {
+		t.Fatalf("the failure is of another task: %+v", failed)
+	}
+}

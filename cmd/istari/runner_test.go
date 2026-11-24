@@ -72,8 +72,8 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	gh := githubtest.New(t)
-	for range 5 { // issue #5 is the ticket: its journal goes there
-		gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob")
+	for range 5 { // issue #5 is the ticket: its journal goes there; closed, they are not synced or refined
+		gh.HumanClose(gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob"), "bob", "completed")
 	}
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
