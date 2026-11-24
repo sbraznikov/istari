@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -45,7 +44,7 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				return err
 			}
 			if failed > 0 {
-				return errors.New(fmt.Sprintf("%d check(s) failed", failed))
+				return fmt.Errorf("%d check(s) failed", failed)
 			}
 			return nil
 		},

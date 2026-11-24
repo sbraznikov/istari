@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +30,10 @@ const Name = "claude-code"
 type Options struct {
 	Binary string // default "claude", looked up in PATH
 }
+
+// readGrace is how long the output may stay open after the harness exited:
+// a background process the agent started can hold it; then it is closed.
+const readGrace = 2 * time.Second
 
 // Harness starts Claude Code runs.
 type Harness struct {
@@ -56,9 +63,10 @@ func (h *Harness) Name() string { return Name }
 func DefaultProfiles() map[string]harness.Profile {
 	readOnly := []string{"Read", "Grep", "Glob", "Bash(istari *)", "Bash(git log *)", "Bash(git diff *)", "Bash(git show *)"}
 	return map[string]harness.Profile{
-		"refiner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "default", AllowedTools: readOnly},
-		"planner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "default", AllowedTools: readOnly},
-		"reviewer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "default", AllowedTools: readOnly},
+		// dontAsk: a tool that is not allowed is refused, nobody is asked.
+		"refiner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
+		"planner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
+		"reviewer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
 		"implementer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "acceptEdits",
 			AllowedTools: []string{"Read", "Edit", "Write", "Grep", "Glob", "Bash(istari *)", "Bash(git *)"}},
 	}
@@ -72,7 +80,9 @@ func (h *Harness) Check(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Env = environment(harness.RunSpec{}) // the environment a run gets
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %s --version failed: %v: %s", Name, path, err, out)
 	}
 	return nil
@@ -92,9 +102,10 @@ func (h *Harness) Resume(ctx context.Context, sessionID string, spec harness.Run
 }
 
 // args builds the command line of spec section 7.3. stream-json output with
-// --print requires --verbose.
+// --print requires --verbose. The brief comes last, after --, so that it is
+// never read as a flag.
 func args(spec harness.RunSpec, resume string) []string {
-	a := []string{"--print", spec.Brief, "--output-format", "stream-json", "--verbose"}
+	a := []string{"--print", "--output-format", "stream-json", "--verbose"}
 	if resume != "" {
 		a = append(a, "--resume", resume)
 	}
@@ -114,21 +125,36 @@ func args(spec harness.RunSpec, resume string) []string {
 	if spec.MaxBudgetUSD > 0 {
 		a = append(a, "--max-budget-usd", strconv.FormatFloat(spec.MaxBudgetUSD, 'f', -1, 64))
 	}
-	return a
+	return append(a, "--", spec.Brief)
 }
 
 // baseEnv are the variables of the daemon's environment a harness needs to
-// run at all. Everything else, such as tracker or GitHub tokens, stays with
-// the daemon (spec section 11).
-var baseEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM"}
+// run at all; passPrefixes are those of the model provider and of the
+// harness itself. Everything else, such as the Slack, tracker or GitHub
+// tokens, stays with the daemon (spec section 11).
+var (
+	baseEnv      = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy"}
+	passPrefixes = []string{"ANTHROPIC_", "CLAUDE_CODE_"}
+)
+
+func passed(key string) bool {
+	if slices.Contains(baseEnv, key) {
+		return true
+	}
+	for _, p := range passPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
 
 func environment(spec harness.RunSpec) []string {
 	var env []string
-	for _, k := range baseEnv {
-		if v, ok := os.LookupEnv(k); ok {
-			if _, own := spec.Env[k]; !own {
-				env = append(env, k+"="+v)
-			}
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, own := spec.Env[k]; passed(k) && !own {
+			env = append(env, kv)
 		}
 	}
 	keys := make([]string, 0, len(spec.Env))
@@ -143,22 +169,32 @@ func environment(spec harness.RunSpec) []string {
 }
 
 func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string) (harness.Session, error) {
-	cmd := exec.Command(h.binary, args(spec, resume)...)
-	cmd.Dir = spec.Workdir
-	cmd.Env = environment(spec)
-	cmd.Stdin = nil
-	// A process group of its own, so that Stop reaches the shells and tools
-	// the agent started too.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
+	// The output goes to a pipe of our own, not one exec manages, so that
+	// waiting for the process never depends on reading its output.
+	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd := exec.Command(h.binary, args(spec, resume)...)
+	cmd.Dir = spec.Workdir
+	cmd.Env = environment(spec)
+	cmd.Stdout = w
+	// A process group of its own, so that Stop reaches the shells and tools
+	// the agent started too.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		r.Close()
+		w.Close()
 		return nil, fmt.Errorf("claudecode: start %s: %w", h.binary, err)
 	}
-	s := &session{cmd: cmd, events: make(chan harness.Event, 64), done: make(chan struct{}), seen: map[string]bool{}}
-	go s.read(stdout)
+	w.Close()
+	s := &session{
+		cmd: cmd, out: r, queue: newQueue(),
+		exited: make(chan struct{}), read: make(chan struct{}), done: make(chan struct{}),
+		seen: map[string]bool{},
+	}
+	go s.readOutput()
+	go s.wait()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -171,16 +207,23 @@ func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string
 
 type session struct {
 	cmd    *exec.Cmd
-	events chan harness.Event
-	done   chan struct{} // closed when the process has exited
+	out    *os.File
+	queue  *queue
+	exited chan struct{} // the process has exited
+	read   chan struct{} // the output has been read to its end
+	done   chan struct{} // both; the result is final
 
-	mu     sync.Mutex
-	id     string
-	seen   map[string]bool // message ids whose usage is counted
-	summed harness.Usage   // per-message sum
-	final  *harness.Usage  // the result line's totals, if any
-	result harness.Result
-	err    error
+	mu       sync.Mutex
+	id       string
+	seen     map[string]bool // message ids whose usage is counted
+	summed   harness.Usage   // per-message sum
+	final    *harness.Usage  // the result line's totals, if any
+	failed   bool
+	reason   string
+	waitErr  error
+	readErr  error
+	result   harness.Result
+	finalErr error
 }
 
 func (s *session) ID() string {
@@ -189,25 +232,32 @@ func (s *session) ID() string {
 	return s.id
 }
 
-func (s *session) Events() <-chan harness.Event { return s.events }
+func (s *session) Events() <-chan harness.Event { return s.queue.out }
 
 func (s *session) Send(string) error { return harness.ErrSendNotSupported }
 
-// Stop sends SIGTERM to the process group and SIGKILL after grace.
+// Stop sends SIGTERM to the process group and SIGKILL after grace. It does
+// nothing once the process has exited: its group id may belong to another
+// process by then.
 func (s *session) Stop(grace time.Duration) error {
+	select {
+	case <-s.exited:
+		return nil
+	default:
+	}
 	pgid := -s.cmd.Process.Pid
 	if err := syscall.Kill(pgid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	select {
-	case <-s.done:
+	case <-s.exited:
 		return nil
 	case <-time.After(grace):
 	}
 	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
-	<-s.done
+	<-s.exited
 	return nil
 }
 
@@ -215,12 +265,55 @@ func (s *session) Wait() (harness.Result, error) {
 	<-s.done
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.result, s.err
+	return s.result, s.finalErr
+}
+
+// wait reaps the process, gives the output readGrace to end, closes it if a
+// background process still holds it, and then fixes the result.
+func (s *session) wait() {
+	err := s.cmd.Wait()
+	s.mu.Lock()
+	s.waitErr = err
+	s.mu.Unlock()
+	close(s.exited)
+	select {
+	case <-s.read:
+	case <-time.After(readGrace):
+		s.out.Close() // ends readOutput
+		<-s.read
+	}
+	s.finish()
+}
+
+func (s *session) finish() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result.SessionID = s.id
+	s.result.Usage = s.summed
+	if s.final != nil {
+		s.result.Usage = *s.final
+	}
+	s.result.Failed, s.result.Reason = s.failed, s.reason
+	var exit *exec.ExitError
+	switch {
+	case s.waitErr == nil:
+		s.result.ExitCode = 0
+	case errors.As(s.waitErr, &exit):
+		s.result.ExitCode = exit.ExitCode() // -1 when killed by a signal
+	default:
+		s.finalErr = s.waitErr
+	}
+	if s.finalErr == nil && s.readErr != nil && !errors.Is(s.readErr, os.ErrClosed) {
+		s.finalErr = fmt.Errorf("claudecode: reading the stream: %w", s.readErr)
+	}
+	close(s.done)
 }
 
 // streamLine is one line of stream-json output.
 type streamLine struct {
 	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	IsError   bool   `json:"is_error"`
 	SessionID string `json:"session_id"`
 	Message   struct {
 		ID      string `json:"id"`
@@ -248,11 +341,14 @@ func (u apiUsage) usage() harness.Usage {
 		CacheReadTokens: u.CacheReadInputTokens, CacheWriteTokens: u.CacheCreationInputTokens}
 }
 
-// read turns the output into events, then waits for the process. A message
-// whose content spans several lines repeats its usage on each; it is counted
-// once, by message id. The result line's totals win over the sum.
-func (s *session) read(stdout interface{ Read([]byte) (int, error) }) {
-	sc := bufio.NewScanner(stdout)
+// readOutput turns the output into events. A message whose content spans
+// several lines repeats its usage on each; it is counted once, by message id
+// (a message without an id counts every time). The result line's totals win
+// over the sum. Events never wait for a reader: they queue.
+func (s *session) readOutput() {
+	defer close(s.read)
+	defer s.queue.close()
+	sc := bufio.NewScanner(s.out)
 	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	for sc.Scan() {
 		var line streamLine
@@ -269,55 +365,76 @@ func (s *session) read(stdout interface{ Read([]byte) (int, error) }) {
 			for _, c := range line.Message.Content {
 				switch c.Type {
 				case "text":
-					s.events <- harness.Event{Kind: harness.EventMessage, Text: c.Text}
+					s.queue.push(harness.Event{Kind: harness.EventMessage, Text: c.Text})
 				case "tool_use":
-					s.events <- harness.Event{Kind: harness.EventToolCall, Tool: c.Name, ToolInput: c.Input}
+					s.queue.push(harness.Event{Kind: harness.EventToolCall, Tool: c.Name, ToolInput: c.Input})
 				}
 			}
-			if u := line.Message.Usage; u != nil && line.Message.ID != "" {
+			if u := line.Message.Usage; u != nil {
 				s.mu.Lock()
-				first := !s.seen[line.Message.ID]
+				first := line.Message.ID == "" || !s.seen[line.Message.ID]
 				s.seen[line.Message.ID] = true
 				if first {
 					s.summed = s.summed.Add(u.usage())
 				}
 				s.mu.Unlock()
 				if first {
-					s.events <- harness.Event{Kind: harness.EventUsage, Usage: u.usage()}
+					s.queue.push(harness.Event{Kind: harness.EventUsage, Usage: u.usage()})
 				}
 			}
 		case "result":
+			s.mu.Lock()
+			s.failed, s.reason = line.IsError, line.Subtype
 			if line.Usage != nil {
 				total := line.Usage.usage()
 				total.CostUSD = line.TotalCostUSD
-				s.mu.Lock()
 				s.final = &total
-				s.mu.Unlock()
 			}
+			s.mu.Unlock()
 		}
 	}
-	readErr := sc.Err()
-	close(s.events)
-	waitErr := s.cmd.Wait()
+	if err := sc.Err(); err != nil {
+		s.mu.Lock()
+		s.readErr = err
+		s.mu.Unlock()
+		io.Copy(io.Discard, s.out) // keep the harness from blocking on a full pipe
+	}
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.result.SessionID = s.id
-	s.result.Usage = s.summed
-	if s.final != nil {
-		s.result.Usage = *s.final
+// queue hands events to a reader in order without ever blocking the writer.
+type queue struct {
+	in  chan harness.Event
+	out chan harness.Event
+}
+
+func newQueue() *queue {
+	q := &queue{in: make(chan harness.Event), out: make(chan harness.Event)}
+	go q.run()
+	return q
+}
+
+func (q *queue) push(e harness.Event) { q.in <- e }
+func (q *queue) close()               { close(q.in) }
+
+func (q *queue) run() {
+	defer close(q.out)
+	var pending []harness.Event
+	in := q.in
+	for in != nil || len(pending) > 0 {
+		var out chan harness.Event
+		var next harness.Event
+		if len(pending) > 0 {
+			out, next = q.out, pending[0]
+		}
+		select {
+		case e, ok := <-in:
+			if !ok {
+				in = nil
+				continue
+			}
+			pending = append(pending, e)
+		case out <- next:
+			pending = pending[1:]
+		}
 	}
-	var exit *exec.ExitError
-	switch {
-	case waitErr == nil:
-		s.result.ExitCode = 0
-	case errors.As(waitErr, &exit):
-		s.result.ExitCode = exit.ExitCode() // -1 when killed by a signal
-	default:
-		s.err = waitErr
-	}
-	if s.err == nil && readErr != nil {
-		s.err = fmt.Errorf("claudecode: reading the stream: %w", readErr)
-	}
-	close(s.done)
 }

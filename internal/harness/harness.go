@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,6 +71,8 @@ type Result struct {
 	ExitCode  int    // the process exit code; -1 if it was killed by a signal
 	Usage     Usage  // the run's totals
 	SessionID string // for Resume
+	Failed    bool   // the harness reported that the run ended in an error
+	Reason    string // how the harness says the run ended, e.g. success or error_max_budget_usd
 }
 
 // Session is one running harness process.
@@ -155,16 +158,6 @@ func All() []Harness {
 	for _, h := range harnesses {
 		all = append(all, h)
 	}
-	slices.SortFunc(all, func(a, b Harness) int { return compare(a.Name(), b.Name()) })
+	slices.SortFunc(all, func(a, b Harness) int { return strings.Compare(a.Name(), b.Name()) })
 	return all
-}
-
-func compare(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }

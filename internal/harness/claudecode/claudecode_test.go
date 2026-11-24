@@ -41,6 +41,18 @@ ignore-term)
 	echo ready > "$out/ready"
 	while :; do sleep 0.05; done
 	;;
+flood)
+	i=0
+	while [ $i -lt 500 ]; do
+		echo '{"type":"assistant","message":{"id":"m'$i'","content":[{"type":"text","text":"x"}]}}'
+		i=$((i+1))
+	done
+	;;
+orphan)
+	cat "$FAKE_STREAM"
+	sleep 30 &
+	exit 0
+	;;
 esac
 `
 
@@ -131,7 +143,7 @@ func TestTheAdapterStartsClaudeHeadlessAndYieldsEveryKindOfEventInOrder(t *testi
 
 	args := strings.Split(strings.TrimSpace(f.read(t, "args")), "\n")
 	for _, w := range [][]string{
-		{"--print", "Implement gh:acme/web#1."},
+		{"--", "Implement gh:acme/web#1."}, // the brief, after --: it may start with a dash
 		{"--append-system-prompt", "You are the implementer."},
 		{"--output-format", "stream-json"},
 		{"--model", "claude-opus-5-5"},
@@ -142,6 +154,9 @@ func TestTheAdapterStartsClaudeHeadlessAndYieldsEveryKindOfEventInOrder(t *testi
 		if !containsRun(args, w) {
 			t.Errorf("arguments %q lack %q", args, w)
 		}
+	}
+	if !slices.Contains(args, "--print") || args[len(args)-1] != "Implement gh:acme/web#1." {
+		t.Errorf("arguments %q: want --print and the brief last", args)
 	}
 	if !slices.Contains(args, "--verbose") {
 		t.Errorf("arguments %q lack --verbose, which stream-json with --print requires", args)
@@ -318,5 +333,128 @@ func TestCheckReportsAMissingBinaryClearly(t *testing.T) {
 	f := newFake(t)
 	if err := claudecode.New(claudecode.Options{Binary: f.bin}).Check(ctx); err != nil {
 		t.Fatalf("Check with a binary that runs: %v", err)
+	}
+}
+
+func TestACallerThatDoesNotReadEventsCanStillWaitAndStop(t *testing.T) {
+	f := newFake(t)
+	h := claudecode.New(claudecode.Options{Binary: f.bin})
+	s, err := h.Start(ctx, f.spec(t, "flood", nil)) // more events than any buffer
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan harness.Result, 1)
+	go func() { res, _ := s.Wait(); done <- res }()
+	select {
+	case res := <-done:
+		if res.ExitCode != 0 {
+			t.Fatalf("exit code = %d", res.ExitCode)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait hung while nobody read the events")
+	}
+	if err := s.Stop(time.Second); err != nil { // after the exit: a no-op
+		t.Fatalf("Stop after exit: %v", err)
+	}
+}
+
+func TestABackgroundChildHoldingTheOutputDoesNotHoldTheSession(t *testing.T) {
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "orphan", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []harness.Event, 1)
+	go func() { done <- collect(t, s) }()
+	select {
+	case events := <-done:
+		if len(events) != 5 {
+			t.Fatalf("got %d events before the stream was closed, want all 5", len(events))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the event stream stayed open after the harness exited")
+	}
+	if res, err := s.Wait(); err != nil || res.ExitCode != 0 {
+		t.Fatalf("Wait = %+v, %v", res, err)
+	}
+}
+
+func TestCancellingTheContextStopsTheRun(t *testing.T) {
+	f := newFake(t)
+	runCtx, cancel := context.WithCancel(ctx)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(runCtx, f.spec(t, "exit-on-term", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return f.read(t, "ready") != "" })
+	cancel()
+	done := make(chan struct{})
+	go func() { s.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelling the context did not stop the run")
+	}
+	if !strings.Contains(f.read(t, "signals"), "TERM") {
+		t.Fatal("the run was not sent SIGTERM")
+	}
+}
+
+func TestTheModelProvidersCredentialsReachTheHarness(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "model-key")
+	t.Setenv("HTTPS_PROXY", "http://proxy:3128")
+	t.Setenv("SLACK_BOT_TOKEN", "daemon-secret")
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	s.Wait()
+	env := f.read(t, "env")
+	for _, want := range []string{"ANTHROPIC_API_KEY=model-key", "HTTPS_PROXY=http://proxy:3128"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the harness lacks %s", want)
+		}
+	}
+	if strings.Contains(env, "daemon-secret") {
+		t.Error("the daemon's Slack token reached the agent")
+	}
+}
+
+func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
+	stream := filepath.Join(t.TempDir(), "stream.jsonl")
+	os.WriteFile(stream, []byte(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"s","total_cost_usd":5.01,"usage":{"input_tokens":1,"output_tokens":1}}`+"\n"), 0o644)
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": stream, "FAKE_EXIT": "1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	res, _ := s.Wait()
+	if !res.Failed || res.Reason != "error_max_budget_usd" || res.Usage.CostUSD != 5.01 {
+		t.Fatalf("result = %+v, want a failed run with its reason and cost", res)
+	}
+}
+
+func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {
+	// The modes of claude --permission-mode (Claude Code 2.1).
+	valid := []string{"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
+	profiles := claudecode.DefaultProfiles()
+	for _, role := range []string{"refiner", "planner", "implementer", "reviewer"} {
+		p, ok := profiles[role]
+		if !ok {
+			t.Fatalf("no profile for %s", role)
+		}
+		if !slices.Contains(valid, p.PermissionMode) || p.Model == "" || p.Harness != claudecode.Name {
+			t.Errorf("%s profile = %+v", role, p)
+		}
+		spec := p.Apply(harness.RunSpec{Brief: "b"})
+		if spec.PermissionMode != p.PermissionMode || spec.Model != p.Model || !slices.Equal(spec.AllowedTools, p.AllowedTools) || spec.Brief != "b" {
+			t.Errorf("Apply(%s) = %+v", role, spec)
+		}
+	}
+	if slices.Contains(profiles["reviewer"].AllowedTools, "Edit") {
+		t.Error("the reviewer may edit files")
 	}
 }
