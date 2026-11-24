@@ -38,6 +38,8 @@ type Server struct {
 	sched   *scheduler.Scheduler
 	syncer  *tickets.Syncer
 	spaces  *runner.Workspaces
+	runs    *runner.Runs
+	runner  *runner.Runner
 	repos   map[string]bool // the configured repositories: only their tickets get worktrees
 	ops     map[string]operation
 	changed *notifier
@@ -62,6 +64,8 @@ type ServerOptions struct {
 	Standards tickets.Standards
 	// Workspaces turns on ticket worktrees when its DataDir is set.
 	Workspaces runner.WorkspaceOptions
+	// Runner turns on the runner when it has slots; it needs workspaces.
+	Runner runner.RunnerOptions
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -93,7 +97,13 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		ws := opts.Workspaces
 		ws.Clock = opts.Clock
 		srv.spaces = runner.NewWorkspaces(ns, ws)
+		if len(opts.Runner.Slots) > 0 {
+			ro := opts.Runner
+			ro.Clock = opts.Clock
+			srv.runner = runner.New(ns, srv.tasks, srv.tickets, srv.spaces, ro)
+		}
 	}
+	srv.runs = runner.NewRuns(ns, srv.tasks, opts.Clock)
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -156,6 +166,9 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 	}
 	return out
 }
+
+// Runner returns the runner, or nil when it is off; the daemon runs it.
+func (s *Server) Runner() *runner.Runner { return s.runner }
 
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }
@@ -277,6 +290,17 @@ func (s *Server) handle(name string, op operation) http.HandlerFunc {
 		if len(bytes.TrimSpace(raw)) == 0 {
 			raw = []byte("{}") // no body is an empty request
 		}
+		ctx := r.Context()
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			// An agent's request: it acts as its run's agent, on its run's
+			// ticket only (spec sections 7.2 and 11).
+			var run runner.Run
+			if run, raw, err = s.asAgent(ctx, name, raw, token); err != nil {
+				writeError(w, err)
+				return
+			}
+			ctx = context.WithValue(ctx, runKey{}, run)
+		}
 		var resp any
 		key := r.Header.Get(IdempotencyHeader)
 		if strings.HasPrefix(key, timerKeyPrefix) {
@@ -284,9 +308,9 @@ func (s *Server) handle(name string, op operation) http.HandlerFunc {
 			return
 		}
 		if key != "" && op.again != nil {
-			resp, err = s.idempotent(r.Context(), key, name, op, raw)
+			resp, err = s.idempotent(ctx, key, name, op, raw)
 		} else {
-			resp, err = op.run(r.Context(), raw)
+			resp, err = op.run(ctx, raw)
 		}
 		if err != nil {
 			writeError(w, err)
@@ -310,8 +334,13 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, ErrorBody{Code: "bad_request", Message: err.Error()})
 	case errors.As(err, &coreErr):
 		status := http.StatusConflict
-		if coreErr.Code == core.CodeNotFound {
+		switch coreErr.Code {
+		case core.CodeNotFound:
 			status = http.StatusNotFound
+		case runner.CodeTokenInvalid:
+			status = http.StatusUnauthorized
+		case runner.CodeTokenScope, CodeTokenForbidden:
+			status = http.StatusForbidden
 		}
 		writeJSON(w, status, ErrorBody{Code: coreErr.Code, Message: coreErr.Message})
 	case errors.As(err, &bad):

@@ -45,7 +45,10 @@ var (
 	_ harness.Resumer = (*Harness)(nil)
 )
 
-func init() { harness.Register(New(Options{})) }
+func init() {
+	harness.Register(New(Options{}))
+	harness.RegisterDefaults(DefaultProfiles())
+}
 
 // New returns the adapter.
 func New(opts Options) *Harness {

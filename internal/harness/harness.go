@@ -127,7 +127,29 @@ func (p Profile) Apply(spec RunSpec) RunSpec {
 var (
 	mu        sync.Mutex
 	harnesses = map[string]Harness{}
+	defaults  map[string]Profile
 )
+
+// RegisterDefaults sets the roles' profiles to use until the pipeline config
+// sets them. The first adapter's are kept; an adapter calls it from init.
+func RegisterDefaults(profiles map[string]Profile) {
+	mu.Lock()
+	defer mu.Unlock()
+	if defaults == nil {
+		defaults = profiles
+	}
+}
+
+// Defaults returns the roles' default profiles, by role.
+func Defaults() map[string]Profile {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make(map[string]Profile, len(defaults))
+	for role, p := range defaults {
+		out[role] = p
+	}
+	return out
+}
 
 // Register makes a harness available by its name. Adapters call it from init.
 func Register(h Harness) {

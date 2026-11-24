@@ -128,3 +128,16 @@ func TestSettingTheSamePriorityAgainChangesNothing(t *testing.T) {
 		t.Fatalf("ticket.prioritized events = %d, want 1", n)
 	}
 }
+
+func TestClaimReadyInTakesOnlyTasksOfTheNamedProjects(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_api", Ticket: "gh:acme/api#1", Project: "api", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tasks.ClaimReadyIn(ctx, "agent:a", "implementer", []string{"web"}); err == nil {
+		t.Fatal("a task of another project was claimed")
+	}
+	if lease, err := f.tasks.ClaimReadyIn(ctx, "agent:a", "implementer", []string{"web", "api"}); err != nil || lease.Task != "t_api" {
+		t.Fatalf("ClaimReadyIn = %+v, %v; want t_api", lease, err)
+	}
+}

@@ -23,19 +23,26 @@ import (
 type client struct {
 	http   *http.Client
 	socket string
+	token  string
 }
 
+// newClient finds the daemon: ISTARI_SOCKET, which the runner gives an agent,
+// or the socket in the config's data directory. ISTARI_TOKEN, an agent's run
+// token, goes with every request.
 func newClient(opts *Options) (*client, error) {
-	cfg, err := loadConfig(opts.Config)
-	if err != nil {
-		return nil, err
+	socket := os.Getenv("ISTARI_SOCKET")
+	if socket == "" {
+		cfg, err := loadConfig(opts.Config)
+		if err != nil {
+			return nil, err
+		}
+		dataDir, err := cfg.Daemon.DataDirPath()
+		if err != nil {
+			return nil, err
+		}
+		socket = filepath.Join(dataDir, api.SocketName)
 	}
-	dataDir, err := cfg.Daemon.DataDirPath()
-	if err != nil {
-		return nil, err
-	}
-	socket := filepath.Join(dataDir, api.SocketName)
-	return &client{socket: socket, http: &http.Client{Transport: &http.Transport{
+	return &client{socket: socket, token: os.Getenv("ISTARI_TOKEN"), http: &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		},
@@ -64,6 +71,9 @@ func (c *client) call(ctx context.Context, op, key string, req, resp any) error 
 	r.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		r.Header.Set(api.IdempotencyHeader, key)
+	}
+	if c.token != "" {
+		r.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	res, err := c.http.Do(r)
 	if err != nil {

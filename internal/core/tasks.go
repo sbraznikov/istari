@@ -225,6 +225,13 @@ func (t *Tasks) Claim(ctx context.Context, actor, id string) (Lease, error) {
 // empty: the one whose ticket has the highest priority, the oldest on a tie
 // (spec 4.9). It fails with no_ready_task when there is none.
 func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, error) {
+	return t.ClaimReadyIn(ctx, actor, role, nil)
+}
+
+// ClaimReadyIn is ClaimReady among the tasks of the named projects only; no
+// projects means every project. The runner takes only the work of the
+// projects it has repositories for.
+func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects []string) (Lease, error) {
 	var lease Lease
 	err := retry(func() error {
 		all, err := t.List(ctx)
@@ -233,7 +240,7 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 		}
 		var ready []Task
 		for _, task := range all {
-			if task.State == TaskReady && (role == "" || task.Role == role) {
+			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) {
 				ready = append(ready, task)
 			}
 		}

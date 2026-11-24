@@ -439,6 +439,12 @@ func (w *Workspaces) split(ctx context.Context, ref string) (bool, error) {
 	return split, nil
 }
 
+// Get returns the ticket's workspace record; a ticket without one gets a zero
+// Workspace.
+func (w *Workspaces) Get(ctx context.Context, ref string) (Workspace, error) {
+	return w.get(ctx, ref)
+}
+
 // get returns the ticket's workspace record, or a zero one.
 func (w *Workspaces) get(ctx context.Context, ref string) (Workspace, error) {
 	rec, err := w.store.Get(ctx, workspaceKind, ref)

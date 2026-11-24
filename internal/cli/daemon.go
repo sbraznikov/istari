@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/standard"
@@ -51,6 +55,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 					daemonOpts.Standards = standard.ForTracker{Tracker: tracker, DefaultPriority: cfg.Defaults.Priority}
 				}
 			}
+			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
 			return api.RunDaemon(ctx, daemonOpts)
 		},
 	}
@@ -71,6 +76,52 @@ func syncRepos(cfg *config.Config) []tickets.SyncRepo {
 		}
 	}
 	return repos
+}
+
+// runnerOf returns the runner's slots: per role of the harnesses' default
+// profiles, as many as the role's max_concurrent_runs_by_role, else one,
+// named <role>-<n> (spec section 7.2). A harness that cannot run here gets no
+// slots; with none, or no project, the runner is off.
+func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
+	var opts runner.RunnerOptions
+	for _, p := range cfg.Projects {
+		if len(p.RepoList()) > 0 {
+			opts.Projects = append(opts.Projects, p.Name)
+		}
+	}
+	if len(opts.Projects) == 0 {
+		return runner.RunnerOptions{}
+	}
+	defaults := harness.Defaults()
+	roles := make([]string, 0, len(defaults))
+	for role := range defaults {
+		roles = append(roles, role)
+	}
+	slices.Sort(roles)
+	usable := map[string]bool{}
+	for _, role := range roles {
+		profile := defaults[role]
+		ok, checked := usable[profile.Harness]
+		if !checked {
+			h, err := harness.Get(profile.Harness)
+			if err == nil {
+				err = h.Check(ctx)
+			}
+			if err != nil {
+				log.Printf("istari: runner: harness %s cannot run here, its roles get no slots: %v", profile.Harness, err)
+			}
+			ok = err == nil
+			usable[profile.Harness] = ok
+		}
+		if !ok {
+			continue
+		}
+		n := max(cfg.Defaults.MaxConcurrentRunsByRole[role], 1)
+		for i := 1; i <= n; i++ {
+			opts.Slots = append(opts.Slots, runner.Slot{Profile: fmt.Sprintf("%s-%d", role, i), Role: role, Harness: profile})
+		}
+	}
+	return opts
 }
 
 // loadConfig loads the config at path. Without an explicit path a missing

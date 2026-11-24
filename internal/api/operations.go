@@ -57,6 +57,21 @@ type (
 	ActorRequest struct {
 		Actor string `json:"actor"`
 	}
+	RunRequest struct {
+		ID string `json:"id"`
+	}
+	RunActRequest struct {
+		Actor string `json:"actor"`
+		ID    string `json:"id"`
+	}
+	RunLogsRequest struct {
+		ID    string `json:"id"`
+		After int64  `json:"after,omitempty"` // a byte offset in the transcript, from an earlier answer
+	}
+	RunCompleteRequest struct {
+		Actor   string `json:"actor"`
+		Message string `json:"message,omitempty"`
+	}
 	DispatchRequest struct {
 		Actor   string `json:"actor"`
 		Project string `json:"project,omitempty"` // empty: all projects
@@ -99,6 +114,8 @@ func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketReadyRequest) validate() error  { return needActor(r.Actor) }
 func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
 func (r *ActorRequest) validate() error        { return needActor(r.Actor) }
+func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
+func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -203,6 +220,27 @@ func (s *Server) operations() map[string]operation {
 			}
 			return k.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
 		}),
+		// Runs (spec sections 7.2 and 9).
+		"run.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.runs.List(ctx) }),
+		"run.show": read(func(ctx context.Context, r RunRequest) (any, error) { return s.runs.Get(ctx, r.ID) }),
+		"run.logs": read(func(ctx context.Context, r RunLogsRequest) (any, error) { return s.runLogs(ctx, r) }),
+		"run.stop": write(okAgain, func(ctx context.Context, r RunActRequest) (any, error) {
+			if s.runner == nil {
+				return nil, &core.Error{Code: core.CodeInvalidState, Message: "the runner is off"}
+			}
+			return ok(s.runner.Stop(ctx, r.ID, r.Actor))
+		}),
+		// run.complete is istari complete: the agent's word that its work is
+		// done; the runner completes the task when the harness exits.
+		"run.complete": write(okAgain, func(ctx context.Context, r RunCompleteRequest) (any, error) {
+			run, isAgent := runOf(ctx)
+			if !isAgent {
+				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari complete is for an agent: it needs the run token in ISTARI_TOKEN"}
+			}
+			_, err := s.runs.Complete(ctx, run.ID, r.Message)
+			return ok(err)
+		}),
+		"whoami": read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
 		// Ticket worktrees (spec section 7.2).
 		"workspace.list": read(func(ctx context.Context, _ Empty) (any, error) {
 			if s.spaces == nil {
