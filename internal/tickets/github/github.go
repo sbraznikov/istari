@@ -67,6 +67,15 @@ const ownMark = "<!-- istari -->"
 // runs it: the token of the GitHub CLI (`gh auth token`, maintainer decision
 // on #16) and GITHUB_API_URL, if set, as the API base (GitHub Enterprise).
 func FromEnvironment(ctx context.Context) (*Provider, error) {
+	token, err := CLIToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+}
+
+// CLIToken returns the GitHub CLI's token (`gh auth token`).
+func CLIToken(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
@@ -75,13 +84,13 @@ func FromEnvironment(ctx context.Context) (*Provider, error) {
 		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
 			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
 		}
-		return nil, fmt.Errorf("github: no token from `gh auth token` (install the GitHub CLI and run `gh auth login`): %w", err)
+		return "", fmt.Errorf("github: no token from `gh auth token` (install the GitHub CLI and run `gh auth login`): %w", err)
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
-		return nil, errors.New("github: `gh auth token` printed no token; run `gh auth login`")
+		return "", errors.New("github: `gh auth token` printed no token; run `gh auth login`")
 	}
-	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+	return token, nil
 }
 
 // Login returns the GitHub login of the GitHub CLI's user (`gh api user`).

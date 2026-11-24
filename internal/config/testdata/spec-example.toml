@@ -23,6 +23,11 @@ S  = 5
 M  = 15
 L  = 30
 
+[github_app]                          # VCS (section 3.1): pushes, pull requests, checks and reviews; absent — the gh CLI's token (section 11)
+app_id      = 123456
+private_key = "~/.config/istari/istari-app.pem"   # the App's private key; only the daemon reads it
+                                      # the installation is looked up per repository
+
 [slack]
 app_token = "env:SLACK_APP_TOKEN"     # Socket Mode
 bot_token = "env:SLACK_BOT_TOKEN"

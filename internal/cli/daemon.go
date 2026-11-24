@@ -25,6 +25,7 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/standard"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
@@ -54,6 +55,13 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 					daemonOpts.Tracker = tracker
 					daemonOpts.Standards = standard.ForTracker{Tracker: tracker, DefaultPriority: cfg.Defaults.Priority}
 				}
+			}
+			if len(daemonOpts.Repos) > 0 {
+				client, err := vcsOf(ctx, cfg)
+				if err != nil {
+					log.Printf("istari: pushes and pull requests are off: %v", err)
+				}
+				daemonOpts.VCS = client
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
 			if daemonOpts.Tracker != nil {
@@ -126,6 +134,24 @@ func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
 		}
 	}
 	return opts
+}
+
+// vcsOf returns the GitHub side: the App of [github_app], or the gh CLI's
+// token when there is none (spec section 11).
+func vcsOf(ctx context.Context, cfg *config.Config) (*vcs.Client, error) {
+	api := os.Getenv("GITHUB_API_URL")
+	if cfg.GitHubApp.AppID > 0 {
+		tokens, err := vcs.NewAppTokens(cfg.GitHubApp.AppID, cfg.GitHubApp.PrivateKey, api)
+		if err != nil {
+			return nil, err
+		}
+		return vcs.NewClient(api, tokens), nil
+	}
+	token, err := github.CLIToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return vcs.NewClient(api, vcs.StaticToken(token)), nil
 }
 
 // loadConfig loads the config at path. Without an explicit path a missing
