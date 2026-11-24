@@ -674,7 +674,9 @@ func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []
 		return nil, err
 	}
 	upstream := "refs/remotes/origin/" + main
-	_, merr := gitOut(ctx, ws.Dir, "merge", "--no-edit", "-m", "Merge "+main+" into "+ws.Branch, upstream)
+	// The merge is istari's own commit, whatever identity the machine has.
+	_, merr := gitOut(ctx, ws.Dir, "-c", "user.name=istari", "-c", "user.email=istari@localhost",
+		"merge", "--no-edit", "-m", "Merge "+main+" into "+ws.Branch, upstream)
 	if merr == nil {
 		return nil, nil
 	}
