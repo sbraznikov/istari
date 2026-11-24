@@ -108,6 +108,13 @@ var transitions = func() []transition {
 		{"T10", TicketAwaitingApproval, "merge_failed", TicketInProgress},
 		{"T11", TicketAwaitingApproval, "merged", TicketDone},
 		{"T12", TicketInProgress, "children_done", TicketDone},
+		// T11 also finishes a ticket whose PR a human merged before the
+		// pipeline got to awaiting_approval, and repairs one canceled because
+		// that merge closed its issue (spec 4.8). After T12, so that
+		// TriggerTo(in_progress, done) stays children_done.
+		{"T11", TicketInProgress, "merged", TicketDone},
+		{"T11", TicketInReview, "merged", TicketDone},
+		{"T11", TicketCanceled, "merged", TicketDone},
 		{"T14", TicketCanceled, "reopen", TicketNew},
 		{"T15", TicketReady, "edited", TicketNew},
 	}
