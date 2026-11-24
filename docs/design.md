@@ -69,7 +69,7 @@ Separation of responsibility: the ticket, the branch and the PR store everything
 
 The invariant is enforced at five levels, so that it cannot be bypassed through any interface:
 
-1. **DB schema.** `task.ticket_id` and `run.task_id` are `NOT NULL` with a foreign key. A run without a ticket cannot even be written.
+1. **Storage.** The store has a single write path, `Append`, and core refuses to append a task without its ticket; runs, once they exist, are refused without their task in the same way. Projections are stored as generic records, so the schema itself does not express this; instead a test pins the store's exported API, so that no second write path can appear. A run without a ticket cannot be written.
 2. **API.** The API has no "start an agent with an arbitrary prompt" operation. A working agent is started only as the worker of a ticket's task.
 3. **Ticket standard.** Anyone can create a ticket: a human in the tracker, an agent in any harness, a message in Slack. But only a ticket that has passed the standard check and admission gets into work (section 4.5).
 4. **Git.** The branch is named `istari/<ticket-key>/<slug>`, and every commit carries the trailer `Ticket: gh:owner/repo#123`. The run token grants the right to push only to branches with this prefix.
@@ -1200,16 +1200,17 @@ via = "github_review"
 
 ```
 cmd/istari/            entry point: daemon, CLI, top
-internal/core/         event log, projections, state machines
+internal/core/         event log rules, projections, state machines, leases, limits
+internal/config/       installation config (~/.config/istari/config.toml)
 internal/pipeline/     pipeline templates, gates
-internal/scheduler/    leases, timers, limits
+internal/scheduler/    the tick: lease expiry, delayed actions
 internal/store/        storage interface + sqlite
 internal/tickets/      TicketProvider + github/
 internal/vcs/          GitHub App: branches, PRs, checks
 internal/slack/        Socket Mode, Block Kit, thread sync
 internal/runner/       environments, run lifecycle
 internal/harness/      Harness + claudecode/
-internal/api/          gRPC/HTTP, SSE
+internal/api/          daemon lifecycle, gRPC/HTTP, SSE
 internal/cli/          commands
 internal/tui/          Bubble Tea
 skill/                 instructions for agents
