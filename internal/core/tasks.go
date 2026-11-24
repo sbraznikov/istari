@@ -317,12 +317,8 @@ func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, 
 	}
 	// A ticket's priority: its own, or higher when an unfinished ticket that
 	// needs it is more urgent (spec 4.9), through any chain of needs.
-	ticketPriority := map[string]string{}
 	var ofTicket func(ref string, seen map[string]bool) string
 	ofTicket = func(ref string, seen map[string]bool) string {
-		if p, ok := ticketPriority[ref]; ok {
-			return p
-		}
 		p := tickets[ref].Priority
 		if p == "" {
 			p = t.opts.DefaultPriority
@@ -335,7 +331,6 @@ func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, 
 			p = min(p, ofTicket(other.Ref, seen))
 		}
 		delete(seen, ref)
-		ticketPriority[ref] = p
 		return p
 	}
 	byTicket := map[string]string{}

@@ -180,3 +180,26 @@ func TestATicketNeededByAMoreUrgentTicketRunsAtItsPriority(t *testing.T) {
 		t.Fatalf("needs = %v", tk.Needs)
 	}
 }
+
+func TestPriorityInheritanceThroughACycleDoesNotDependOnOrder(t *testing.T) {
+	for range 20 { // map order varies between runs
+		f := newFixture(t)
+		tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+		a := f.ticketAt(t, tickets, 1, "P3")
+		f.ticketAt(t, tickets, 2, "P3")
+		f.ticketAt(t, tickets, 3, "P0")
+		for _, n := range [][2]string{{"1", "2"}, {"2", "3"}, {"3", "1"}} { // 1 needs 2 needs 3 needs 1
+			if _, err := tickets.SetNeeds(ctx, "system", "gh:acme/web#"+n[0], []string{"gh:acme/web#" + n[1]}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Every ticket of the cycle is needed, through it, by the P0 ticket.
+		if _, err := tickets.SetPriority(ctx, "human:alex", "gh:acme/web#3", "P0"); err != nil {
+			t.Fatal(err)
+		}
+		f.ticketAt(t, tickets, 4, "P1")
+		if got := f.claimOrder(t, 1); got[0] == "t_4" {
+			t.Fatalf("the P1 ticket went before the cycle a P0 ticket is in (%s)", a)
+		}
+	}
+}

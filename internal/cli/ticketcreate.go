@@ -83,6 +83,9 @@ func newTicketDepsCommand(opts *Options) *cobra.Command {
 			}
 			var roots []string
 			if len(args) == 1 {
+				if _, ok := byRef[args[0]]; !ok {
+					return refusal{api.ErrorBody{Code: core.CodeNotFound, Message: "ticket " + args[0] + " does not exist"}}
+				}
 				roots = []string{args[0]}
 			} else {
 				for _, t := range all {
@@ -92,6 +95,35 @@ func newTicketDepsCommand(opts *Options) *cobra.Command {
 				}
 			}
 			slices.Sort(roots)
+			// The tickets reached from the roots; a cycle that no root reaches
+			// is printed from its first ticket.
+			reached := map[string]bool{}
+			var reach func(string)
+			reach = func(ref string) {
+				if reached[ref] {
+					return
+				}
+				reached[ref] = true
+				for _, n := range byRef[ref].Needs {
+					reach(n)
+				}
+			}
+			for _, r := range roots {
+				reach(r)
+			}
+			if len(args) == 0 {
+				refs := make([]string, 0, len(all))
+				for _, t := range all {
+					refs = append(refs, t.Ref)
+				}
+				slices.Sort(refs)
+				for _, ref := range refs {
+					if !reached[ref] && len(byRef[ref].Needs) > 0 {
+						roots = append(roots, ref)
+						reach(ref)
+					}
+				}
+			}
 			if opts.JSON {
 				type node struct {
 					Ref, State string
@@ -99,7 +131,9 @@ func newTicketDepsCommand(opts *Options) *cobra.Command {
 				}
 				var out []node
 				for _, t := range all {
-					out = append(out, node{t.Ref, string(t.State), t.Needs})
+					if reached[t.Ref] {
+						out = append(out, node{t.Ref, string(t.State), t.Needs})
+					}
 				}
 				return render(cmd.OutOrStdout(), opts, out, nil, nil)
 			}
@@ -114,10 +148,11 @@ func newTicketDepsCommand(opts *Options) *cobra.Command {
 						state += " (hold: " + t.Hold + ")"
 					}
 				}
-				fmt.Fprintf(&b, "%s%s  %s  %s\n", indent, ref, state, t.Title)
 				if seen[ref] {
+					fmt.Fprintf(&b, "%s%s  (cycle)\n", indent, ref)
 					return
 				}
+				fmt.Fprintf(&b, "%s%s  %s  %s\n", indent, ref, state, t.Title)
 				seen[ref] = true
 				for _, n := range t.Needs {
 					walk(n, indent+"  needs ", seen)

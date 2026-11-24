@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
+	"strings"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
@@ -27,7 +29,15 @@ func (s *Server) createPlan(ctx context.Context, r TicketPlanRequest) (map[strin
 	if s.syncer == nil || s.tracker == nil {
 		return nil, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker"}
 	}
-	refs, err := tickets.CreatePlan(withoutKey(ctx), s.tracker, r.Plan, s.firstRepo)
+	repo := r.Plan.Repo
+	if repo == "" {
+		repo = s.firstRepo
+	}
+	if !s.repos[strings.ToLower(repo)] {
+		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: repo + " is no repository istari syncs: add it with istari repo add"}
+	}
+	r.Plan.Repo = repo
+	refs, err := tickets.CreatePlan(withoutKey(ctx), s.tracker, r.Plan, repo)
 	if err != nil {
 		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
 	}
@@ -41,12 +51,14 @@ func (s *Server) createPlan(ctx context.Context, r TicketPlanRequest) (map[strin
 		out[pt.Key] = refs[pt.Key].String()
 		list = append(list, refs[pt.Key])
 	}
-	if err := s.syncer.Created(withoutKey(ctx), list, budgetOf); err != nil {
-		return nil, err
-	}
+	// Recorded as soon as the tickets exist: a repeat with the same key must
+	// not create them again, whatever happens next.
 	raw, _ := json.Marshal(map[string]any{"refs": out, "budget_of": budgetOf})
 	if _, err := s.store.Append(ctx, store.Event{Type: EventPlanCreated, At: s.clock().UTC(), Actor: r.Actor, Ticket: list[0].String(), Payload: raw}); err != nil {
 		return nil, err
+	}
+	if err := s.syncer.Created(withoutKey(ctx), list, budgetOf); err != nil {
+		log.Printf("istari: plan %v: mirroring: %v; the next sync repairs it", out, err)
 	}
 	return out, nil
 }

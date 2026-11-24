@@ -73,10 +73,13 @@ func CreatePlan(ctx context.Context, t Creator, p Plan, defaultRepo string) (map
 	refs := map[string]Ref{}
 	var created []Ref
 	undo := func(cause error) error {
+		errs := []error{cause}
 		for _, r := range created {
-			t.SetState(context.WithoutCancel(ctx), r, State{State: core.TicketCanceled})
+			if err := t.SetState(context.WithoutCancel(ctx), r, State{State: core.TicketCanceled}); err != nil {
+				errs = append(errs, fmt.Errorf("canceling %s: %w", r, err))
+			}
 		}
-		return fmt.Errorf("plan: %w; the %d tickets created before were canceled", cause, len(created))
+		return fmt.Errorf("plan: %w; the %d tickets created before were canceled", errors.Join(errs...), len(created))
 	}
 	written := func(name string) string { // a key or a ref, as this repository writes it
 		r, ok := refs[name]
@@ -90,10 +93,12 @@ func CreatePlan(ctx context.Context, t Creator, p Plan, defaultRepo string) (map
 	}
 	for _, i := range order {
 		pt := p.Tickets[i]
-		body := pt.Body
-		for key := range refs {
-			body = regexp.MustCompile(`#`+regexp.QuoteMeta(key)+`\b`).ReplaceAllString(body, written(key))
-		}
+		body := replaceKeys(pt.Body, func(key string) (string, bool) {
+			if _, ok := refs[key]; ok {
+				return written(key), true
+			}
+			return "", false
+		})
 		var deps []string
 		if len(pt.Needs) > 0 && !strings.Contains(body, "- Needs:") {
 			var needs []string
@@ -124,6 +129,24 @@ func CreatePlan(ctx context.Context, t Creator, p Plan, defaultRepo string) (map
 		}
 	}
 	return refs, nil
+}
+
+// planKeyRef is a #key outside a word: not followed by a letter, digit, _ or -.
+var planKeyRef = regexp.MustCompile(`#([a-z][a-z0-9-]*)([^A-Za-z0-9_-]|$)`)
+
+// replaceKeys replaces each #key that with knows, outside fenced code blocks.
+func replaceKeys(body string, with func(key string) (string, bool)) string {
+	parts := strings.Split(body, "```")
+	for i := 0; i < len(parts); i += 2 { // even parts are outside the fences
+		parts[i] = planKeyRef.ReplaceAllStringFunc(parts[i], func(m string) string {
+			sub := planKeyRef.FindStringSubmatch(m)
+			if ref, ok := with(sub[1]); ok {
+				return ref + sub[2]
+			}
+			return m
+		})
+	}
+	return strings.Join(parts, "```")
 }
 
 // withDependencies adds lines to the body's Dependencies section, which is
@@ -181,6 +204,32 @@ func validatePlan(ctx context.Context, t Creator, p Plan) ([]int, error) {
 			}
 		}
 	}
+	order, err := createOrder(p, after)
+	if err != nil {
+		return nil, err
+	}
+	// A body may name only keys created before it: their refs are known then.
+	pos := map[string]int{}
+	for at, i := range order {
+		pos[p.Tickets[i].Key] = at
+	}
+	for at, i := range order {
+		var bad error
+		replaceKeys(p.Tickets[i].Body, func(key string) (string, bool) {
+			if j, ok := pos[key]; ok && j >= at && bad == nil {
+				bad = fmt.Errorf("plan: %s mentions #%s, which is created after it: make it a need", p.Tickets[i].Key, key)
+			}
+			return "", false
+		})
+		if bad != nil {
+			return nil, bad
+		}
+	}
+	return order, nil
+}
+
+// createOrder orders the tickets after what they need and their parent.
+func createOrder(p Plan, after [][]int) ([]int, error) {
 	var order []int
 	mark := make([]int, len(p.Tickets)) // 1 visiting, 2 done
 	var visit func(i int, path []string) error

@@ -109,3 +109,33 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 		t.Fatalf("a ticket without an admitted parent = %+v", tk)
 	}
 }
+
+func TestKeysAreReplacedOnlyAsWholeReferencesOutsideCode(t *testing.T) {
+	gh := githubtest.New(t)
+	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
+	p, err := tickets.ParsePlan([]byte("tickets:\n  - key: base\n    title: Base\n  - key: base-x\n    title: Base X\n  - key: top\n    title: Top\n    needs: [base, base-x]\n    body: \"See #base and #base-x, not #basement.\\n\\n```\\n#base stays\\n```\\n\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := tickets.CreatePlan(ctx, tracker, p, "acme/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := gh.Issue(refs["top"].Number).Body
+	want := "See #" + strconv.Itoa(refs["base"].Number) + " and #" + strconv.Itoa(refs["base-x"].Number) + ", not #basement."
+	if !strings.Contains(body, want) || !strings.Contains(body, "#base stays") {
+		t.Fatalf("body:\n%s\nwant %q and the code block kept", body, want)
+	}
+}
+
+func TestABodyNamingAKeyCreatedLaterIsRefusedBeforeAnyWrite(t *testing.T) {
+	gh := githubtest.New(t)
+	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
+	p, _ := tickets.ParsePlan([]byte("tickets:\n  - key: first\n    title: First\n    body: \"Before #second.\"\n  - key: second\n    title: Second\n    needs: [first]\n"))
+	if _, err := tickets.CreatePlan(ctx, tracker, p, "acme/web"); err == nil || !strings.Contains(err.Error(), "second") {
+		t.Fatalf("CreatePlan = %v, want a refusal naming #second", err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatalf("%d issues were created", gh.IssueCount())
+	}
+}
