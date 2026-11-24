@@ -1,5 +1,7 @@
 # istari
 
+<img src="docs/assets/istari-logo.png" alt="istari — a branching staff topped with an amber star" width="640">
+
 istari is a self-hosted system that runs the software development lifecycle for coding agents. It takes a ticket and carries it to a merged pull request through a fixed pipeline of stages that agents execute under human control.
 
 > **Status: design stage.** The repository contains the spec and the TUI mockups. There is no code yet. Implementation is tracked in the issues, starting with [M1 Core](https://github.com/sbraznikov/istari/issues/1).
