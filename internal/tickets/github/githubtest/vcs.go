@@ -151,11 +151,44 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pullJSON(i *Issue) map[string]any {
 	return map[string]any{
-		"number": i.Number, "state": i.State, "merged": i.Merged, "title": i.Title, "body": i.Body,
+		"number": i.Number, "node_id": pullNodeID(i.Number), "draft": i.Draft,
+		"state": i.State, "merged": i.Merged, "title": i.Title, "body": i.Body,
 		"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", Repo, i.Number),
 		"head":     map[string]any{"ref": i.Branch, "sha": i.HeadSHA, "repo": map[string]any{"full_name": Repo}},
 		"base":     map[string]any{"ref": i.Base},
 	}
+}
+
+// pullNodeID is a pull request's GraphQL node id.
+func pullNodeID(n int) string { return fmt.Sprintf("PR_fake%d", n) }
+
+// graphql serves the one mutation istari uses: markPullRequestReadyForReview.
+// Like GitHub, it answers 200 with an "errors" list when the request fails.
+func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query     string
+		Variables struct{ ID string }
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	fail := func(msg string) {
+		s.write(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": msg}}})
+	}
+	if !strings.Contains(req.Query, "markPullRequestReadyForReview") {
+		fail("the fake knows only markPullRequestReadyForReview")
+		return
+	}
+	for _, i := range s.issues {
+		if i.PullRequest && pullNodeID(i.Number) == req.Variables.ID {
+			if !i.Draft {
+				fail("Pull request is not in draft")
+				return
+			}
+			i.Draft = false
+			s.write(w, http.StatusOK, map[string]any{"data": map[string]any{"markPullRequestReadyForReview": map[string]any{"pullRequest": map[string]any{"isDraft": false}}}})
+			return
+		}
+	}
+	fail("Could not resolve to a node with the global id of '" + req.Variables.ID + "'")
 }
 
 func (s *Server) updatePull(w http.ResponseWriter, r *http.Request) {

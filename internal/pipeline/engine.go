@@ -37,6 +37,10 @@ type EngineOptions struct {
 	// Checks tells the CI state of a ticket's pull request (pending, success
 	// or failure); ok is false while it has none. nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
+	// Ready marks a ticket's draft pull request ready for review; it is
+	// called on green CI before T6 and must succeed for T6 to fire. nil: the
+	// pull request is left as it is.
+	Ready func(ctx context.Context, ref string) error
 	// Review tells how many findings code accepted in the reviewer's report
 	// of a review task; submitted is false while it has none (spec 7.6:
 	// the verdict is code's). nil: the review task's completion passes.
@@ -424,7 +428,8 @@ func resumeFrom(state core.TicketState) func(TaskSpec) bool {
 const maxRefines = 3
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):
-// green completes the verify task and fires T6; red starts a rework round.
+// green ends the pull request's draft, completes the verify task and fires
+// T6; red starts a rework round.
 func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state string) error {
 	v, ok := r.tasks[StageVerify]
 	if !ok || v.State != core.TaskReady { // the implementer is not done, or it was handled
@@ -432,6 +437,12 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 	}
 	switch state {
 	case "success":
+		if e.opts.Ready != nil {
+			// Until it is marked ready, T6 waits: the next reconcile retries.
+			if err := e.opts.Ready(ctx, tk.Ref); err != nil {
+				return fmt.Errorf("mark the pull request ready: %w", err)
+			}
+		}
 		lease, err := e.tasks.Claim(ctx, e.opts.Actor, v.ID)
 		if err != nil {
 			return err

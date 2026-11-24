@@ -190,7 +190,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | T3 | `ready` | `start` | `planning` | system | there is a free slot, there is no hold, the tickets in `needs` are completed; among the ready tickets the one with the highest priority is taken |
 | T4 | `planning` | `plan_accepted` | `in_progress` | system; a human, if the plan gate is enabled | the plan is published in the ticket; the change zone does not overlap with tickets in progress, otherwise hold `waiting_zone` |
 | T5 | `planning` | `split` | `in_progress` | planner | child tickets are created; the parent has no tasks of its own. Mandatory if the ticket size is larger than `max_size` |
-| T6 | `in_progress` | `pr_ready` | `in_review` | system | the PR is open, CI is green |
+| T6 | `in_progress` | `pr_ready` | `in_review` | system | the PR is open, CI is green, and the PR is marked ready for review (no longer a draft); while marking fails, T6 does not fire and is retried |
 | T7 | `in_review` | `changes_requested` | `in_progress` | system, based on reviewer findings | the accepted reviewer report contains findings; there have been fewer than `max_review_rounds` rounds, otherwise hold |
 | T8 | `in_review` | `review_passed` | `awaiting_approval` | system, based on reviewer findings | the accepted reviewer report contains no findings; CI is green |
 | T9 | `awaiting_approval` | `changes_requested` | `in_progress` | human via GitHub review | — |
@@ -246,7 +246,7 @@ canceled — from any open state
 | 0 | refine | refiner | `new` | a ticket refined to the standard | check and admission (section 4.5) |
 | 1 | plan | planner | `planning` | a plan in a ticket comment, including seams for tests (section 7.6) | plan approval: off by default, enabled in the config (`plan_gate`) |
 | 2 | implement | implementer | `in_progress` | branch, commits, draft PR | — |
-| 3 | verify | (no agent) | `in_progress` | CI status | CI is green |
+| 3 | verify | (no agent) | `in_progress` | CI status; on green CI the PR is marked ready for review, which ends the draft | CI is green |
 | 4 | review | reviewer | `in_review` | a review with comments, or an approval | — |
 | 5 | approve | human; skipped in `auto` mode | `awaiting_approval` | GitHub review | depending on the merge mode (section 4.8) |
 | 6 | merge | (no agent) | `awaiting_approval` → `done` | merge, closing the ticket, removing the worktree | — |

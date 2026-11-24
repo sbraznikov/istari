@@ -142,6 +142,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/commits", s.listPullCommits)
+	mux.HandleFunc("POST /graphql", s.graphql)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -154,6 +155,9 @@ func New(t testing.TB, opts ...Option) *Server {
 			s.failNext--
 			s.write(w, http.StatusInternalServerError, map[string]string{"message": "Server Error"})
 			return
+		}
+		if gql, ok := strings.CutSuffix(s.prefix, "/v3"); ok && r.URL.Path == gql+"/graphql" {
+			r.URL.Path = s.prefix + "/graphql" // GitHub Enterprise: GraphQL at /api/graphql, REST at /api/v3
 		}
 		if !strings.HasPrefix(r.URL.Path, s.prefix+"/") {
 			http.NotFound(w, r)

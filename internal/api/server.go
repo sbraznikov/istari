@@ -183,6 +183,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
 	}
 	var checks func(ctx context.Context, ref string) (string, bool)
+	var ready func(ctx context.Context, ref string) error
 	if srv.watch != nil {
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
@@ -191,8 +192,16 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			}
 			return pr.Checks, true
 		}
+		// The draft ends on green CI, before T6 (spec 4.3, stage verify).
+		ready = func(ctx context.Context, ref string) error {
+			pr, err := srv.watch.PullRequestOf(ctx, ref)
+			if err != nil {
+				return err
+			}
+			return opts.VCS.MarkReady(ctx, pr.Repo, pr.Number)
+		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Review: srv.reviewOf})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
