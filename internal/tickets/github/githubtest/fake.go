@@ -237,8 +237,13 @@ func (s *Server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		State       *string `json:"state"`
 		StateReason *string `json:"state_reason"`
+		Body        *string `json:"body"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+	if req.Body != nil {
+		i.Body = *req.Body
+		i.Updated = s.tick()
+	}
 	if req.State != nil {
 		reason := ""
 		if req.StateReason != nil {

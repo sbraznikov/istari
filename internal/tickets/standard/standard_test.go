@@ -11,6 +11,7 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
@@ -245,4 +246,22 @@ func TestADefaultPriorityOutsideTheStandardIsADeviation(t *testing.T) {
 	f.checker.Standard.Priorities = []string{"P0", "P1"}
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M |  | `acme/web` | |"})})
 	assertDeviation(t, res, "priority", "P2")
+}
+
+func TestTheWorkStateBlockIsNotPartOfTheTicketText(t *testing.T) {
+	f := newFixture(t)
+	plain := body(nil)
+	tracked := journal.WithWorkState(plain, journal.WorkState{Stage: "ready", Branch: "istari/1/x", Next: "Write the test", OpenQuestions: []string{"Which API?"}})
+	if standard.Hash(standard.Default(), tracked) != standard.Hash(standard.Default(), plain) {
+		t.Fatal("the work state block changes the hash of the required sections: every journal entry would be T15")
+	}
+	res := f.check(t, standard.Draft{Body: tracked})
+	if len(res.Deviations) != 0 || res.Type != "feature" || res.Size != "M" || res.Priority != "P1" {
+		t.Fatalf("with the block: %+v, deviations %q", res, rules(res))
+	}
+	// The block changing (a new entry) does not change the hash either.
+	again := journal.WithWorkState(tracked, journal.WorkState{Stage: "planning"})
+	if standard.Hash(standard.Default(), again) != standard.Hash(standard.Default(), plain) {
+		t.Fatal("a new work state changes the hash")
+	}
 }

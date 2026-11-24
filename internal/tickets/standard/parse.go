@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 // body is a ticket body split for checking.
@@ -23,7 +25,10 @@ var headingRe = regexp.MustCompile(`^##\s+(.+?)\s*#*\s*$`)
 // Type and Size, with a separator row. The table and a --- rule right before
 // it are not part of any section; any other --- is content.
 func parse(src string) body {
-	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+	// The work state block is istari's summary, not the ticket's text: it
+	// changes with every journal entry (spec section 4.6).
+	src = journal.StripWorkState(strings.ReplaceAll(src, "\r\n", "\n"))
+	lines := strings.Split(src, "\n")
 	inFence := make([]bool, len(lines))
 	fenced := false
 	for i, l := range lines {
