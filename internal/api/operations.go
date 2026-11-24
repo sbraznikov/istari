@@ -74,6 +74,10 @@ type (
 		Branch string `json:"branch,omitempty"` // "": the ticket's own branch
 		Force  bool   `json:"force,omitempty"`  // with a lease on what istari last saw
 	}
+	CheckpointRequest struct {
+		Actor   string `json:"actor"`
+		Message string `json:"message"` // "<done>; <next>"
+	}
 	RunCompleteRequest struct {
 		Actor   string `json:"actor"`
 		Message string `json:"message,omitempty"`
@@ -123,6 +127,7 @@ func (r *ActorRequest) validate() error        { return needActor(r.Actor) }
 func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
 func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
 func (r *PushRequest) validate() error         { return needActor(r.Actor) }
+func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -285,6 +290,24 @@ func (s *Server) operations() map[string]operation {
 		// there (spec sections 2.1 and 11): the implementer's run alone.
 		"vcs.push": write(okAgain, func(ctx context.Context, r PushRequest) (any, error) { return ok(s.push(ctx, r)) }),
 		"whoami":   read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
+		// checkpoint is istari checkpoint (spec sections 4.6 and 7.7): commit,
+		// checks run by code, push, journal entry. The implementer's.
+		"checkpoint": write(okAgain, func(ctx context.Context, r CheckpointRequest) (any, error) {
+			run, isAgent := runOf(ctx)
+			switch {
+			case !isAgent:
+				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari checkpoint is for an agent: it needs the run token in ISTARI_TOKEN"}
+			case run.Role != "implementer":
+				return nil, &core.Error{Code: CodeTokenForbidden, Message: "only the implementer makes checkpoints, not the " + run.Role}
+			case s.saves == nil:
+				return nil, &core.Error{Code: core.CodeInvalidState, Message: "checkpoints are off: istari has no workspaces"}
+			}
+			e, err := s.saves.Make(ctx, run, r.Message)
+			if err != nil {
+				return nil, err
+			}
+			return e.Checkpoint, nil
+		}),
 		// Ticket worktrees (spec section 7.2).
 		"workspace.list": read(func(ctx context.Context, _ Empty) (any, error) {
 			if s.spaces == nil {

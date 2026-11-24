@@ -16,7 +16,7 @@ const CodeTokenForbidden = "token_forbidden"
 
 // agentOps are the operations a run token may perform. The agent commands of
 // spec section 7.4 join them with their tickets.
-var agentOps = []string{"whoami", "run.complete", "vcs.push", "run.show", "run.logs", "ticket.show", "task.show"}
+var agentOps = []string{"whoami", "run.complete", "vcs.push", "checkpoint", "checkpoint", "run.show", "run.logs", "ticket.show", "task.show"}
 
 type runKey struct{}
 

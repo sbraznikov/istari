@@ -29,6 +29,8 @@ push() { curl -s -o /dev/null -w "%%{http_code}" --unix-socket "$ISTARI_SOCKET" 
 push '{"actor":"x","branch":"main"}' > "$out/push_main"
 push '{"actor":"x","branch":"istari/6/other"}' > "$out/push_other"
 push '{"actor":"x"}' > "$out/push_own"
+echo done > feature.txt
+"$istari" checkpoint "Did the work; next nothing" > "$out/checkpoint" 2>&1
 pwd > "$out/pwd"
 "$istari" whoami --json > "$out/whoami" 2>&1
 "$istari" ticket show gh:acme/web#99 > /dev/null 2> "$out/scope"; echo "exit $?" >> "$out/scope"
@@ -70,6 +72,9 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	gh := githubtest.New(t)
+	for range 5 { // issue #5 is the ticket: its journal goes there
+		gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob")
+	}
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
@@ -124,6 +129,15 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	}
 	if out, err := exec.Command("git", "-C", filepath.Join(server, "acme", "web.git"), "rev-parse", "--verify", "istari/5/add-limits").CombinedOutput(); err != nil {
 		t.Errorf("the own branch did not reach the remote: %s", out)
+	}
+	if cp := read("checkpoint"); !strings.Contains(cp, "commit") || strings.Contains(cp, "istari:") {
+		t.Errorf("istari checkpoint: %s", cp)
+	}
+	if files, err := exec.Command("git", "-C", filepath.Join(server, "acme", "web.git"), "ls-tree", "--name-only", "istari/5/add-limits").CombinedOutput(); err != nil || !strings.Contains(string(files), "feature.txt") {
+		t.Errorf("the checkpoint did not push the work: %s %v", files, err)
+	}
+	if comments := gh.Issue(5).Comments; len(comments) == 0 || !strings.Contains(comments[len(comments)-1].Body, "**Checkpoint**") {
+		t.Errorf("no checkpoint entry on the ticket: %+v", comments)
 	}
 	if strings.Contains(read("allenv"), gh.Token) {
 		t.Error("the GitHub token is in the agent's environment")

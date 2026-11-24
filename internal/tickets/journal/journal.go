@@ -90,6 +90,8 @@ type CheckpointEntry struct {
 	Branch string            `json:"branch,omitempty"`
 	Commit string            `json:"commit,omitempty"`
 	Checks map[string]string `json:"checks,omitempty"` // check name → its result, as code ran it
+	Red    bool              `json:"red,omitempty"`    // a check failed: code calls the checkpoint red, whatever the agent said
+	Notes  []string          `json:"notes,omitempty"`  // what code found, e.g. a slice without a test change
 	Files  []string          `json:"files,omitempty"`
 	PR     string            `json:"pr,omitempty"`
 }
@@ -272,6 +274,16 @@ func Text(e Entry) string {
 		if c.Commit != "" {
 			s += "\nCommit: `" + c.Commit + "`"
 		}
+		if len(c.Checks) > 0 {
+			state := "green"
+			if c.Red {
+				state = "red"
+			}
+			s += "\nChecks (run by istari): " + state
+		}
+		for _, n := range c.Notes {
+			s += "\n- " + n
+		}
 		return s
 	case Review:
 		return "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
@@ -330,6 +342,9 @@ func Summarize(entries []Entry) WorkState {
 			w.LastCheckpoint, w.Next = c.Done, c.Next
 			if c.Commit != "" {
 				w.LastCheckpoint += " (" + c.Commit + ")"
+			}
+			if c.Red {
+				w.LastCheckpoint += ", red"
 			}
 			if c.Branch != "" {
 				w.Branch = c.Branch
@@ -465,7 +480,7 @@ type Journal struct {
 	clock   func() time.Time
 }
 
-// New returns a journal.
+// New returns a journal. A nil tracker keeps entries in istari's log only.
 func New(t Tracker, s store.Store, clock func() time.Time) *Journal {
 	if clock == nil {
 		clock = time.Now
@@ -485,8 +500,10 @@ func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	if err != nil {
 		return err
 	}
-	if _, err := j.tracker.Comment(ctx, ref, body); err != nil {
-		return err
+	if j.tracker != nil {
+		if _, err := j.tracker.Comment(ctx, ref, body); err != nil {
+			return err
+		}
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -494,6 +511,9 @@ func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	}
 	if _, err := j.store.Append(ctx, store.Event{Type: EventPrefix + string(e.Kind), At: e.At, Actor: e.Actor, Ticket: ref.String(), Payload: data}); err != nil {
 		return err
+	}
+	if j.tracker == nil {
+		return nil // no tracker: istari's log only
 	}
 	entries, err := j.Stored(ctx, ref)
 	if err != nil {
