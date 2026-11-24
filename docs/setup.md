@@ -377,7 +377,7 @@ istari daemon install
 On macOS you should see:
 
 ```
-Wrote /Users/you/Library/LaunchAgents/dev.istari.daemon.plist
+Wrote /Users/you/Library/LaunchAgents/dev.istari.daemon.plist with the PATH of this shell
 It is not enabled. To enable and start it, run:
   launchctl bootstrap gui/$(id -u) '/Users/you/Library/LaunchAgents/dev.istari.daemon.plist'
 ```
@@ -386,17 +386,7 @@ On Linux (`--kind systemd`) it writes `~/.config/systemd/user/istari.service` an
 
 Logs: launchd writes stderr to `~/Library/Logs/istari.log`; for systemd use `journalctl --user -u istari`.
 
-The unit sets no `PATH`. launchd starts the daemon with a minimal `PATH`, so `gh` and `claude` are usually not found: the log then shows the lines above. Add your `PATH` to the plist before you enable it:
-
-```xml
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/opt/homebrew/bin:/Users/you/.local/bin:/usr/bin:/bin</string>
-  </dict>
-```
-
-For systemd, add `Environment=PATH=…` under `[Service]`.
+The unit carries the `PATH` of the shell you run `istari daemon install` in, because a service starts with a minimal one. Run it in a shell where `gh`, `git` and `claude` are found, or install again after you move them.
 
 ## 10. The required check `istari/ticket-link`
 

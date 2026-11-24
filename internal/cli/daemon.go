@@ -212,11 +212,11 @@ func newDaemonInstallCommand(opts *Options) *cobra.Command {
 			switch kind {
 			case "launchd":
 				path = filepath.Join(home, "Library", "LaunchAgents", "dev.istari.daemon.plist")
-				unit = launchdPlist(args, filepath.Join(home, "Library", "Logs", "istari.log"))
+				unit = launchdPlist(args, os.Getenv("PATH"), filepath.Join(home, "Library", "Logs", "istari.log"))
 				enable = "launchctl bootstrap gui/$(id -u) " + shellQuote(path)
 			case "systemd":
 				path = filepath.Join(home, ".config", "systemd", "user", "istari.service")
-				unit = systemdUnit(args)
+				unit = systemdUnit(args, os.Getenv("PATH"))
 				enable = "systemctl --user enable --now istari.service"
 			default:
 				return usageError{fmt.Errorf("--kind %q is not launchd or systemd", kind)}
@@ -230,7 +230,9 @@ func newDaemonInstallCommand(opts *Options) *cobra.Command {
 			if opts.JSON {
 				return render(cmd.OutOrStdout(), opts, map[string]any{"path": path, "enabled": false, "enable": enable}, nil, nil)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\nIt is not enabled. To enable and start it, run:\n  %s\n", path, enable)
+			// A service starts with a minimal PATH: the daemon gets this shell's,
+			// so it finds gh, git and the harnesses as you do.
+			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s with the PATH of this shell\nIt is not enabled. To enable and start it, run:\n  %s\n", path, enable)
 			return nil
 		},
 	}
@@ -238,7 +240,7 @@ func newDaemonInstallCommand(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func launchdPlist(args []string, logPath string) string {
+func launchdPlist(args []string, path, logPath string) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -260,31 +262,40 @@ func launchdPlist(args []string, logPath string) string {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+      <key>PATH</key>
+      <string>%s</string>
+  </dict>
   <key>StandardErrorPath</key>
   <string>%s</string>
 </dict>
 </plist>
-`, xmlEscape(logPath))
+`, xmlEscape(path), xmlEscape(logPath))
 	return b.String()
 }
 
-func systemdUnit(args []string) string {
+func systemdUnit(args []string, path string) string {
+	// Quoted for systemd: backslash and quote escaped, % (specifiers) and
+	// $ (variables) doubled.
+	quote := func(s string) string {
+		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, `$`, `$$`).Replace(s) + `"`
+	}
 	quoted := make([]string, len(args))
 	for i, a := range args {
-		// Quoted for systemd: backslash and quote escaped, % (specifiers) and
-		// $ (variables) doubled.
-		quoted[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, `$`, `$$`).Replace(a) + `"`
+		quoted[i] = quote(a)
 	}
 	return fmt.Sprintf(`[Unit]
 Description=istari daemon
 
 [Service]
+Environment=%s
 ExecStart=%s
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
-`, strings.Join(quoted, " "))
+`, quote("PATH="+path), strings.Join(quoted, " "))
 }
 
 func xmlEscape(s string) string {
