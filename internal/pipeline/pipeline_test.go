@@ -98,6 +98,29 @@ func TestAnUnknownRoleOrACycleIsRejectedWithItsLine(t *testing.T) {
 	}
 }
 
+func TestAReviewStageThatDoesNotNeedVerifyIsRefusedWithTheFix(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`[[stage]]
+name = "implement"
+role = "implementer"
+
+[[stage]]
+name = "review"
+role = "reviewer"
+needs = ["implement"]
+`))
+	if err == nil {
+		err = p.Validate()
+	}
+	if err == nil {
+		t.Fatal("a review stage without verify loaded, want it refused")
+	}
+	for _, says := range []string{".istari/pipeline.toml line 5", `needs = ["implement", "verify"]`} {
+		if !strings.Contains(err.Error(), says) {
+			t.Errorf("error %q does not say %q", err, says)
+		}
+	}
+}
+
 func TestARepositoryValueOverridesTheGlobalDefault(t *testing.T) {
 	global := config.Defaults{PlanGate: true, MaxReviewRounds: 3, MaxAttempts: 3}
 	if s := pipeline.Default().Settings(global); !s.PlanGate || s.MaxReviewRounds != 3 || s.MaxAttempts != 3 {

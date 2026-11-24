@@ -273,7 +273,7 @@ func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
 
 func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 	// The scaffolded file: approve names no needs.
-	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
 	if approve := f.stage(t, ref, "approve"); approve.State != core.TaskWaiting || len(approve.Needs) != 1 || pipeline.StageOf(core.Task{ID: approve.Needs[0]}) != "review" {

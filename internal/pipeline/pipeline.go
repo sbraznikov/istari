@@ -167,7 +167,7 @@ func (s Stage) role() string {
 }
 
 // Validate checks the stages: a name each, once; a known role or kind;
-// needs that name stages; no cycle.
+// a reviewer stage that needs verify; needs that name stages; no cycle.
 func (p Pipeline) Validate() error {
 	index := map[string]Stage{}
 	for _, s := range p.Stages {
@@ -180,6 +180,10 @@ func (p Pipeline) Validate() error {
 			return fmt.Errorf("%s: role %q is not one of %s", s.at(), s.Role, strings.Join(AgentRoles, ", "))
 		case s.Kind != "" && !slices.Contains([]string{RoleHuman, RoleVerify, RoleMerge}, s.Kind):
 			return fmt.Errorf("%s: kind %q is not human, verify or merge", s.at(), s.Kind)
+		case s.Kind == "" && s.Role == "reviewer" && !slices.Contains(s.Needs, StageVerify):
+			// A review is submitted in in_review, which green CI enters
+			// (spec 4.1): a review that does not wait for verify is refused.
+			return fmt.Errorf("%s: the reviewer stage must need verify; set needs = [\"implement\", \"verify\"]", s.at())
 		}
 		index[s.Name] = s
 	}
