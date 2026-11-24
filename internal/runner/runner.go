@@ -240,6 +240,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			}
 		}
 	}
+	// Preparing the run (the worktree, a fetch, a merge) took part of the
+	// lease: the run starts with a whole one, or not at all.
+	renewed, err := r.tasks.Renew(bg, lease)
+	if err != nil {
+		log.Printf("istari: runner %s: task %s: the lease ran out while the run was prepared: %v", slot.Profile, lease.Task, err)
+		return
+	}
+	lease = renewed
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
 	token, err := r.runs.create(bg, &run)
 	if err != nil {

@@ -440,3 +440,19 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 		t.Fatalf("the failure is of another task: %+v", failed)
 	}
 }
+
+func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Lease: time.Hour})
+	_, task := f.readyTask(t, 11)
+	claimedAt := time.Now()
+	f.start(t)
+	f.session(t)
+	got := f.waitTask(t, task.ID, core.TaskClaimed)
+	var started time.Time
+	for _, e := range f.events(t, "task.renewed") {
+		started = e.At
+	}
+	if started.IsZero() || got.LeaseUntil.Before(started.Add(time.Hour-time.Second)) || !started.After(claimedAt) {
+		t.Fatalf("the run started on the lease of its claim: until %s, renewed at %s", got.LeaseUntil, started)
+	}
+}
