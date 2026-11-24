@@ -250,9 +250,12 @@ func (m *Tickets) Recover(ctx context.Context, actor string, nt NewTicket, state
 	if hold != "" && !slices.Contains(HoldReasons(), hold) {
 		return Ticket{}, errorf(CodeInvalidTicket, "%q is not a hold reason", hold)
 	}
-	ticket := Ticket{Ref: nt.Ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, State: state, Hold: hold, Updated: m.opts.Clock()}
+	ticket := Ticket{Ref: nt.Ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, BudgetOf: nt.BudgetOf, State: state, Hold: hold, Updated: m.opts.Clock()}
 	payload := transitionPayload("", state, triggerRecover, actor)
 	payload["reason"] = hold
+	if nt.BudgetOf != "" {
+		payload["budget_of"] = nt.BudgetOf
+	}
 	err := m.commit(ctx, actor, EventTicketTransitioned, ticket, payload)
 	if errors.Is(err, store.ErrConflict) {
 		return Ticket{}, errorf(CodeInvalidTicket, "ticket %s already exists", nt.Ref)
@@ -522,7 +525,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			case e.Type == EventTicketTransitioned && p.Trigger == "create":
 				ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, BudgetOf: p.BudgetOf, Updated: e.At}
 			case e.Type == EventTicketTransitioned && p.Trigger == triggerRecover:
-				ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: p.To, Hold: p.Reason, Updated: e.At}
+				ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: p.To, Hold: p.Reason, BudgetOf: p.BudgetOf, Updated: e.At}
 			default:
 				return Ticket{}, invalid(e, "the history does not start with create or recover")
 			}

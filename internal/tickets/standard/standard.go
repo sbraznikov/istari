@@ -94,6 +94,18 @@ func Needs(body, repo string) []string {
 	return out
 }
 
+// Parent returns the ticket a ticket's text names as its parent ("- Parent:
+// #n", written when a plan splits a ticket), resolved against repo; "" if
+// none.
+func Parent(body, repo string) string {
+	for _, r := range needsRefs(parse(body).prose, "Parent", repo) {
+		if r.full != "" {
+			return r.full
+		}
+	}
+	return ""
+}
+
 // Draft is a ticket to check: an existing one (Ref set, labels from the
 // tracker) or a file not yet created.
 type Draft struct {
