@@ -79,9 +79,10 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 }
 
 func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
-	f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	first := f.ticket(t, 40, "First")
 	sized(t, f, first.Ref, "L")
+	var chain []string
 	ref := first.Ref
 	for n, size := range []string{"S", "XS"} { // a child, then its child
 		tk, err := f.tickets.CreateWith(ctx, "agent:planner-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", 41+n), Project: "web", BudgetOf: ref})
@@ -89,16 +90,28 @@ func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
 			t.Fatal(err)
 		}
 		sized(t, f, tk.Ref, size)
+		f.fire(t, tk.Ref, "accept", "start")
 		ref = tk.Ref
-	}
-	f.fire(t, ref, "accept", "start")
-	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: ref, Project: "web", Role: "implementer"}); err != nil {
-		t.Fatal(err)
+		chain = append(chain, ref)
 	}
 	f.start(t)
+	// The child spends $4 and is done.
+	task, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: chain[0], Project: "web", Role: "implementer"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := f.session(t)
-	defer s.Stop(0)
-	if s.spec.MaxBudgetUSD != 30 {
-		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30", s.spec.MaxBudgetUSD)
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: chain[1], Project: "web", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	g := f.session(t)
+	defer g.Stop(0)
+	if g.spec.MaxBudgetUSD != 26 {
+		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30 less the child's $4", g.spec.MaxBudgetUSD)
 	}
 }
