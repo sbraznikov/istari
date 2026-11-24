@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,8 +30,15 @@ func gitRepo(t *testing.T, remote string, files map[string]string) string {
 // istariIn runs istari with the config in dir.
 func istariIn(t *testing.T, dir, config string, args ...string) (string, string, int) {
 	t.Helper()
+	return istariEnv(t, dir, config, nil, args...)
+}
+
+// istariEnv runs istari with the config in dir with extra environment.
+func istariEnv(t *testing.T, dir, config string, env []string, args ...string) (string, string, int) {
+	t.Helper()
 	cmd := exec.Command(binary, append([]string{"--config", config}, args...)...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	code := 0
@@ -216,3 +224,5 @@ func TestRepoAddRunsFromThePrimaryRepository(t *testing.T) {
 		t.Fatalf("repo remove in another case: exit %d %q", code, stdout)
 	}
 }
+
+func itoa(n int) string { return strconv.Itoa(n) }

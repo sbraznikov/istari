@@ -20,7 +20,8 @@ func ticketRows(tickets ...core.Ticket) [][]string {
 }
 
 func newTicketCommand(opts *Options) *cobra.Command {
-	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, pause, resume, cancel, reopen, retry", Args: Args(cobra.NoArgs)}
+	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry", Args: Args(cobra.NoArgs)}
+	cmd.AddCommand(newTicketCheckCommand(opts))
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List tickets", Args: Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {

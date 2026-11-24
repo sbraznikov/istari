@@ -83,6 +83,7 @@ type Ticket struct {
 	// human who adds a label without removing the old one leaves two.
 	StateLabels []core.TicketState
 	Closed      bool
+	ClosedAs    string // completed or not_planned, when closed
 	URL         string
 	Updated     time.Time // last change of anything on the ticket
 	Comments    int       // number of comments
