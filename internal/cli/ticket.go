@@ -23,7 +23,7 @@ func ticketRows(tickets ...core.Ticket) [][]string {
 
 func newTicketCommand(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry", Args: Args(cobra.NoArgs)}
-	cmd.AddCommand(newTicketCheckCommand(opts))
+	cmd.AddCommand(newTicketCheckCommand(opts), newTicketCreateCommand(opts), newTicketDepsCommand(opts))
 	cmd.AddCommand(writeCommand(opts, &cobra.Command{
 		Use:   "ready <ref>",
 		Short: "Admit a ticket to work (trusted members; the ticket must meet the standard)",

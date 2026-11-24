@@ -163,3 +163,17 @@ func TestARepositorysOwnPriorityLabelsAreLeftAlone(t *testing.T) {
 		t.Fatalf("labels = %v, want priority:high kept next to priority:P1", labels)
 	}
 }
+
+func TestTheNeedsInATicketsTextAreItsNeeds(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("t", "## Dependencies\n\n- Needs: #2, acme/api#7\n", "bob")
+	f.run(t)
+	if got := f.ticket(t, n).Needs; strings.Join(got, " ") != "gh:acme/api#7 gh:acme/web#2" {
+		t.Fatalf("needs = %v", got)
+	}
+	f.gh.HumanEditBody(n, "bob", "## Dependencies\n\n- Needs: none\n")
+	f.run(t)
+	if got := f.ticket(t, n).Needs; len(got) != 0 {
+		t.Fatalf("after the edit needs = %v, want none", got)
+	}
+}

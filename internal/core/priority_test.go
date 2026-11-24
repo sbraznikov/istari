@@ -157,3 +157,49 @@ func TestATaskOfAHeldTicketIsNotHandedOut(t *testing.T) {
 		t.Fatal("a task of the paused ticket was handed out")
 	}
 }
+
+func TestATicketNeededByAMoreUrgentTicketRunsAtItsPriority(t *testing.T) {
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.ticketAt(t, tickets, 1, "P1")
+	f.ticketAt(t, tickets, 2, "P3")
+	// Ticket 3 (P0, no task yet) waits for ticket 2: spec 4.9.
+	if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#3", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.SetPriority(ctx, "human:alex", "gh:acme/web#3", "P0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.SetNeeds(ctx, "system", "gh:acme/web#3", []string{"gh:acme/web#2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.claimOrder(t, 2); got[0] != "t_2" {
+		t.Fatalf("claim order = %v, want the P3 ticket a P0 ticket needs first", got)
+	}
+	if tk, _ := tickets.Get(ctx, "gh:acme/web#3"); len(tk.Needs) != 1 || tk.Needs[0] != "gh:acme/web#2" {
+		t.Fatalf("needs = %v", tk.Needs)
+	}
+}
+
+func TestPriorityInheritanceThroughACycleDoesNotDependOnOrder(t *testing.T) {
+	for range 20 { // map order varies between runs
+		f := newFixture(t)
+		tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+		a := f.ticketAt(t, tickets, 1, "P3")
+		f.ticketAt(t, tickets, 2, "P3")
+		f.ticketAt(t, tickets, 3, "P0")
+		for _, n := range [][2]string{{"1", "2"}, {"2", "3"}, {"3", "1"}} { // 1 needs 2 needs 3 needs 1
+			if _, err := tickets.SetNeeds(ctx, "system", "gh:acme/web#"+n[0], []string{"gh:acme/web#" + n[1]}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Every ticket of the cycle is needed, through it, by the P0 ticket.
+		if _, err := tickets.SetPriority(ctx, "human:alex", "gh:acme/web#3", "P0"); err != nil {
+			t.Fatal(err)
+		}
+		f.ticketAt(t, tickets, 4, "P1")
+		if got := f.claimOrder(t, 1); got[0] == "t_4" {
+			t.Fatalf("the P1 ticket went before the cycle a P0 ticket is in (%s)", a)
+		}
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -36,26 +37,28 @@ import (
 // references contain '/' and '#'. A refusal by the core answers with its code:
 // 404 for not_found, 409 for the others; a malformed request answers 400.
 type Server struct {
-	store   store.Store
-	tasks   *core.Tasks
-	tickets *core.Tickets
-	sched   *scheduler.Scheduler
-	syncer  *tickets.Syncer
-	spaces  *runner.Workspaces
-	runs    *runner.Runs
-	runner  *runner.Runner
-	engine  *pipeline.Engine
-	vcs     *vcs.Client
-	watch   *vcs.Watcher
-	saves   *runner.Checkpoints
-	repos   map[string]bool // the configured repositories: only their tickets get worktrees
-	ops     map[string]operation
-	changed *notifier
-	clock   func() time.Time
-	keys    keyLocks
-	closing chan struct{}
-	once    sync.Once
-	mux     *http.ServeMux
+	store     store.Store
+	tasks     *core.Tasks
+	tickets   *core.Tickets
+	sched     *scheduler.Scheduler
+	syncer    *tickets.Syncer
+	spaces    *runner.Workspaces
+	runs      *runner.Runs
+	runner    *runner.Runner
+	engine    *pipeline.Engine
+	vcs       *vcs.Client
+	watch     *vcs.Watcher
+	saves     *runner.Checkpoints
+	tracker   tickets.SyncProvider
+	firstRepo string          // the first configured repository: where a plan goes without its own
+	repos     map[string]bool // the configured repositories: only their tickets get worktrees
+	ops       map[string]operation
+	changed   *notifier
+	clock     func() time.Time
+	keys      keyLocks
+	closing   chan struct{}
+	once      sync.Once
+	mux       *http.ServeMux
 }
 
 // ServerOptions configures a Server.
@@ -100,7 +103,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards})
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs})
+	}
+	srv.tracker = opts.Tracker
+	if len(opts.Repos) > 0 {
+		srv.firstRepo = opts.Repos[0].Repo
 	}
 	srv.repos = map[string]bool{}
 	for _, r := range opts.Repos {

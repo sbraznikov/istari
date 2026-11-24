@@ -307,13 +307,35 @@ func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, 
 	if err != nil {
 		return nil, err
 	}
-	byTicket := map[string]string{}
+	tickets := map[string]Ticket{}
 	for _, rec := range recs {
 		ticket, err := decodeTicket(rec)
 		if err != nil {
 			return nil, err
 		}
-		byTicket[ticket.Ref] = ticket.Priority
+		tickets[ticket.Ref] = ticket
+	}
+	// A ticket's priority: its own, or higher when an unfinished ticket that
+	// needs it is more urgent (spec 4.9), through any chain of needs.
+	var ofTicket func(ref string, seen map[string]bool) string
+	ofTicket = func(ref string, seen map[string]bool) string {
+		p := tickets[ref].Priority
+		if p == "" {
+			p = t.opts.DefaultPriority
+		}
+		seen[ref] = true
+		for _, other := range tickets {
+			if other.State == TicketDone || other.State == TicketCanceled || seen[other.Ref] || !slices.Contains(other.Needs, ref) {
+				continue
+			}
+			p = min(p, ofTicket(other.Ref, seen))
+		}
+		delete(seen, ref)
+		return p
+	}
+	byTicket := map[string]string{}
+	for ref := range tickets {
+		byTicket[ref] = ofTicket(ref, map[string]bool{})
 	}
 	neededBy := map[string][]Task{}
 	for _, task := range all {

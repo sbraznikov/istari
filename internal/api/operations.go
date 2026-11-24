@@ -74,6 +74,10 @@ type (
 		Branch string `json:"branch,omitempty"` // "": the ticket's own branch
 		Force  bool   `json:"force,omitempty"`  // with a lease on what istari last saw
 	}
+	TicketPlanRequest struct {
+		Actor string       `json:"actor"`
+		Plan  tickets.Plan `json:"plan"`
+	}
 	CheckpointRequest struct {
 		Actor   string `json:"actor"`
 		Message string `json:"message"` // "<done>; <next>"
@@ -128,6 +132,7 @@ func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
 func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
 func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
+func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -308,6 +313,10 @@ func (s *Server) operations() map[string]operation {
 			}
 			return e.Checkpoint, nil
 		}),
+		// ticket.plan is istari ticket create (spec section 4.9): a set of
+		// linked tickets, validated as a whole before the first write.
+		"ticket.plan": write(func(ctx context.Context, done requestRecord) (any, error) { return s.planAgain(ctx, done) },
+			func(ctx context.Context, r TicketPlanRequest) (any, error) { return s.createPlan(ctx, r) }),
 		// Ticket worktrees (spec section 7.2).
 		"workspace.list": read(func(ctx context.Context, _ Empty) (any, error) {
 			if s.spaces == nil {

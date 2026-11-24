@@ -42,6 +42,8 @@ type Engine struct {
 
 	mu    sync.Mutex
 	cache map[string]cached
+
+	states map[string]core.TicketState // of this reconcile's tickets
 }
 
 type cached struct {
@@ -197,6 +199,10 @@ func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 	if err != nil {
 		return err
 	}
+	e.states = map[string]core.TicketState{}
+	for _, tk := range all {
+		e.states[tk.Ref] = tk.State
+	}
 	var errs []error
 	for _, tk := range all {
 		if err := e.reconcile(ctx, tk, tasks); err != nil {
@@ -207,6 +213,28 @@ func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 }
 
 func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task) error {
+	if tk.State == core.TicketReady && (tk.Hold == "" || tk.Hold == waitingDependency) {
+		// T3 needs the tickets in needs completed. A ticket that waits for
+		// them says so with the hold waiting_dependency, which goes when they
+		// are done; a need that never will be (canceled) leaves the hold for
+		// a human to change the needs.
+		waiting := false
+		for _, need := range tk.Needs {
+			waiting = waiting || e.state(ctx, need) != core.TicketDone
+		}
+		switch {
+		case waiting && tk.Hold == "":
+			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, waitingDependency)
+			return err
+		case waiting:
+			return nil
+		case tk.Hold == waitingDependency:
+			if _, err := e.tickets.ClearHold(ctx, e.opts.Actor, tk.Ref, waitingDependency); err != nil {
+				return err
+			}
+			tk.Hold = ""
+		}
+	}
 	if tk.Hold != "" {
 		return nil
 	}
@@ -259,6 +287,19 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 	}
 	return nil
+}
+
+const waitingDependency = "waiting_dependency"
+
+// state returns a ticket's state, from this reconcile or the store.
+func (e *Engine) state(ctx context.Context, ref string) core.TicketState {
+	if st, ok := e.states[ref]; ok {
+		return st
+	}
+	if tk, err := e.tickets.Get(ctx, ref); err == nil {
+		return tk.State
+	}
+	return ""
 }
 
 // expand creates the tasks of a round; from, if set, keeps only those

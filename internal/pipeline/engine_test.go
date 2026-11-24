@@ -278,3 +278,70 @@ func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 		t.Fatal("a GitHub review approval is a gate for istari gate approve")
 	}
 }
+
+func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	other := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", other, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetNeeds(ctx, "system", ref, []string{other}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketReady {
+		t.Fatalf("with its need open the ticket is %s, want ready", st)
+	}
+	if _, err := f.tickets.Fire(ctx, "system", other, "cancel"); err != nil { // finished, not done
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketReady || tk.Hold != "waiting_dependency" {
+		t.Fatalf("with its need canceled the ticket is %s, hold %q; want ready and held", tk.State, tk.Hold)
+	}
+}
+
+func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	done := "gh:acme/web#3"
+	if _, err := f.tickets.Create(ctx, "human:alex", done, "web"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		if _, err := f.tickets.Fire(ctx, "system", done, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetNeeds(ctx, "system", ref, []string{done}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketPlanning {
+		t.Fatalf("with its need done the ticket is %s, want planning", st)
+	}
+}
+
+func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetNeeds(ctx, "system", ref, []string{need}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "waiting_dependency" || tk.State != core.TicketReady {
+		t.Fatalf("the waiting ticket = %s, hold %q; want ready on waiting_dependency", tk.State, tk.Hold)
+	}
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		f.tickets.Fire(ctx, "system", need, tr)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "" || tk.State != core.TicketPlanning {
+		t.Fatalf("after its need is done the ticket = %s, hold %q; want planning, no hold", tk.State, tk.Hold)
+	}
+}

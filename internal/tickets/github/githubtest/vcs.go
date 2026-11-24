@@ -236,3 +236,10 @@ func (s *Server) combinedStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.write(w, http.StatusOK, map[string]any{"state": state, "total_count": count})
 }
+
+// IssueCount returns how many issues and pull requests exist.
+func (s *Server) IssueCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.issues)
+}
