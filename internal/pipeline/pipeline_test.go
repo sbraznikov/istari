@@ -1,7 +1,9 @@
 package pipeline_test
 
 import (
+	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,6 +121,29 @@ needs = ["implement"]
 			t.Errorf("error %q does not say %q", err, says)
 		}
 	}
+}
+
+func TestThisRepositorysPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
+	data, err := os.ReadFile("../../.istari/pipeline.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse(data)
+	if err == nil {
+		err = p.Validate()
+	}
+	if err != nil {
+		t.Fatalf(".istari/pipeline.toml does not load: %v", err)
+	}
+	for _, s := range steps(p.Expand(pipeline.Settings{})) {
+		if s.Stage == "review" {
+			if !slices.Contains(s.Needs, "verify") {
+				t.Fatalf("review needs %v, want verify among them", s.Needs)
+			}
+			return
+		}
+	}
+	t.Fatal("no review task, want one")
 }
 
 func TestARepositoryValueOverridesTheGlobalDefault(t *testing.T) {
