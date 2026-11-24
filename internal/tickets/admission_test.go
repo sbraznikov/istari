@@ -36,10 +36,11 @@ func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
 	if tk := f.ticket(t, n); tk.State != core.TicketNew {
 		t.Fatalf("state = %s, want new: the ticket misses a section", tk.State)
 	}
-	err := f.sync.Ready(ctx, "alex", ref(n))
-	var e *core.Error
-	if !errors.As(err, &e) || e.Code != tickets.CodeNotStandard || !strings.Contains(e.Message, "Out of scope") {
-		t.Fatalf("Ready = %v, want not_standard naming the section", err)
+	if err := f.sync.Ready(ctx, "alex", ref(n)); err != nil {
+		t.Fatalf("Ready = %v, want the ticket refined first (spec 4.5)", err)
+	}
+	if tk := f.ticket(t, n); tk.State != core.TicketNew {
+		t.Fatalf("state = %s after Ready, want new until it meets the standard", tk.State)
 	}
 }
 

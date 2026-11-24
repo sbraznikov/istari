@@ -66,11 +66,8 @@ type SyncOptions struct {
 	Needs func(body, repo string) []string
 }
 
-// Codes of admission refusals.
-const (
-	CodeNotTrusted  = "not_trusted"
-	CodeNotStandard = "not_standard"
-)
+// CodeNotTrusted refuses an admission by someone who is not trusted.
+const CodeNotTrusted = "not_trusted"
 
 // SyncReport counts what one sync did.
 type SyncReport struct {
@@ -197,6 +194,40 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// EventAdmissionRequested: a trusted member asked to admit a ticket that
+// falls short of the standard; it is refined, then admitted.
+const EventAdmissionRequested = "ticket.admission_requested"
+
+// Refinable tells whether the refiner may work on a ticket (spec 4.5): it
+// is admitted once it meets the standard, because its author is trusted, an
+// agent created it while working on an admitted ticket, or a trusted member
+// asked to admit it. Nobody else's ticket costs an agent run.
+func (s *Syncer) Refinable(ctx context.Context, refText string) (bool, error) {
+	tk, err := s.tickets.Get(ctx, refText)
+	if err != nil {
+		return false, err
+	}
+	if tk.BudgetOf != "" {
+		return true, nil
+	}
+	base, _, err := s.base(ctx, refText)
+	if err != nil {
+		return false, err
+	}
+	if base.Sponsor != "" {
+		return true, nil
+	}
+	ref, err := ParseRef(refText)
+	if err != nil {
+		return false, nil
+	}
+	repo, ok := s.repoOf(ref)
+	if !ok {
+		return false, nil
+	}
+	return s.trusted(ctx, repo, tk.Author)
 }
 
 // lost tells whether a ticket istari does not have but its tracker labels as
@@ -340,6 +371,9 @@ type baseRecord struct {
 	Hash string `json:"hash,omitempty"`
 	// Priority is the priority label the tracker had at the last sync.
 	Priority string `json:"priority,omitempty"`
+	// Sponsor is the trusted member who asked to admit the ticket while it
+	// fell short of the standard: it is refined, then admitted by them.
+	Sponsor string `json:"sponsor,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -683,7 +717,8 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 			return err
 		}
 		if len(conf.Deviations) > 0 {
-			return s.revert(ctx, x, c, "the ticket does not meet the standard yet: "+strings.Join(conf.Deviations, "; "))
+			x.base.Sponsor = who
+			return s.revert(ctx, x, c, "the ticket does not meet the standard yet ("+strings.Join(conf.Deviations, "; ")+"); it is refined first and admitted as soon as it does")
 		}
 	} else {
 		allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
@@ -789,15 +824,17 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	}
 	switch x.tk.State {
 	case core.TicketNew:
-		trusted, err := s.trusted(ctx, x.repo, x.t.Author)
-		if err != nil || !trusted {
+		actor := "system"
+		if x.base.Sponsor != "" {
+			actor = "human:" + x.base.Sponsor
+		} else if trusted, err := s.trusted(ctx, x.repo, x.t.Author); err != nil || !trusted {
 			return err
 		}
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil || len(conf.Deviations) > 0 {
 			return err
 		}
-		return s.admit(ctx, x, "system", conf.Hash)
+		return s.admit(ctx, x, actor, conf.Hash)
 	case core.TicketReady:
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil {
@@ -979,13 +1016,15 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	if err != nil {
 		return err
 	}
-	if len(conf.Deviations) > 0 {
-		return &core.Error{Code: CodeNotStandard, Message: fmt.Sprintf("%s does not meet the standard: %s", ref, strings.Join(conf.Deviations, "; "))}
-	}
 	base, version, err := s.base(ctx, ref.String())
 	if err != nil {
 		return err
 	}
 	x := &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}
+	if len(conf.Deviations) > 0 {
+		// Refined first, then admitted by login (spec 4.5).
+		x.base.Sponsor = login
+		return s.record(ctx, x, EventAdmissionRequested, "human:"+login, tk, map[string]any{"deviations": conf.Deviations})
+	}
 	return s.admit(ctx, x, "human:"+login, conf.Hash)
 }
