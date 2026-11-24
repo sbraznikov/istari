@@ -98,7 +98,7 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Done = done
 		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
 	}
-	checks, _, err := p.cp.checks(ctx, ws.Repo)
+	checks, _, err := p.cp.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return vcs.Opened{}, err
 	}

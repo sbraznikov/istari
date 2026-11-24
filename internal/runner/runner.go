@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -386,6 +387,17 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
 	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	if slot.Role == "implementer" {
+		// The implementer may run the repository's checks itself (spec 7.3):
+		// one test while it writes it, not only a whole checkpoint.
+		if ref, err := tickets.ParseRef(task.Ticket); err == nil {
+			checks, _, err := r.ws.checks(bg, ref.Repo)
+			if err != nil {
+				log.Printf("istari: run %s: reading the checks: %v", run.ID, err)
+			}
+			spec.AllowedTools = append(spec.AllowedTools, checkTools(checks)...)
+		}
+	}
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
@@ -641,4 +653,28 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	defer f.Close()
 	_, err = f.WriteString("\n/.istari/skill.md\n")
 	return err
+}
+
+// checkTools are the tool rules that let an agent run the check commands:
+// each command's program and subcommand with any arguments, so that
+// "go test ./... -short" allows "Bash(go test *)". The leading words end at
+// the first argument, a word that starts with "-", "." or "/". Sorted, one
+// rule per program and subcommand.
+func checkTools(checks map[string]string) []string {
+	var rules []string
+	for _, cmd := range checks {
+		var lead []string
+		for _, w := range strings.Fields(cmd) {
+			if strings.ContainsAny(w[:1], "-./") {
+				break
+			}
+			lead = append(lead, w)
+		}
+		if len(lead) == 0 {
+			continue
+		}
+		rules = append(rules, "Bash("+strings.Join(lead, " ")+" *)")
+	}
+	slices.Sort(rules)
+	return slices.Compact(rules)
 }
