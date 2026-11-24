@@ -21,7 +21,8 @@ var Version = "dev"
 
 // Options holds the global flags shared by every command.
 type Options struct {
-	JSON bool // print machine-readable JSON instead of a table
+	JSON   bool   // print machine-readable JSON instead of a table
+	Config string // config file; empty means ~/.config/istari/config.toml
 }
 
 // usageError marks an error caused by how the command was invoked.
@@ -45,6 +46,8 @@ func NewRoot(opts *Options) *cobra.Command {
 	}
 	root.SetVersionTemplate("istari {{.Version}}\n")
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print JSON instead of a table")
+	root.PersistentFlags().StringVar(&opts.Config, "config", "", "config file (default ~/.config/istari/config.toml)")
+	root.AddCommand(newDaemonCommand(opts))
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{err}
 	})
