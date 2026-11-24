@@ -140,6 +140,11 @@ func (i issue) ticket(repo string) tickets.Ticket {
 		t.Labels = append(t.Labels, l.Name)
 	}
 	t.State = stateOf(t.Labels)
+	for _, l := range t.Labels {
+		if state, ok := strings.CutPrefix(l, statePrefix); ok && !strings.HasPrefix(l, holdPrefix) {
+			t.StateLabels = append(t.StateLabels, core.TicketState(state))
+		}
+	}
 	return t
 }
 
@@ -412,7 +417,6 @@ func (p *Provider) CanWrite(ctx context.Context, repo, login string) (bool, erro
 	}
 	var res struct {
 		Permission string `json:"permission"`
-		RoleName   string `json:"role_name"`
 	}
 	err := p.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(login)), nil, &res)
 	if errors.Is(err, tickets.ErrNotFound) {
@@ -421,11 +425,12 @@ func (p *Provider) CanWrite(ctx context.Context, repo, login string) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("github: permission of %s on %s: %w", login, repo, err)
 	}
+	// The permission field reports maintain as write.
 	switch res.Permission {
 	case "admin", "maintain", "write":
 		return true, nil
 	}
-	return res.RoleName == "maintain", nil
+	return false, nil
 }
 
 // Link implements tickets.Provider: a child ticket becomes a sub-issue; a pull

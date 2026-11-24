@@ -73,16 +73,19 @@ type State struct {
 
 // Ticket is a ticket as the tracker has it.
 type Ticket struct {
-	Ref      Ref
-	Title    string
-	Body     string
-	Labels   []string // every label, including istari's own
-	Author   string
-	State    State // as read from the tracker
-	Closed   bool
-	URL      string
-	Updated  time.Time // last change of anything on the ticket
-	Comments int       // number of comments
+	Ref    Ref
+	Title  string
+	Body   string
+	Labels []string // every label, including istari's own
+	Author string
+	State  State // as read from the tracker
+	// StateLabels are all state labels the ticket carries. Normally one; a
+	// human who adds a label without removing the old one leaves two.
+	StateLabels []core.TicketState
+	Closed      bool
+	URL         string
+	Updated     time.Time // last change of anything on the ticket
+	Comments    int       // number of comments
 }
 
 // Comment is a comment on a ticket.

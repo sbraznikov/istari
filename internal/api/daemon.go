@@ -75,7 +75,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
 	if srv.Syncer() != nil {
 		background.Add(1)
-		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval, nil) }()
+		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval) }()
 	}
 	defer func() { stopBackground(); background.Wait() }()
 	httpSrv := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}

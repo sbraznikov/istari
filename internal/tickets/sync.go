@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -83,9 +84,9 @@ func NewSyncer(p SyncProvider, t *core.Tickets, s store.Store, repos []SyncRepo,
 	return &Syncer{provider: p, tickets: t, store: s, repos: repos, opts: opts, updated: map[string]time.Time{}}
 }
 
-// Run syncs at once and then every interval until ctx ends; wake asks for a
-// sync now.
-func (s *Syncer) Run(ctx context.Context, every time.Duration, wake <-chan struct{}) {
+// Run syncs at once and then every interval until ctx ends. istari sync calls
+// Sync directly.
+func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		every = DefaultSyncInterval
 	}
@@ -99,7 +100,6 @@ func (s *Syncer) Run(ctx context.Context, every time.Duration, wake <-chan struc
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		case <-wake:
 		}
 	}
 }
@@ -148,7 +148,7 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			errs = append(errs, err)
 			continue
 		}
-		if base.Closed && finished(tk.State) {
+		if base.side.Closed && finished(tk.State) {
 			continue // closed on both sides
 		}
 		t, err := s.provider.Get(ctx, ref)
@@ -180,27 +180,49 @@ func localSide(tk core.Ticket) side {
 
 const baseKind = "synced"
 
-func (s *Syncer) base(ctx context.Context, ref string) (side, int64, error) {
+// baseRecord is what the sync remembers per ticket.
+type baseRecord struct {
+	side
+	// FirstComment is the id of the last comment that existed when istari
+	// first saw the ticket; earlier comments are not delivered as events.
+	FirstComment int64 `json:"first_comment,omitempty"`
+}
+
+// base returns the ticket's base record; version 0 means istari has never
+// synced this ticket.
+func (s *Syncer) base(ctx context.Context, ref string) (baseRecord, int64, error) {
 	rec, err := s.store.Get(ctx, baseKind, ref)
 	if errors.Is(err, store.ErrNotFound) {
-		return side{}, 0, nil
+		return baseRecord{}, 0, nil
 	}
 	if err != nil {
-		return side{}, 0, err
+		return baseRecord{}, 0, err
 	}
-	var b side
+	var b baseRecord
 	if err := json.Unmarshal(rec.Data, &b); err != nil {
-		return side{}, 0, err
+		return baseRecord{}, 0, err
 	}
 	return b, rec.Version, nil
 }
 
-// record appends a sync event together with the new base.
-func (s *Syncer) record(ctx context.Context, typ, actor string, tk core.Ticket, base side, version int64, payload map[string]any) error {
+// sync is the state of one ticket during a reconcile.
+type syncing struct {
+	repo    SyncRepo
+	t       Ticket      // the tracker's ticket
+	tk      core.Ticket // istari's ticket
+	base    baseRecord
+	version int64
+	report  *SyncReport
+}
+
+// record appends a sync event together with the ticket's new base.
+func (s *Syncer) record(ctx context.Context, x *syncing, typ, actor string, tk core.Ticket, payload map[string]any) error {
+	base := x.base
+	base.side = localSide(tk)
 	data, _ := json.Marshal(base)
 	raw, _ := json.Marshal(payload)
 	_, err := s.store.Append(ctx, store.Event{Type: typ, At: s.opts.Clock(), Actor: actor, Project: tk.Project, Ticket: tk.Ref, Payload: raw},
-		store.Change{Kind: baseKind, ID: tk.Ref, Data: data, IfVersion: version})
+		store.Change{Kind: baseKind, ID: tk.Ref, Data: data, IfVersion: x.version})
 	return err
 }
 
@@ -221,128 +243,184 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 	if err != nil {
 		return err
 	}
-	tracker := side{State: t.State.State, Hold: t.State.Hold, Closed: t.Closed}
-	local := localSide(tk)
-	switch {
-	case tracker == local:
-		if base != local {
-			if err := s.record(ctx, EventSyncObserved, "system", tk, local, version, map[string]any{"state": local.State}); err != nil {
-				return err
-			}
-		}
-	case tracker == base || tracker.State == "":
-		// The tracker still has what istari last wrote, or no state at all.
-		if err := s.push(ctx, tk, version); err != nil {
+	x := &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: report}
+	if version == 0 && t.Comments > 0 {
+		// Comments from before istari saw the ticket are history, not news.
+		comments, err := s.provider.Comments(ctx, t.Ref)
+		if err != nil {
 			return err
 		}
-		report.Pushed++
-	default:
-		if err := s.request(ctx, repo, t, tk, tracker, version, report); err != nil {
-			return err
+		for _, c := range comments {
+			x.base.FirstComment = max(x.base.FirstComment, c.ID)
 		}
 	}
-	return s.comments(ctx, t, tk, report)
+	if err := s.reconcileState(ctx, x); err != nil {
+		return err
+	}
+	return s.comments(ctx, x)
+}
+
+func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
+	local := localSide(x.tk)
+	tracker := side{State: x.t.State.State, Hold: x.t.State.Hold, Closed: x.t.Closed}
+	if len(x.t.StateLabels) > 1 {
+		// A label added next to the old one: the request is the one that
+		// differs from istari's state.
+		var other []core.TicketState
+		for _, st := range x.t.StateLabels {
+			if st != local.State && !slices.Contains(other, st) {
+				other = append(other, st)
+			}
+		}
+		switch len(other) {
+		case 0:
+			tracker.State = local.State
+		case 1:
+			tracker.State = other[0]
+		default:
+			return s.revert(ctx, x, change{what: "the state labels"}, "the issue carries several state labels, so the requested one is unclear")
+		}
+	}
+	switch {
+	case tracker == local && len(x.t.StateLabels) <= 1:
+		if x.version == 0 || x.base.side != local {
+			return s.record(ctx, x, EventSyncObserved, "system", x.tk, map[string]any{"state": local.State})
+		}
+		return nil
+	case tracker.State == "" && x.version > 0:
+		return s.revert(ctx, x, change{what: "removing the state label"}, "istari keeps exactly one state label on its tickets")
+	case tracker.State == "" && tracker.Closed && !local.Closed:
+		// Closed before istari labelled it: a request to cancel.
+		return s.request(ctx, x, tracker)
+	case tracker == x.base.side || tracker.State == "" || tracker == local:
+		// The tracker still has what istari last wrote, or no state yet, or
+		// only stray extra labels: istari's state goes out.
+		if err := s.push(ctx, x, x.tk); err != nil {
+			return err
+		}
+		x.report.Pushed++
+		return nil
+	default:
+		return s.request(ctx, x, tracker)
+	}
 }
 
 // push writes istari's state of tk to the tracker.
-func (s *Syncer) push(ctx context.Context, tk core.Ticket, version int64) error {
-	ref, err := ParseRef(tk.Ref)
-	if err != nil {
+func (s *Syncer) push(ctx context.Context, x *syncing, tk core.Ticket) error {
+	if err := s.provider.SetState(ctx, x.t.Ref, State{State: tk.State, Hold: tk.Hold}); err != nil {
 		return err
 	}
-	if err := s.provider.SetState(ctx, ref, State{State: tk.State, Hold: tk.Hold}); err != nil {
-		return err
-	}
-	local := localSide(tk)
-	return s.record(ctx, EventSyncPushed, "system", tk, local, version, map[string]any{"state": local.State, "hold": local.Hold})
+	return s.record(ctx, x, EventSyncPushed, "system", tk, map[string]any{"state": tk.State, "hold": tk.Hold})
+}
+
+// humanTriggers are the transitions a human may request by editing the
+// tracker: the ones spec 4.1 has a human initiate (accept is the manual
+// admission of spec 4.5). The others are made by istari itself.
+var humanTriggers = []string{"accept", "cancel", "reopen"}
+
+// change is a human's edit in the tracker.
+type change struct {
+	what string // e.g. "the label `istari:ready`"
+	who  string // the login of who made it, "" if unknown
 }
 
 // request treats the tracker's differing state as a human's request.
-func (s *Syncer) request(ctx context.Context, repo SyncRepo, t Ticket, tk core.Ticket, tracker side, version int64, report *SyncReport) error {
+func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	var target core.TicketState
-	var kind, label, change string
-	switch {
-	case tracker.State != tk.State:
+	var kind, label string
+	var c change
+	switch local := x.tk.State; {
+	case tracker.State != "" && tracker.State != local:
 		target, kind, label = tracker.State, "labeled", "istari:"+string(tracker.State)
-		change = "the label `" + label + "`"
-	case tracker.Closed && !finished(tk.State):
-		target, kind, change = core.TicketCanceled, "closed", "closing the issue"
-	case !tracker.Closed && tk.State == core.TicketCanceled:
-		target, kind, change = core.TicketNew, "reopened", "reopening the issue"
-	case !tracker.Closed && tk.State == core.TicketDone:
-		return s.revert(ctx, t, tk, version, "", "reopening the issue", "a done ticket is not reopened; file a new ticket that links this one", report)
+		c.what = "the label `" + label + "`"
+	case tracker.Closed && !finished(local):
+		target, kind, c.what = core.TicketCanceled, "closed", "closing the issue"
+	case !tracker.Closed && local == core.TicketCanceled:
+		target, kind, c.what = core.TicketNew, "reopened", "reopening the issue"
+	case !tracker.Closed && local == core.TicketDone:
+		target, kind, c.what = core.TicketDone, "reopened", "reopening the issue"
 	default:
-		return s.revert(ctx, t, tk, version, "", "the hold label", "holds are set by istari; use istari ticket pause, resume or retry", report)
+		target, kind, label, c.what = local, "labeled", "istari:hold:"+tracker.Hold, "the hold label"
 	}
-	who, err := s.provider.LastActor(ctx, t.Ref, kind, label)
+	who, err := s.provider.LastActor(ctx, x.t.Ref, kind, label)
 	if err != nil {
 		return err
 	}
-	trigger, ok := core.TriggerTo(tk.State, target)
-	if !ok {
-		return s.revert(ctx, t, tk, version, who, change, fmt.Sprintf("a ticket in `%s` cannot go to `%s`", tk.State, target), report)
+	c.who = who
+	switch {
+	case target == x.tk.State && x.tk.State == core.TicketDone:
+		return s.revert(ctx, x, c, "a done ticket is not reopened; file a new ticket that links this one")
+	case target == x.tk.State:
+		return s.revert(ctx, x, c, "holds are set by istari; use istari ticket pause, resume or retry")
 	}
-	allowed, err := s.provider.CanWrite(ctx, repo.Repo, who)
+	trigger, ok := core.TriggerTo(x.tk.State, target)
+	if !ok {
+		return s.revert(ctx, x, c, fmt.Sprintf("a ticket in `%s` cannot go to `%s`", x.tk.State, target))
+	}
+	if !slices.Contains(humanTriggers, trigger) {
+		return s.revert(ctx, x, c, fmt.Sprintf("`%s` → `%s` is %s, and istari makes this transition itself", x.tk.State, target, trigger))
+	}
+	if who == "" {
+		return s.revert(ctx, x, c, "who made the change is unknown, so its right to make it cannot be checked")
+	}
+	allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		return s.revert(ctx, t, tk, version, who, change, fmt.Sprintf("@%s has no write access to %s", who, repo.Repo), report)
+		return s.revert(ctx, x, c, fmt.Sprintf("@%s has no write access to %s", who, x.repo.Repo))
 	}
-	next, err := s.tickets.Fire(ctx, "human:"+who, tk.Ref, trigger)
+	next, err := s.tickets.Fire(ctx, "human:"+who, x.tk.Ref, trigger)
 	if errors.As(err, new(*core.Error)) {
-		return s.revert(ctx, t, tk, version, who, change, err.Error(), report)
+		return s.revert(ctx, x, c, err.Error())
 	}
 	if err != nil {
 		return err
 	}
-	report.Transitioned++
-	if err := s.push(ctx, next, version); err != nil {
+	x.report.Transitioned++
+	if err := s.push(ctx, x, next); err != nil {
 		return err
 	}
-	report.Pushed++
+	x.report.Pushed++
 	return nil
 }
 
 // revert restores istari's state in the tracker and says why in a comment.
-func (s *Syncer) revert(ctx context.Context, t Ticket, tk core.Ticket, version int64, who, change, reason string, report *SyncReport) error {
-	if err := s.provider.SetState(ctx, t.Ref, State{State: tk.State, Hold: tk.Hold}); err != nil {
+func (s *Syncer) revert(ctx context.Context, x *syncing, c change, reason string) error {
+	if err := s.provider.SetState(ctx, x.t.Ref, State{State: x.tk.State, Hold: x.tk.Hold}); err != nil {
 		return err
 	}
-	by := ""
-	if who != "" {
-		by = " by @" + who
+	by, actor := "", "system"
+	if c.who != "" {
+		by, actor = " by @"+c.who, "human:"+c.who
 	}
-	body := fmt.Sprintf("istari undid %s%s: %s. The ticket stays in `%s`.", change, by, reason, tk.State)
-	if _, err := s.provider.Comment(ctx, t.Ref, body); err != nil {
+	body := fmt.Sprintf("istari undid %s%s: %s. The ticket stays in `%s`.", c.what, by, reason, x.tk.State)
+	if _, err := s.provider.Comment(ctx, x.t.Ref, body); err != nil {
 		return err
 	}
-	report.Reverted++
-	actor := "system"
-	if who != "" {
-		actor = "human:" + who
-	}
-	return s.record(ctx, EventSyncReverted, actor, tk, localSide(tk), version, map[string]any{"change": change, "reason": reason})
+	x.report.Reverted++
+	return s.record(ctx, x, EventSyncReverted, actor, x.tk, map[string]any{"change": c.what, "reason": reason})
 }
 
 const commentKind = "comment"
 
-// comments delivers each human comment once as a sync.comment event.
-func (s *Syncer) comments(ctx context.Context, t Ticket, tk core.Ticket, report *SyncReport) error {
-	ref := t.Ref.String()
-	if t.Comments == 0 || (!t.Updated.IsZero() && s.updated[ref].Equal(t.Updated)) {
+// comments delivers each human comment newer than the ticket's first sight
+// once, as a sync.comment event.
+func (s *Syncer) comments(ctx context.Context, x *syncing) error {
+	ref := x.t.Ref.String()
+	if x.t.Comments == 0 || (!x.t.Updated.IsZero() && s.updated[ref].Equal(x.t.Updated)) {
 		return nil
 	}
-	comments, err := s.provider.Comments(ctx, t.Ref)
+	comments, err := s.provider.Comments(ctx, x.t.Ref)
 	if err != nil {
 		return err
 	}
 	for _, c := range comments {
-		if c.Own {
+		if c.Own || c.ID <= x.base.FirstComment {
 			continue
 		}
 		raw, _ := json.Marshal(map[string]any{"id": c.ID, "author": c.Author, "body": c.Body, "url": c.URL})
-		_, err := s.store.Append(ctx, store.Event{Type: EventSyncComment, At: s.opts.Clock(), Actor: "human:" + c.Author, Project: tk.Project, Ticket: ref, Payload: raw},
+		_, err := s.store.Append(ctx, store.Event{Type: EventSyncComment, At: s.opts.Clock(), Actor: "human:" + c.Author, Project: x.tk.Project, Ticket: ref, Payload: raw},
 			store.Change{Kind: commentKind, ID: ref + "/" + strconv.FormatInt(c.ID, 10), Data: json.RawMessage(`{}`)})
 		if errors.Is(err, store.ErrConflict) {
 			continue // delivered before
@@ -350,8 +428,8 @@ func (s *Syncer) comments(ctx context.Context, t Ticket, tk core.Ticket, report 
 		if err != nil {
 			return err
 		}
-		report.Comments++
+		x.report.Comments++
 	}
-	s.updated[ref] = t.Updated
+	s.updated[ref] = x.t.Updated
 	return nil
 }

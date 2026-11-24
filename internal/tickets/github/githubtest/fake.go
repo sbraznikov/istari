@@ -446,6 +446,14 @@ func (s *Server) HumanSetLabels(n int, login string, labels ...string) {
 	s.relabel(s.issues[n], login, labels)
 }
 
+// HumanAddLabel adds one label as login would, leaving the others.
+func (s *Server) HumanAddLabel(n int, login, label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensure([]string{label})
+	s.relabel(s.issues[n], login, append(slices.Clone(s.issues[n].Labels), label))
+}
+
 // HumanClose closes an issue as login (reason completed or not_planned).
 func (s *Server) HumanClose(n int, login, reason string) {
 	s.mu.Lock()
