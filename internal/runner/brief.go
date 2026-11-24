@@ -24,6 +24,9 @@ type BriefInput struct {
 	Body        string // the ticket's text; its work state block is left out
 	Journal     []journal.Entry
 	PullRequest string // the pull request's state, if there is one
+	// SelfReview puts the implementer's self-review step in the brief
+	// (pipeline self_review, spec 7.6).
+	SelfReview bool
 	// Candidates are the possible duplicates code chose for the refiner
 	// (spec section 4.5); it reads only these.
 	Candidates []string
@@ -46,6 +49,9 @@ func Brief(in BriefInput) string {
 	head.WriteString("## Work state\n\n" + workState(state) + "\n## Next step\n\n" + next + "\n\n")
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
+	if in.Role == "implementer" && in.SelfReview {
+		head.WriteString("## Before istari pr open\n\nReview your own work along two axes, as the reviewer will: Standards (the repository's documented standards and the baseline of code smells) and Spec (what the ticket asked for: missing, extra, wrong). Fix what you find, make a checkpoint, then open the pull request.\n\n")
+	}
 	if in.Role == "planner" {
 		head.WriteString("## Your result\n\nSubmit the plan with `istari plan submit --file - <<'EOF'` … `EOF` (or `--file plan.yaml`) before `istari complete`:\n\n" +
 			"```yaml\nsummary: the approach in a few lines\nslices: [one test and the minimum code each, in order]\n" +

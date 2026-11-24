@@ -76,6 +76,7 @@ type Issue struct {
 	Reviews     []Review // a pull request's reviews
 	Merged      bool
 	MergeMethod string
+	Draft       bool
 	ClosedAt    time.Time
 	Commits     []string // a pull request's commit messages
 	Updated     time.Time

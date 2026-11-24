@@ -25,6 +25,7 @@ type Tracked struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
 	Checks string `json:"checks,omitempty"`
+	SHA    string `json:"sha,omitempty"` // the head commit the checks are of
 	Review string `json:"review,omitempty"`
 	Done   bool   `json:"done,omitempty"` // merged or closed: no longer polled
 
@@ -107,8 +108,8 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		payload map[string]any
 	}
 	var changes []change
-	if s.Checks != "" && s.Checks != t.Checks {
-		t.Checks = s.Checks
+	if s.Checks != "" && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
+		t.Checks, t.SHA = s.Checks, s.HeadSHA
 		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
 	}
 	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {

@@ -170,3 +170,15 @@ func TestTheRefinerGetsTheCandidatesCodeChose(t *testing.T) {
 		t.Fatal("without candidates the brief must say there are none, so the refiner does not search")
 	}
 }
+
+func TestTheSelfReviewStepIsInTheBriefOnlyWhenItIsOn(t *testing.T) {
+	in := briefInput()
+	in.SelfReview = true
+	if b := runner.Brief(in); !strings.Contains(b, "## Before istari pr open") || !strings.Contains(b, "two axes") {
+		t.Fatal("with self_review the brief lacks the self-review step")
+	}
+	in.SelfReview = false
+	if b := runner.Brief(in); strings.Contains(b, "Before istari pr open") {
+		t.Fatal("with self_review = false the brief has the self-review step")
+	}
+}
