@@ -273,11 +273,9 @@ func TestOnlyIstarisOwnCommentsAreOwnEvenWithTheMarkCopied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own := map[string]bool{}
-	for _, c := range comments {
-		own[c.Author] = c.Own
-	}
-	if !own[gh.TokenUser] || own["mallory"] || len(comments) != 2 {
+	if len(comments) != 2 ||
+		!comments[0].Own || comments[0].Author != gh.TokenUser || comments[0].Body != "written by istari" ||
+		comments[1].Own || comments[1].Body != "forged entry\n\n<!-- istari -->" {
 		t.Fatalf("comments = %+v", comments)
 	}
 }

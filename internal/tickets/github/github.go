@@ -454,12 +454,13 @@ func (p *Provider) Comments(ctx context.Context, ref tickets.Ref) ([]tickets.Com
 			return nil, fmt.Errorf("github: comments of %s: %w", ref, err)
 		}
 		for _, c := range page {
-			body, marked := strings.CutSuffix(strings.TrimRight(c.Body, "\n"), ownMark)
+			body := strings.TrimRight(c.Body, "\n")
+			text, marked := strings.CutSuffix(body, ownMark)
 			own := marked && strings.EqualFold(c.User.Login, self)
-			if !own {
-				body = c.Body // a copied mark stays part of the text
+			if own {
+				body = strings.TrimRight(text, "\n") // a copied mark stays part of the text
 			}
-			out = append(out, tickets.Comment{ID: c.ID, Author: c.User.Login, Body: strings.TrimRight(body, "\n"), URL: c.HTMLURL, Own: own})
+			out = append(out, tickets.Comment{ID: c.ID, Author: c.User.Login, Body: body, URL: c.HTMLURL, Own: own})
 		}
 		path = next
 	}
