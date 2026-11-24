@@ -1147,6 +1147,7 @@ slack = { work = "#billing-agents", decisions = "#billing-decisions", owner = "@
   [[project.repos]]
   repo      = "acme/billing-core"
   done_when = "released"
+  link      = "package"               # how it is linked (section 4.4): package | submodule | path | none; none — soft unavailable
 ```
 
 `.istari/pipeline.toml` — in the repository, versioned together with the code:
