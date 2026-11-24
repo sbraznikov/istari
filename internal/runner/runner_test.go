@@ -214,7 +214,7 @@ func TestARunPastItsTimeoutIsStoppedAndTheTaskFailsWithTheReason(t *testing.T) {
 }
 
 func TestARunThatSpendsItsBudgetBlocksTheTask(t *testing.T) {
-	f := newRunner(t, runner.RunnerOptions{BudgetUSD: 1},
+	f := newRunner(t, runner.RunnerOptions{Budgets: map[string]float64{"M": 1}}, // a ticket without a size has the M budget
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}},
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}})
 	_, task := f.readyTask(t, 3)

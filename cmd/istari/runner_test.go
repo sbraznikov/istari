@@ -130,6 +130,9 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	if i < 0 || json.Unmarshal([]byte(args[i+1]), &settings) != nil || len(settings.Hooks.PreToolUse) == 0 {
 		t.Fatalf("the harness got no git guard: %q", args)
 	}
+	if j := slices.Index(args, "--max-budget-usd"); j < 0 || args[j+1] != "15" {
+		t.Errorf("the run of a ticket without a size is not capped at the M budget of $15: %q", args)
+	}
 	wt := strings.TrimSpace(read("pwd"))
 	guard := exec.Command("sh", "-c", settings.Hooks.PreToolUse[0].Hooks[0].Command)
 	guard.Env = append(os.Environ(), "ISTARI_WORKTREE="+wt)
