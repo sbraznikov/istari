@@ -359,6 +359,18 @@ func sameSet(a, b []string) bool {
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
+// SetBody replaces the ticket's text; the journal keeps its work state block
+// there (spec section 4.6).
+func (p *Provider) SetBody(ctx context.Context, ref tickets.Ref, body string) error {
+	if _, err := repoOf(ref); err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodPatch, issuePath(ref, ""), map[string]any{"body": body}, nil); err != nil {
+		return fmt.Errorf("github: set the body of %s: %w", ref, err)
+	}
+	return nil
+}
+
 // Comment implements tickets.Provider.
 func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (tickets.CommentRef, error) {
 	if _, err := repoOf(ref); err != nil {
