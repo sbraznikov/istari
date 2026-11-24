@@ -306,7 +306,20 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			r = roundOf(tk.Ref, tasks)
 		}
 		if r.done("plan", PlanApproval) {
+			// A ticket above max_size reaches T4 only by a split (T5).
+			if over, err := e.tooLarge(ctx, tk); err != nil || over {
+				return err
+			}
 			return fire("plan_accepted") // T4
+		}
+	case core.TicketInProgress:
+		if len(tk.Children) > 0 {
+			for _, c := range tk.Children {
+				if e.state(ctx, c) != core.TicketDone {
+					return nil
+				}
+			}
+			return fire("children_done") // T12
 		}
 	case core.TicketInReview:
 		if r.done("review") {
@@ -324,6 +337,31 @@ const waitingDependency = "waiting_dependency"
 
 // maxRefines bounds how often a ticket below the standard is refined.
 const maxRefines = 3
+
+// tooLarge tells whether a ticket is larger than its pipeline's max_size.
+func (e *Engine) tooLarge(ctx context.Context, tk core.Ticket) (bool, error) {
+	if tk.Size == "" {
+		return false, nil
+	}
+	ref, err := tickets.ParseRef(tk.Ref)
+	if err != nil {
+		return false, err
+	}
+	s, err := e.SettingsOf(ctx, ref.Repo)
+	if err != nil {
+		return false, err
+	}
+	return slices.Index(core.Sizes(), tk.Size) > slices.Index(core.Sizes(), s.MaxSize), nil
+}
+
+// SettingsOf returns the settings of a repository's pipeline.
+func (e *Engine) SettingsOf(ctx context.Context, repo string) (Settings, error) {
+	p, err := e.Load(ctx, repo)
+	if err != nil {
+		return Settings{}, err
+	}
+	return p.Settings(e.opts.Defaults), nil
+}
 
 // state returns a ticket's state, from this reconcile or the store.
 func (e *Engine) state(ctx context.Context, ref string) core.TicketState {

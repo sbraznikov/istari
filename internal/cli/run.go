@@ -177,7 +177,28 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	})
 	submit.Flags().StringVar(&file, "file", "", "the result, YAML")
 	refine.AddCommand(submit)
-	return []*cobra.Command{whoami, complete, checkpoint, refine}
+	plan := &cobra.Command{Use: "plan", Short: "For the planner: submit the plan of a ticket", Args: Args(cobra.NoArgs)}
+	var planFile string
+	planSubmit := writeCommand(opts, &cobra.Command{
+		Use: "submit --file <plan.yaml>", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		data, err := os.ReadFile(planFile)
+		if err != nil {
+			return err
+		}
+		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run
+		if err := opts.call(cmd, "plan.submit", key, api.PlanSubmitRequest{Actor: opts.Actor, Plan: string(data)}, &answer); err != nil {
+			return err
+		}
+		rows := [][]string{{"size", orDash(answer.Size)}}
+		for _, c := range answer.Children {
+			rows = append(rows, []string{"child", c})
+		}
+		return render(cmd.OutOrStdout(), opts, answer, []string{"WHAT", "VALUE"}, rows)
+	})
+	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML")
+	plan.AddCommand(planSubmit)
+	return []*cobra.Command{whoami, complete, checkpoint, refine, plan}
 }
 
 func budgetText(w api.Whoami) string {

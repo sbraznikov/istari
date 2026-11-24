@@ -46,6 +46,13 @@ func Brief(in BriefInput) string {
 	head.WriteString("## Work state\n\n" + workState(state) + "\n## Next step\n\n" + next + "\n\n")
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
+	if in.Role == "planner" {
+		head.WriteString("## Your result\n\nSubmit the plan with `istari plan submit --file plan.yaml` before `istari complete`:\n\n" +
+			"```yaml\nsummary: the approach in a few lines\nslices: [one test and the minimum code each, in order]\n" +
+			"seams: [{name: the public boundary, catches: what its tests catch, misses: what they miss}]\n" +
+			"zone: [path/that/exists.go, path/to/create.go (new)]\nsize: XS | S | M | L | XL  # only to revise it\nsize_reason: why\n" +
+			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run.\n\n")
+	}
 	if in.Role == "refiner" {
 		pr := "## Your result\n\nSubmit it with `istari refine submit --file result.yaml` before `istari complete`:\n\n" +
 			"```yaml\nverdict: meets | rewrite | needs_input | duplicate\nsize: XS | S | M | L | XL\nsize_reason: why, when it differs from the author's\n" +

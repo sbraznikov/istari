@@ -50,6 +50,7 @@ type Server struct {
 	watch     *vcs.Watcher
 	saves     *runner.Checkpoints
 	refines   *runner.Refines
+	plans     *runner.Plans
 	tracker   tickets.SyncProvider
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
@@ -167,6 +168,22 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine})
+	if srv.spaces != nil {
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		var sizer interface {
+			SetSize(ctx context.Context, ref tickets.Ref, size string) error
+		}
+		if t, ok := opts.Tracker.(runner.RefineTracker); ok {
+			sizer = t
+		}
+		srv.plans = runner.NewPlans(srv.spaces, journal.New(jt, ns, opts.Clock), srv.tickets, sizer)
+		if srv.syncer != nil {
+			srv.plans.WithSplit(srv.tasks, opts.Tracker, srv.syncer.Created)
+		}
+	}
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

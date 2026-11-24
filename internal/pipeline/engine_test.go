@@ -385,3 +385,50 @@ func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
 		t.Fatalf("after three refines the ticket's hold is %q, want attempts_exhausted", tk.Hold)
 	}
 }
+
+func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_size = \"M\"\n"})
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", ref, "L"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketPlanning {
+		t.Fatalf("an L ticket with max_size M is %s after its plan, want planning", st)
+	}
+}
+
+func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	kids := []string{"gh:acme/web#2", "gh:acme/web#3"}
+	for _, k := range kids {
+		if _, err := f.tickets.Create(ctx, "human:alex", k, "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", ref, kids); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Fire(ctx, "agent:planner-1", ref, "split"); err != nil { // T5
+		t.Fatal(err)
+	}
+	done := func(k string) {
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+			f.tickets.Fire(ctx, "system", k, tr)
+		}
+	}
+	done(kids[0])
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with one child open the parent is %s", st)
+	}
+	done(kids[1])
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketDone {
+		t.Fatalf("with all children done the parent is %s, want done (T12)", st)
+	}
+}

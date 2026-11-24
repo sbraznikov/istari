@@ -78,6 +78,10 @@ type (
 		Actor string       `json:"actor"`
 		Plan  tickets.Plan `json:"plan"`
 	}
+	PlanSubmitRequest struct {
+		Actor string `json:"actor"`
+		Plan  string `json:"plan"` // the YAML the planner wrote: code parses it
+	}
 	RefineSubmitRequest struct {
 		Actor  string `json:"actor"`
 		Result string `json:"result"` // the YAML the refiner wrote, as written: code parses it
@@ -137,6 +141,7 @@ func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
 func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
 func (r *RefineSubmitRequest) validate() error { return needActor(r.Actor) }
+func (r *PlanSubmitRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
@@ -300,6 +305,9 @@ func (s *Server) operations() map[string]operation {
 		// there (spec sections 2.1 and 11): the implementer's run alone.
 		"vcs.push": write(okAgain, func(ctx context.Context, r PushRequest) (any, error) { return ok(s.push(ctx, r)) }),
 		"whoami":   read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
+		// plan.submit is istari plan submit (spec 4.9): code checks the plan
+		// against the repository and the ticket, records it, and splits.
+		"plan.submit": write(okAgain, func(ctx context.Context, r PlanSubmitRequest) (any, error) { return s.submitPlan(ctx, r) }),
 		// refine.submit is the refiner's structured result (spec 4.5): code
 		// checks and applies it; what it rejects fails the run.
 		"refine.submit": write(okAgain, func(ctx context.Context, r RefineSubmitRequest) (any, error) {

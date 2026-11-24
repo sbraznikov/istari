@@ -110,6 +110,10 @@ func Parse(data []byte) (Pipeline, error) {
 		}
 		return Pipeline{}, fmt.Errorf("%s: %w", Path, err)
 	}
+	if len(p.Stages) == 0 { // a file of limits and checks keeps the default stages
+		p.Stages = Default().Stages
+		return p, nil
+	}
 	for i := range p.Stages {
 		switch {
 		case raw.Stages[i].Needs != nil:
@@ -220,6 +224,7 @@ func (p Pipeline) Validate() error {
 // Settings are the values that decide how a ticket goes through the
 // pipeline: the repository's, else the installation's defaults.
 type Settings struct {
+	MaxSize         string // tickets larger than this are split before T4; "L" by default
 	PlanGate        bool
 	MaxReviewRounds int
 	MaxAttempts     int
@@ -227,7 +232,10 @@ type Settings struct {
 
 // Settings resolves the pipeline's values over the installation's defaults.
 func (p Pipeline) Settings(global config.Defaults) Settings {
-	s := Settings{PlanGate: global.PlanGate, MaxReviewRounds: global.MaxReviewRounds, MaxAttempts: global.MaxAttempts}
+	s := Settings{MaxSize: "L", PlanGate: global.PlanGate, MaxReviewRounds: global.MaxReviewRounds, MaxAttempts: global.MaxAttempts}
+	if p.Limits.MaxSize != "" {
+		s.MaxSize = p.Limits.MaxSize
+	}
 	if p.Limits.MaxReviewRounds > 0 {
 		s.MaxReviewRounds = p.Limits.MaxReviewRounds
 	}

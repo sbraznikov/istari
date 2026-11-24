@@ -40,6 +40,7 @@ const (
 	EventTicketPrioritized  = "ticket.prioritized"
 	EventTicketSized        = "ticket.sized"
 	EventTicketNeedsSet     = "ticket.needs_set"
+	EventTicketChildrenSet  = "ticket.children_set"
 )
 
 // Sizes are the T-shirt sizes of a ticket, smallest first (spec section 4.7).
@@ -70,7 +71,10 @@ type Ticket struct {
 	Needs []string `json:"needs,omitempty"`
 	// BudgetOf is the ticket whose budget this one shares: it was created by
 	// an agent at work on that ticket (spec section 4.5).
-	BudgetOf string    `json:"budget_of,omitempty"`
+	BudgetOf string `json:"budget_of,omitempty"`
+	// Children are the tickets a split made of this one (T5); it is done
+	// when they all are (T12).
+	Children []string  `json:"children,omitempty"`
 	Updated  time.Time `json:"updated"`
 
 	version int64
@@ -405,6 +409,24 @@ func (m *Tickets) SetNeeds(ctx context.Context, actor, ref string, needs []strin
 	return ticket, nil
 }
 
+// SetChildren records the tickets a split made of this one.
+func (m *Tickets) SetChildren(ctx context.Context, actor, ref string, children []string) (Ticket, error) {
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		ticket.Children = slices.Clone(children)
+		ticket.Updated = m.opts.Clock()
+		return m.commit(ctx, actor, EventTicketChildrenSet, ticket, map[string]any{"children": children, "actor": actor})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
 func transitionPayload(from, to TicketState, trigger, actor string) map[string]any {
 	return map[string]any{"from": from, "to": to, "trigger": trigger, "actor": actor}
 }
@@ -444,7 +466,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet:
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet, EventTicketChildrenSet:
 		default:
 			continue
 		}
@@ -456,6 +478,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			Priority string      `json:"priority"`
 			Size     string      `json:"size"`
 			Needs    []string    `json:"needs"`
+			Children []string    `json:"children"`
 			BudgetOf string      `json:"budget_of"`
 		}
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -491,6 +514,8 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			ticket.Size = p.Size
 		case EventTicketNeedsSet:
 			ticket.Needs = p.Needs
+		case EventTicketChildrenSet:
+			ticket.Children = p.Children
 		}
 		ticket.Updated = e.At
 	}

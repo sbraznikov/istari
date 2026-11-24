@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
@@ -78,4 +79,61 @@ func (s *Server) planAgain(ctx context.Context, done requestRecord) (any, error)
 		}
 	}
 	return nil, &core.Error{Code: core.CodeNotFound, Message: "the plan of this key is not recorded"}
+}
+
+// PlanAnswer is what istari plan submit answers.
+type PlanAnswer struct {
+	Size     string   `json:"size,omitempty"`
+	Children []string `json:"children,omitempty"`
+}
+
+// submitPlan checks, records and, for a split, carries out the planner's
+// plan. What code rejects fails the run.
+func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, error) {
+	run, isAgent := runOf(ctx)
+	switch {
+	case !isAgent:
+		return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari plan submit is for the planner: it needs the run token in ISTARI_TOKEN"}
+	case run.Role != "planner":
+		return nil, &core.Error{Code: CodeTokenForbidden, Message: "only the planner submits a plan, not the " + run.Role}
+	case s.plans == nil:
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: "planning is off: istari has no workspaces"}
+	}
+	answer, err := s.applyPlan(ctx, run, r.Plan)
+	if err != nil {
+		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
+			return nil, rerr
+		}
+		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+	}
+	return answer, nil
+}
+
+func (s *Server) applyPlan(ctx context.Context, run runner.Run, raw string) (PlanAnswer, error) {
+	res, err := runner.ParsePlanResult([]byte(raw))
+	if err != nil {
+		return PlanAnswer{}, err
+	}
+	ref, err := tickets.ParseRef(run.Ticket)
+	if err != nil {
+		return PlanAnswer{}, err
+	}
+	settings, err := s.engine.SettingsOf(ctx, ref.Repo)
+	if err != nil {
+		return PlanAnswer{}, err
+	}
+	ps := runner.PlanSettings{MaxSize: settings.MaxSize, Gate: settings.PlanGate}
+	if res, err = s.plans.Check(ctx, run, res, ps); err != nil {
+		return PlanAnswer{}, err
+	}
+	if err := s.plans.Record(ctx, run, res, ps); err != nil {
+		return PlanAnswer{}, err
+	}
+	answer := PlanAnswer{Size: res.Size}
+	if res.Split != nil && len(res.Split.Tickets) > 0 {
+		if answer.Children, err = s.plans.Split(withoutKey(ctx), run, *res.Split); err != nil {
+			return PlanAnswer{}, err
+		}
+	}
+	return answer, nil
 }
