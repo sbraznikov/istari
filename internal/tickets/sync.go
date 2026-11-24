@@ -67,6 +67,11 @@ type SyncOptions struct {
 	// Parent reads the ticket a ticket's text names as its parent; istari
 	// recover gives split parents their children with it. nil: none.
 	Parent func(body, repo string) string
+	// Merged tells whether a ticket's pull request is merged (spec 4.8): an
+	// issue its merge closed is not a cancel. fresh asks the code host when
+	// the PR watch has not seen the pull request closed yet; otherwise only
+	// what the watch recorded counts. nil: no pull request is ever merged.
+	Merged func(ctx context.Context, ref string, fresh bool) (bool, error)
 }
 
 // CodeNotTrusted refuses an admission by someone who is not trusted.
@@ -183,7 +188,15 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			continue
 		}
 		if base.side.Closed && finished(tk.State) {
-			continue // closed on both sides
+			// Closed on both sides, unless a human's merge closed the issue
+			// and istari read that as a cancel: it is repaired to done.
+			repair, err := s.mergedPR(ctx, tk)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
+			}
+			if !repair {
+				continue
+			}
 		}
 		t, err := s.provider.Get(ctx, ref)
 		if errors.Is(err, ErrNotFound) {

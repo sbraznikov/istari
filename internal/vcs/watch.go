@@ -15,6 +15,9 @@ import (
 const (
 	EventChecks = "vcs.checks"
 	EventReview = "vcs.review"
+	// EventClosed: the pull request was merged or closed; its payload says
+	// which with merged.
+	EventClosed = "vcs.closed"
 )
 
 const prKind = "pull_request"
@@ -77,6 +80,53 @@ func (w *Watcher) PullRequestOf(ctx context.Context, ticket string) (Tracked, er
 	}
 	t.version = rec.Version
 	return t, nil
+}
+
+// SeenMerged tells whether the watch saw the ticket's pull request merged
+// (spec 4.8: a human may merge it before istari does). It reads only what
+// the watch recorded; false without a tracked pull request.
+func (w *Watcher) SeenMerged(ctx context.Context, ticket string) (bool, error) {
+	t, err := w.PullRequestOf(ctx, ticket)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || !t.Done {
+		return false, err
+	}
+	events, err := w.store.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: EventClosed}, 0)
+	if err != nil {
+		return false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != EventClosed {
+			continue
+		}
+		var p struct{ Merged bool }
+		if err := json.Unmarshal(events[i].Payload, &p); err != nil {
+			return false, err
+		}
+		return p.Merged, nil
+	}
+	return false, nil
+}
+
+// Merged tells whether the ticket's pull request is merged: as the watch
+// recorded it once it saw it closed, else as GitHub has it now. Sync asks
+// before it reads a closed issue as a cancel, which may come before the
+// watch's poll. false without a tracked pull request.
+func (w *Watcher) Merged(ctx context.Context, ticket string) (bool, error) {
+	t, err := w.PullRequestOf(ctx, ticket)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if t.Done {
+		return w.SeenMerged(ctx, ticket)
+	}
+	s, err := w.client.Status(ctx, t.Repo, t.Number)
+	return s.Merged, err
 }
 
 // Pushed records the commit istari pushed to a tracked pull request: the
@@ -147,7 +197,7 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 	}
 	if (s.Merged || s.Closed) && !t.Done {
 		t.Done = true
-		changes = append(changes, change{"vcs.closed", map[string]any{"number": t.Number, "merged": s.Merged}})
+		changes = append(changes, change{EventClosed,map[string]any{"number": t.Number, "merged": s.Merged}})
 	}
 	for i, c := range changes {
 		raw, _ := json.Marshal(c.payload)
