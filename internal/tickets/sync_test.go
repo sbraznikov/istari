@@ -41,7 +41,7 @@ func newSync(t *testing.T, trusted ...string) *syncFixture {
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	k := core.NewTickets(s, core.TicketOptions{Clock: clock})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
-	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}, Needs: standard.Needs})
+	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}, Needs: standard.Needs, Parent: standard.Parent})
 	return &syncFixture{gh: gh, store: s, tickets: k, sync: syncer, adapter: adapter}
 }
 
@@ -541,7 +541,7 @@ func TestASponsoredAdmissionIsSpentOnceAndNeedsATrustedSponsor(t *testing.T) {
 	}
 	// The daemon restarts with bob no longer trusted.
 	f.sync = tickets.NewSyncer(f.adapter, f.tickets, f.store, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: []string{"alex"}}},
-		tickets.SyncOptions{Standards: standard.ForTracker{Tracker: f.adapter, DefaultPriority: "P2"}, Needs: standard.Needs})
+		tickets.SyncOptions{Standards: standard.ForTracker{Tracker: f.adapter, DefaultPriority: "P2"}, Needs: standard.Needs, Parent: standard.Parent})
 	if got, _ := f.sync.Refinable(ctx, ghRef(m)); got {
 		t.Fatal("a sponsor who lost the trust still gets the ticket refined")
 	}
@@ -549,5 +549,41 @@ func TestASponsoredAdmissionIsSpentOnceAndNeedsATrustedSponsor(t *testing.T) {
 	f.run(t)
 	if tk := f.ticket(t, m); tk.State != core.TicketNew {
 		t.Fatalf("a sponsor who lost the trust admitted the ticket: %s", tk.State)
+	}
+}
+
+func TestRecoverGivesASplitParentItsChildren(t *testing.T) {
+	f := newSync(t)
+	parent := f.gh.Seed("Big", conforming, "alex", "istari:in_progress")
+	child := func(title string, labels ...string) int {
+		body := strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: none\n- Parent: #%d", parent), 1)
+		return f.gh.Seed(title, body, "alex", labels...)
+	}
+	open := child("Part one", "istari:in_progress")
+	f.gh.SetPermission("mallory", "triage")
+	body := strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: none\n- Parent: #%d", parent), 1)
+	sneaked := f.gh.Seed("Part three", body, "mallory", "istari:in_progress") // labelled by someone untrusted
+	done := child("Part two", "istari:done")
+	f.gh.HumanClose(done, "alex", "completed")
+	epic := f.gh.Seed("Milestone", "An epic istari does not work on.", "alex")
+	unrelated := f.gh.Seed("Elsewhere", strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: none\n- Parent: #%d", epic), 1), "alex", "istari:in_progress")
+	if _, err := f.sync.Recover(ctx, func(context.Context, tickets.Ref) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	p := f.ticket(t, parent)
+	if want := []string{ghRef(open), ghRef(done)}; !slices.Equal(p.Children, want) {
+		t.Fatalf("the parent's children = %v, want %v", p.Children, want)
+	}
+	if c := f.ticket(t, open); c.BudgetOf != ghRef(parent) {
+		t.Fatalf("the open child shares the budget of %q, want the parent's", c.BudgetOf)
+	}
+	if c := f.ticket(t, done); c.State != core.TicketDone || c.BudgetOf != ghRef(parent) {
+		t.Fatalf("the closed child = %s, budget of %q", c.State, c.BudgetOf)
+	}
+	if _, err := f.tickets.Get(ctx, ghRef(sneaked)); err == nil {
+		t.Fatal("a child labelled by an untrusted user was recovered through its parent")
+	}
+	if u := f.ticket(t, unrelated); len(u.Children) != 0 || u.BudgetOf != "" {
+		t.Fatalf("an unrelated ticket got %v / %q", u.Children, u.BudgetOf)
 	}
 }

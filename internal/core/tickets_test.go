@@ -368,7 +368,7 @@ func TestClearHoldCanInsistOnTheReason(t *testing.T) {
 
 func TestARecoveredTicketStartsInTheStateAndHoldTheTrackerHas(t *testing.T) {
 	tickets, s := newTickets(t, nil)
-	tk, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Limits"}, core.TicketInProgress, "needs_input")
+	tk, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Limits", BudgetOf: "gh:acme/web#1"}, core.TicketInProgress, "needs_input")
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestARecoveredTicketStartsInTheStateAndHoldTheTrackerHas(t *testing.T) {
 	}
 	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
 	replayed, err := core.ReplayTicket(events)
-	if err != nil || replayed.State != core.TicketInProgress || replayed.Hold != "needs_input" {
+	if err != nil || replayed.State != core.TicketInProgress || replayed.Hold != "needs_input" || replayed.BudgetOf != "gh:acme/web#1" {
 		t.Fatalf("replay = %+v, %v", replayed, err)
 	}
 	if _, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref}, core.TicketReady, ""); err == nil {

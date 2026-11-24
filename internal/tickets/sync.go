@@ -64,6 +64,9 @@ type SyncOptions struct {
 	// Needs reads the tickets a ticket's text depends on (spec 4.9); nil
 	// leaves the needs alone.
 	Needs func(body, repo string) []string
+	// Parent reads the ticket a ticket's text names as its parent; istari
+	// recover gives split parents their children with it. nil: none.
+	Parent func(body, repo string) string
 }
 
 // CodeNotTrusted refuses an admission by someone who is not trusted.
@@ -267,6 +270,13 @@ func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref)
 			errs = append(errs, fmt.Errorf("recover %s: %w", repo.Repo, err))
 			continue
 		}
+		// The tickets istari worked on: only they can have been split.
+		split := map[string]bool{}
+		for _, t := range open {
+			if lost(t.State.State) {
+				split[t.Ref.String()] = true
+			}
+		}
 		for _, t := range open {
 			if !lost(t.State.State) {
 				continue
@@ -274,7 +284,7 @@ func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref)
 			if _, err := s.tickets.Get(ctx, t.Ref.String()); err == nil {
 				continue // istari has it
 			}
-			if err := s.recoverOne(ctx, repo, t, self, &report); err != nil {
+			if err := s.recoverOne(ctx, repo, t, self, split, &report); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", t.Ref, err))
 				continue
 			}
@@ -282,12 +292,64 @@ func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref)
 				errs = append(errs, fmt.Errorf("%s: the journal: %w", t.Ref, err))
 			}
 		}
+		if err := s.recoverChildren(ctx, repo, &report); err != nil {
+			errs = append(errs, fmt.Errorf("recover %s: the children: %w", repo.Repo, err))
+		}
 	}
 	return report, errors.Join(errs...)
 }
 
+// recoverChildren gives every ticket that was split its children back: the
+// tickets, open or closed, whose text names it as their parent. They share
+// its budget; closed ones come back as done or canceled.
+func (s *Syncer) recoverChildren(ctx context.Context, repo SyncRepo, report *SyncReport) error {
+	all, err := s.provider.List(ctx, Query{Repo: repo.Repo, Closed: true})
+	if err != nil {
+		return err
+	}
+	children := map[string][]string{}
+	for _, t := range all {
+		parent := s.parentOf(t, repo)
+		if parent == "" {
+			continue
+		}
+		if p, err := s.tickets.Get(ctx, parent); err != nil || !lost(p.State) {
+			continue // not a ticket istari split
+		}
+		ref := t.Ref.String()
+		if _, err := s.tickets.Get(ctx, ref); err != nil {
+			if !t.Closed || !finished(t.State.State) {
+				continue // an open child is recovered on its own, or skipped
+			}
+			nt := core.NewTicket{Ref: ref, Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL, BudgetOf: parent}
+			if _, err := s.tickets.Recover(ctx, "system", nt, t.State.State, ""); err != nil {
+				return err
+			}
+			if err := s.reconcile(ctx, repo, t, report); err != nil {
+				return err
+			}
+		}
+		children[parent] = append(children[parent], ref)
+	}
+	for parent, refs := range children {
+		p, err := s.tickets.Get(ctx, parent)
+		if err != nil || len(p.Children) > 0 {
+			continue
+		}
+		slices.SortFunc(refs, func(a, b string) int {
+			ra, _ := ParseRef(a)
+			rb, _ := ParseRef(b)
+			return ra.Number - rb.Number
+		})
+		if _, err := s.tickets.SetChildren(ctx, "system", parent, refs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // recoverOne takes one lost ticket back, then the closed tickets it needs.
-func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self string, report *SyncReport) error {
+func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self string, split map[string]bool, report *SyncReport) error {
 	label := "istari:" + string(t.State.State)
 	by, err := s.provider.LastActor(ctx, t.Ref, "labeled", label)
 	if err != nil {
@@ -304,6 +366,9 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 		}
 	}
 	nt := core.NewTicket{Ref: t.Ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
+	if parent := s.parentOf(t, repo); parent != "" && split[parent] {
+		nt.BudgetOf = parent // a child of a split shares its parent's budget (spec 4.5)
+	}
 	if _, err := s.tickets.Recover(ctx, "system", nt, t.State.State, t.State.Hold); err != nil {
 		return err
 	}
@@ -345,6 +410,14 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 		}
 	}
 	return nil
+}
+
+// parentOf is the ticket t's text names as its parent, or "".
+func (s *Syncer) parentOf(t Ticket, repo SyncRepo) string {
+	if s.opts.Parent == nil {
+		return ""
+	}
+	return s.opts.Parent(t.Body, repo.Repo)
 }
 
 func or(s, fallback string) string {
