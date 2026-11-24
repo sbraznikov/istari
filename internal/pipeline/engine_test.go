@@ -197,6 +197,9 @@ func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
 	if second.ID == first.ID || pipeline.RoundOf(second) != 2 {
 		t.Fatalf("after changes were requested implement is %s (round %d)", second.ID, pipeline.RoundOf(second))
 	}
+	if second.State != core.TaskReady {
+		t.Fatalf("a rework of an implement that never finished is %s, want ready: it must not wait for the canceled one", second.State)
+	}
 	if merge := f.stage(t, ref, "merge"); pipeline.RoundOf(merge) != 2 {
 		t.Fatalf("merge of round %d, want round 2", pipeline.RoundOf(merge))
 	}
@@ -474,6 +477,7 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 	f.reconcile(t)
 	f.finish(t, ref, "plan", "agent:planner-1")
 	f.reconcile(t)
+	original := f.stage(t, ref, "implement")
 	f.finish(t, ref, "implement", "agent:implementer-1") // it opened the pull request
 	ci[ref] = "pending"
 	f.reconcile(t)
@@ -484,6 +488,8 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 	f.reconcile(t)
 	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
 		t.Fatalf("after red CI implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	} else if len(impl.Needs) != 1 || impl.Needs[0] != original.ID {
+		t.Fatalf("the rework needs %v, want the original implement %s (spec 4.3)", impl.Needs, original.ID)
 	}
 	f.reconcile(t) // the red commit is handled: round 2 is not done yet
 	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
