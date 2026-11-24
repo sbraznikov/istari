@@ -45,11 +45,23 @@ func TestIstariSyncMirrorsTheTrackersIssues(t *testing.T) {
 		t.Fatalf("issue labels = %v, want [istari:new]", labels)
 	}
 
+	// Only the tracker's line matters here: whether a harness is installed
+	// depends on the machine.
 	cmd := exec.Command(binary, "--config", config, "doctor")
 	cmd.Env = append(os.Environ(), env...)
-	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "tracker github") {
-		t.Fatalf("doctor with a tracker token: %v\n%s", err, out)
+	out, _ := cmd.CombinedOutput()
+	if !trackerOK(string(out)) {
+		t.Fatalf("doctor does not report the tracker token as ok:\n%s", out)
 	}
+}
+
+func trackerOK(doctor string) bool {
+	for _, line := range strings.Split(doctor, "\n") {
+		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "tracker" && fields[1] == "github" {
+			return fields[2] == "ok"
+		}
+	}
+	return false
 }
 
 func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
