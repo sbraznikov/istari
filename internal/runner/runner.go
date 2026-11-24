@@ -45,7 +45,10 @@ type RunnerOptions struct {
 	Timeout  time.Duration // per run; 0: DefaultRunTimeout
 	// BudgetUSD is the spending cap of one run; 0 means none. Exceeding it
 	// blocks the task as budget_exceeded (spec section 7.5).
-	BudgetUSD     float64
+	BudgetUSD float64
+	// Guard is the command the harness runs before every shell command of
+	// an agent (istari hook git-guard, spec section 7.7); "" means none.
+	Guard         string
 	Poll          time.Duration // how often a free slot looks for work; 0: DefaultPoll
 	Socket        string        // the daemon's socket, for the agent's istari commands
 	TranscriptMax int64         // 0: DefaultTranscriptMax
@@ -237,6 +240,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			}
 		}
 	}
+	// Preparing the worktree (a fetch, a merge) took part of the lease:
+	// the run starts with a whole one.
+	renewed, err := r.tasks.Renew(bg, lease)
+	if err != nil {
+		fail("the lease ran out while the worktree was prepared: " + err.Error())
+		return
+	}
+	lease = renewed
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
 	token, err := r.runs.create(bg, &run)
 	if err != nil {
@@ -245,7 +256,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	}
 	env := map[string]string{
 		"ISTARI_PROFILE": slot.Profile, "ISTARI_ROLE": slot.Role, "ISTARI_TICKET": task.Ticket,
-		"ISTARI_TASK": task.ID, "ISTARI_TOKEN": token, "ISTARI_RUN": run.ID,
+		"ISTARI_TASK": task.ID, "ISTARI_TOKEN": token, "ISTARI_RUN": run.ID, "ISTARI_WORKTREE": run.Dir,
 	}
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
@@ -265,7 +276,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD, Guard: r.opts.Guard})
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())

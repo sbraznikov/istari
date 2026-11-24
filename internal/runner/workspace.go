@@ -692,3 +692,30 @@ func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []
 	}
 	return strings.Split(unmerged, "\n"), nil
 }
+
+// OnBranch refuses a worktree that is not on the ticket's branch (spec
+// section 7.7, state check).
+func OnBranch(ctx context.Context, ws Workspace, dir string) error {
+	current, err := gitOut(ctx, dir, "branch", "--show-current")
+	if err != nil {
+		return err
+	}
+	if current != ws.Branch {
+		return fmt.Errorf("the worktree is on %q, not on the ticket's branch %s: check it out again (git switch %s)", current, ws.Branch, ws.Branch)
+	}
+	return nil
+}
+
+// BasedOnMain tells whether the worktree's HEAD contains the main branch as
+// the remote has it now (spec section 7.7, state check).
+func (w *Workspaces) BasedOnMain(ctx context.Context, ws Workspace, dir string) (bool, string, error) {
+	clone, err := w.clone(ctx, ws.Repo)
+	if err != nil {
+		return false, "", err
+	}
+	main, err := mainBranch(ctx, clone)
+	if err != nil {
+		return false, "", err
+	}
+	return isAncestor(ctx, dir, "refs/remotes/origin/"+main, "HEAD"), main, nil
+}

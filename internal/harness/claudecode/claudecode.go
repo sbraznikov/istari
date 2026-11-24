@@ -128,6 +128,18 @@ func args(spec harness.RunSpec, resume string) []string {
 	if spec.MaxBudgetUSD > 0 {
 		a = append(a, "--max-budget-usd", strconv.FormatFloat(spec.MaxBudgetUSD, 'f', -1, 64))
 	}
+	if spec.Guard != "" {
+		// Settings given on the command line rank above the repository's,
+		// so a file in the worktree cannot switch the hook off.
+		settings, _ := json.Marshal(map[string]any{
+			"disableAllHooks": false,
+			"hooks": map[string]any{"PreToolUse": []any{map[string]any{
+				"matcher": "Bash",
+				"hooks":   []any{map[string]string{"type": "command", "command": spec.Guard}},
+			}}},
+		})
+		a = append(a, "--settings", string(settings))
+	}
 	return append(a, "--", spec.Brief)
 }
 

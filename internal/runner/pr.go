@@ -74,11 +74,19 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if ws.Branch == "" || !isWorktree(ctx, run.Dir) {
 		return vcs.Opened{}, fmt.Errorf("pr: %s has no worktree", run.Ticket)
 	}
+	if err := OnBranch(ctx, ws, run.Dir); err != nil {
+		return vcs.Opened{}, fmt.Errorf("pr: %w", err)
+	}
 	// The checks must judge the code the pull request gets.
 	if dirty, err := gitOut(ctx, run.Dir, "status", "--porcelain"); err != nil {
 		return vcs.Opened{}, err
 	} else if dirty != "" {
 		return vcs.Opened{}, fmt.Errorf("pr: the worktree has uncommitted changes; commit them with istari checkpoint first:\n%s", dirty)
+	}
+	if based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir); err != nil {
+		return vcs.Opened{}, err
+	} else if !based {
+		return vcs.Opened{}, fmt.Errorf("pr: the branch is not based on the current %s: merge origin/%s, resolve, make a checkpoint, then open the pull request", main, main)
 	}
 	head, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
 	if err != nil {

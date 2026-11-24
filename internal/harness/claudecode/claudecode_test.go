@@ -458,3 +458,39 @@ func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {
 		t.Error("the reviewer may edit files")
 	}
 }
+
+func TestTheGuardRunsAsAHookBeforeEveryShellCommandAndCannotBeSwitchedOff(t *testing.T) {
+	f := newFake(t)
+	h := claudecode.New(claudecode.Options{Binary: f.bin})
+	spec := f.spec(t, "stream", nil)
+	spec.Guard = "'/opt/istari bin/istari' hook git-guard"
+	s, err := h.Start(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	args := strings.Split(strings.TrimSpace(f.read(t, "args")), "\n")
+	i := slices.Index(args, "--settings")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("arguments %q lack --settings", args)
+	}
+	var settings struct {
+		DisableAllHooks *bool `json:"disableAllHooks"`
+		Hooks           struct {
+			PreToolUse []struct {
+				Matcher string
+				Hooks   []struct{ Type, Command string }
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(args[i+1]), &settings); err != nil {
+		t.Fatalf("settings %q: %v", args[i+1], err)
+	}
+	pre := settings.Hooks.PreToolUse
+	if len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" || pre[0].Hooks[0].Command != spec.Guard {
+		t.Fatalf("hooks = %+v", settings.Hooks)
+	}
+	if settings.DisableAllHooks == nil || *settings.DisableAllHooks {
+		t.Fatal("the settings leave a repository free to switch the hooks off")
+	}
+}

@@ -25,6 +25,11 @@ type RunSpec struct {
 	PermissionMode string
 	AllowedTools   []string
 	MaxBudgetUSD   float64 // the harness-side spending cap; 0 means none
+	// Guard is a command the harness runs before every shell command of the
+	// agent, with the harness's hook input on stdin; exit status 2 denies
+	// the command and its stderr tells the agent why (spec section 7.7:
+	// the prohibitions are enforced by a harness hook). "" means none.
+	Guard string
 }
 
 // EventKind is the kind of a harness event.
