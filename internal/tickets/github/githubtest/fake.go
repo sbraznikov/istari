@@ -61,6 +61,8 @@ type Issue struct {
 	Labels      []string
 	Author      string
 	PullRequest bool
+	Branch      string   // a pull request's head branch
+	Commits     []string // a pull request's commit messages
 	Updated     time.Time
 	Events      []Event
 	Comments    []Comment
@@ -108,6 +110,8 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("POST "+repo+"/labels", s.createLabel)
 	mux.HandleFunc("GET "+repo+"/collaborators/{user}/permission", s.permission)
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
+	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
+	mux.HandleFunc("GET "+repo+"/pulls/{n}/commits", s.listPullCommits)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+s.Token {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
@@ -525,6 +529,42 @@ func (s *Server) SetPageSize(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pageSize = n
+}
+
+// SeedPull adds a pull request from branch with commits of these messages.
+func (s *Server) SeedPull(branch string, messages ...string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.add("pull request", "", "bob")
+	i.PullRequest, i.Branch, i.Commits = true, branch, slices.Clone(messages)
+	return i.Number
+}
+
+func (s *Server) pull(w http.ResponseWriter, r *http.Request) *Issue {
+	i := s.issue(w, r)
+	if i != nil && !i.PullRequest {
+		s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		return nil
+	}
+	return i
+}
+
+func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
+	if i := s.pull(w, r); i != nil {
+		s.write(w, http.StatusOK, map[string]any{"number": i.Number, "state": i.State, "head": map[string]any{"ref": i.Branch, "repo": map[string]any{"full_name": Repo}}})
+	}
+}
+
+func (s *Server) listPullCommits(w http.ResponseWriter, r *http.Request) {
+	i := s.pull(w, r)
+	if i == nil {
+		return
+	}
+	all := make([]map[string]any, len(i.Commits))
+	for k, m := range i.Commits {
+		all[k] = map[string]any{"sha": fmt.Sprintf("%040d", k+1), "commit": map[string]any{"message": m}}
+	}
+	s.page(w, r, all)
 }
 
 // MarkPullRequest makes an issue a pull request.

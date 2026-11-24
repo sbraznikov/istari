@@ -53,6 +53,32 @@ istari is a self-hosted system that runs the software development lifecycle for 
 | [M6 Pipeline completion](https://github.com/sbraznikov/istari/issues/6) | A ticket goes all the way to merge |
 | [M7 Expansion](https://github.com/sbraznikov/istari/issues/7) | More trackers, container isolation, remote runners, Postgres |
 
+## Required check: `istari/ticket-link`
+
+A pull request must reference an open ticket: its branch is `istari/<issue-number>/<slug>`, or its commits carry the trailer `Ticket: gh:owner/repo#<number>`. The check fails a pull request with no reference, or one that references a closed or canceled ticket, and says why. istari's own branches and commits always carry both.
+
+Add the workflow to the repository:
+
+```yaml
+# .github/workflows/istari.yml
+name: istari
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+jobs:
+  ticket-link:
+    name: istari/ticket-link
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sbraznikov/istari/.github/actions/ticket-link@main
+```
+
+Then make `istari/ticket-link` a required status check in the branch protection rules (or ruleset) of the main branch, so that no pull request merges around istari. The same check runs locally with `istari ci ticket-link --repo owner/repo --pr <number>`.
+
 ## Contributing
 
 All work goes through tickets. Pick an open issue whose dependencies are closed, work on a branch named `istari/<issue-number>/<slug>`, and open one pull request per ticket. New tickets follow the ticket standard described in [section 4.5 of the spec](docs/design.md).
