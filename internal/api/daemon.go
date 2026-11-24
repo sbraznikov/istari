@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -26,6 +27,21 @@ const (
 	DatabaseName = "istari.db"
 	LockName     = "daemon.lock"
 )
+
+// SocketPath returns the daemon's socket in dataDir, or an error when the
+// path is longer than a unix socket may be here: the bind would fail with a
+// bare "invalid argument".
+func SocketPath(dataDir string) (string, error) {
+	socket := filepath.Join(dataDir, SocketName)
+	limit := 103 // sun_path of macOS and the BSDs, less the closing NUL
+	if runtime.GOOS == "linux" {
+		limit = 107
+	}
+	if len(socket) > limit {
+		return socket, fmt.Errorf("the daemon's socket %s is %d bytes, more than the %d a unix socket may have here: choose a shorter data_dir", socket, len(socket), limit)
+	}
+	return socket, nil
+}
 
 // ErrAlreadyRunning means another daemon holds the data directory.
 var ErrAlreadyRunning = errors.New("another istari daemon is already running on this data directory")
@@ -73,7 +89,10 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	defer st.Close()
 
-	socket := filepath.Join(dataDir, SocketName)
+	socket, err := SocketPath(dataDir)
+	if err != nil {
+		return err
+	}
 	os.Remove(socket) // a stale socket of a daemon that died; the lock proves none runs
 	ln, err := listenPrivate(socket)
 	if err != nil {

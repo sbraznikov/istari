@@ -33,7 +33,22 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 			}
 			var checks []check
 			failed := 0
-			if cfg, err := loadConfig(opts.Config); err == nil && len(syncRepos(cfg)) > 0 {
+			cfg, cfgErr := loadConfig(opts.Config)
+			if cfgErr == nil {
+				c := check{Name: "daemon socket", OK: true}
+				dataDir, err := cfg.Daemon.DataDirPath()
+				socket := ""
+				if err == nil {
+					socket, err = api.SocketPath(dataDir)
+				}
+				c.Detail = socket
+				if err != nil {
+					c.OK, c.Detail = false, err.Error()
+					failed++
+				}
+				checks = append(checks, c)
+			}
+			if cfgErr == nil && len(syncRepos(cfg)) > 0 {
 				c := check{Name: "tracker github", OK: true}
 				if _, err := github.FromEnvironment(cmd.Context()); err != nil {
 					c.OK, c.Detail = false, err.Error()
