@@ -89,9 +89,25 @@ func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(withFake, "claude"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Only the harness row is judged: other checks (gh, tracker token, user
+	// config) depend on the machine and may fail with exit 1.
 	cmd = exec.Command(binary, "doctor")
-	cmd.Env = append(os.Environ(), "PATH="+withFake+":/usr/bin:/bin")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "PATH="+withFake+":/usr/bin:/bin")
+	out, err = cmd.CombinedOutput()
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
 		t.Fatalf("doctor with the harness binary: %v\n%s", err, out)
 	}
+	if !harnessOK(string(out), "claude-code") {
+		t.Fatalf("doctor does not report the harness ok with claude on PATH:\n%s", out)
+	}
+}
+
+// harnessOK reports whether the doctor output has the row "harness <name> ok".
+func harnessOK(doctor, name string) bool {
+	for _, line := range strings.Split(doctor, "\n") {
+		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "harness" && fields[1] == name {
+			return fields[2] == "ok"
+		}
+	}
+	return false
 }
