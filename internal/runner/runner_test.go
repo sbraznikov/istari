@@ -174,6 +174,18 @@ func TestASlotClaimsAReadyTaskAndStartsTheHarnessInTheTicketWorktree(t *testing.
 	if s.spec.Env["ISTARI_TOKEN"] == "" {
 		t.Error("ISTARI_TOKEN is empty")
 	}
+	if !strings.Contains(s.spec.Instructions, "Refactoring is not part of the cycle") {
+		t.Errorf("instructions = %q, want the implementer's", s.spec.Instructions)
+	}
+	if !strings.Contains(s.spec.Brief, `<untrusted source="ticket `+tk.Ref+`">`) || !strings.Contains(s.spec.Brief, "Run me") {
+		t.Errorf("brief = %q, want the ticket, delimited", s.spec.Brief)
+	}
+	if !exists(filepath.Join(s.spec.Workdir, ".istari", "skill.md")) {
+		t.Error("the agent skill is not installed in the workspace")
+	}
+	if status := strings.TrimSpace(gitIn(t, s.spec.Workdir, "status", "--porcelain")); status != "" {
+		t.Errorf("installing the skill left the worktree dirty: %q", status)
+	}
 	if claimed := f.waitTask(t, task.ID, core.TaskClaimed); claimed.Owner != "agent:implementer-1" {
 		t.Fatalf("owner = %s, want agent:implementer-1", claimed.Owner)
 	}

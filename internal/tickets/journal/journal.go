@@ -224,6 +224,9 @@ func Parse(body string) (e Entry, ok bool, err error) {
 	return e, true, nil
 }
 
+// Text is what a person reads of an entry: its comment without the marker.
+func Text(e Entry) string { return headline(e) }
+
 // headline is what a person reads of an entry.
 func headline(e Entry) string {
 	by := " — " + e.Actor
