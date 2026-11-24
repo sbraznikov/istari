@@ -115,6 +115,35 @@ func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
 
+// holdLease renews a lease in the background while a run is prepared.
+// started stops that and renews it once more for the run to start with;
+// abandon only stops it, for a run that does not start.
+func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func() (core.Lease, error), abandon func()) {
+	stop, done := make(chan struct{}), make(chan struct{})
+	current := lease // written by the goroutine; read after done
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(r.opts.Lease / 3)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if l, err := r.tasks.Renew(ctx, current); err == nil {
+					current = l
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	halt := func() { once.Do(func() { close(stop); <-done }) }
+	return func() (core.Lease, error) {
+		halt()
+		return r.tasks.Renew(ctx, current)
+	}, halt
+}
+
 // Working tells which of this runner's live runs works on a task, if any.
 func (r *Runner) Working(ctx context.Context, task string) (run string, ok bool) {
 	runs, err := r.runs.List(ctx)
@@ -195,6 +224,10 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			log.Printf("istari: runner %s: fail %s: %v", slot.Profile, lease.Task, err)
 		}
 	}
+	// The lease is kept while the run is prepared (the worktree, a fetch, a
+	// merge), however long that takes.
+	started, abandon := r.holdLease(bg, lease)
+	defer abandon()
 	task, err := r.tasks.Get(bg, lease.Task)
 	if err != nil {
 		fail(err.Error())
@@ -284,6 +317,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
 	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD, Guard: r.opts.Guard})
+	// The run starts with a whole lease, or not at all.
+	renewed, err := started()
+	if err != nil {
+		log.Printf("istari: runner %s: task %s: the lease ran out while the run was prepared: %v", slot.Profile, lease.Task, err)
+		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the lease ran out while the run was prepared")
+		return
+	}
+	lease = renewed
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())

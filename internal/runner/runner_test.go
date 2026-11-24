@@ -440,3 +440,30 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 		t.Fatalf("the failure is of another task: %+v", failed)
 	}
 }
+
+func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Lease: time.Hour})
+	_, task := f.readyTask(t, 11)
+	claimedAt := time.Now()
+	f.start(t)
+	f.session(t)
+	got := f.waitTask(t, task.ID, core.TaskClaimed)
+	var started time.Time
+	for _, e := range f.events(t, "task.renewed") {
+		started = e.At
+	}
+	if started.IsZero() || got.LeaseUntil.Before(started.Add(time.Hour-time.Second)) || !started.After(claimedAt) {
+		t.Fatalf("the run started on the lease of its claim: until %s, renewed at %s", got.LeaseUntil, started)
+	}
+}
+
+func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Lease: 90 * time.Millisecond}) // shorter than making a worktree
+	_, task := f.readyTask(t, 12)
+	f.start(t)
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.Env["ISTARI_TASK"] != task.ID || len(f.events(t, "task.expired")) != 0 {
+		t.Fatalf("the run of %s lost its lease while it was prepared: %d expirations", task.ID, len(f.events(t, "task.expired")))
+	}
+}
