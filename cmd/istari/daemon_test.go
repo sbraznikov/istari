@@ -422,7 +422,9 @@ func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var e struct{ Code, Message string }
-	json.NewDecoder(resp.Body).Decode(&e)
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatalf("ticket.fire accept: %s, body is not an error: %v", resp.Status, err)
+	}
 	if resp.StatusCode != http.StatusConflict || e.Code != "invalid_transition" || !strings.Contains(e.Message, "istari ticket ready") {
 		t.Fatalf("ticket.fire accept = %d %+v, want 409 invalid_transition naming istari ticket ready", resp.StatusCode, e)
 	}
