@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,11 +27,7 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 		Short: "Check that istari can run here: tracker, harnesses and worktrees",
 		Args:  Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			type check struct {
-				Name   string `json:"name"`
-				OK     bool   `json:"ok"`
-				Detail string `json:"detail,omitempty"`
-			}
+			type check = doctorCheck
 			var checks []check
 			failed := 0
 			cfg, cfgErr := loadConfig(opts.Config)
@@ -90,7 +87,12 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				if !c.OK {
 					failed++
 				}
-				checks = append(checks, check(c))
+				checks = append(checks, c)
+			}
+			// The repository's standards files (spec 7.6): a missing one
+			// only warns, so it does not count as failed.
+			if c, ok := standardsCheck(); ok {
+				checks = append(checks, c)
 			}
 			// Worktrees without a ticket or of a finished ticket (spec 7.2),
 			// as the running daemon sees them.
@@ -110,7 +112,10 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 			rows := make([][]string, len(checks))
 			for i, c := range checks {
 				status := "ok"
-				if !c.OK {
+				switch {
+				case c.Warn:
+					status = "warn"
+				case !c.OK:
 					status = "FAIL"
 				}
 				rows[i] = []string{c.Name, status, orDash(c.Detail)}
@@ -126,9 +131,12 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 	}
 }
 
+// doctorCheck is one row of istari doctor. Warn marks a row that is not ok
+// but does not make doctor fail.
 type doctorCheck struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
+	Warn   bool   `json:"warn,omitempty"`
 	Detail string `json:"detail,omitempty"`
 }
 
@@ -154,6 +162,46 @@ func pipelineCheck() (doctorCheck, bool) {
 	}
 	if err != nil {
 		c.OK, c.Detail = false, err.Error()
+	}
+	return c, true
+}
+
+// standardsFiles are the files the Standards axis of the review reads
+// (spec section 7.6), in the order doctor lists them.
+var standardsFiles = []string{"CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md"}
+
+// adrDirs are the places of a repository's ADR directory (spec section 7.6).
+var adrDirs = []string{"adr", filepath.Join("docs", "adr")}
+
+// standardsCheck lists which standards files the repository of the working
+// directory lacks; a missing one is a warning, not a failure. ok is false
+// outside a repository.
+func standardsCheck() (doctorCheck, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	root, err := project.Root(dir)
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	var missing []string
+	for _, name := range standardsFiles {
+		if info, err := os.Stat(filepath.Join(root, name)); err != nil || info.IsDir() {
+			missing = append(missing, name)
+		}
+	}
+	hasADRDir := slices.ContainsFunc(adrDirs, func(d string) bool {
+		info, err := os.Stat(filepath.Join(root, d))
+		return err == nil && info.IsDir()
+	})
+	if !hasADRDir {
+		missing = append(missing, "adr/ or docs/adr/")
+	}
+	c := doctorCheck{Name: "standards", OK: len(missing) == 0}
+	if !c.OK {
+		c.Warn = true
+		c.Detail = "missing: " + strings.Join(missing, ", ")
 	}
 	return c, true
 }
