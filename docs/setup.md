@@ -2,7 +2,7 @@
 
 This guide takes you from nothing to a first draft pull request made by istari. Each step gives the command and what you should see, so you, or an agent in a terminal session, can check a step before going on.
 
-What works today (milestones M1–M3): tickets synced from GitHub Issues, the task queue and the runner, a git worktree per ticket, and the refine, plan and implement stages up to a draft pull request. Not built yet: Slack (M4), the TUI (M5), and the review, approval and merge stages (M6). The [design spec](design.md) describes the full system; this guide describes what the binary does now.
+What works today: tickets synced from GitHub Issues, the task queue and the runner, a git worktree per ticket, the refine, plan and implement stages up to a draft pull request, and the review stage with a verdict computed by code. Not built yet: Slack (M4), the TUI (M5), and the approval and merge stages (M6). The [design spec](design.md) describes the full system; this guide describes what the binary does now.
 
 Commands below use `--config` only where it matters. Without it, istari reads `~/.config/istari/config.toml`.
 
@@ -423,7 +423,9 @@ Every open issue of a registered repository becomes a ticket at the first sync. 
    - `new`: a ticket that falls short gets a refiner run. It rewrites the ticket (keeping the original text), sets the size, or asks the author questions and puts the ticket on the `needs_input` hold.
    - `ready` → `planning`: istari makes the ticket's worktree on a branch `istari/<n>/<slug>` and a planner run publishes the plan in the ticket. With `plan_gate = true`, a human approves it: `istari gate list`, `istari gate approve <gate>`.
    - `in_progress`: the implementer works in slices. Each `istari checkpoint` commits, runs `typecheck` and `test`, pushes the branch and records the result in the ticket. `istari pr open` runs `full` and opens a **draft** pull request.
-   - After that, istari follows CI on the pull request: red starts another implementation round, green moves the ticket to `in_review`. The review, approval and merge stages are not built yet. Review and merge the pull request yourself; `istari ticket pause gh:owner/repo#<n>` stops further runs on the ticket.
+   - After that, istari follows CI on the pull request: red starts another implementation round, green moves the ticket to `in_review`.
+   - `in_review`: a reviewer run reads the diff along two axes, Standards and Spec, and submits its findings with `istari review submit`. istari drops a finding whose file and line are not in the diff or whose quote is not in the source its axis allows (the ticket for Spec, a standards file such as `CODING_STANDARDS.md` or `AGENTS.md`, or the baseline of code smells), notes it in the ticket, and publishes the rest on the pull request as a comment review, the two axes apart. Any accepted finding starts another implementation round, up to `max_review_rounds`, then the ticket is held `attempts_exhausted`; none, with CI green, moves it to `awaiting_approval`. A reviewer cannot complete without a report: its run fails, and the attempt counts.
+   - The approval and merge stages are not built yet. Merge the pull request yourself; `istari ticket pause gh:owner/repo#<n>` stops further runs on the ticket.
 
 4. Watch it:
 

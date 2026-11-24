@@ -134,6 +134,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
 	mux.HandleFunc("PATCH "+repo+"/pulls/{n}", s.updatePull)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/reviews", s.reviews)
+	mux.HandleFunc("POST "+repo+"/pulls/{n}/reviews", s.createReview)
 	mux.HandleFunc("PUT "+repo+"/pulls/{n}/merge", s.mergePull)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)

@@ -21,6 +21,7 @@ type Check struct {
 // Review is one review of a pull request.
 type Review struct {
 	User, State string // APPROVED, CHANGES_REQUESTED, COMMENTED
+	Body        string
 }
 
 // EnableApp makes the fake a GitHub App host: requests signed with the App's
@@ -227,6 +228,22 @@ func (s *Server) reviews(w http.ResponseWriter, r *http.Request) {
 		all = append(all, map[string]any{"id": k + 1, "user": map[string]any{"login": rv.User}, "state": rv.State})
 	}
 	s.page(w, r, all)
+}
+
+func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
+	i := s.pull(w, r)
+	if i == nil {
+		return
+	}
+	var req struct{ Body, Event string }
+	json.NewDecoder(r.Body).Decode(&req)
+	state, ok := map[string]string{"COMMENT": "COMMENTED", "APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[req.Event]
+	if !ok {
+		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "Unprocessable event " + req.Event})
+		return
+	}
+	i.Reviews = append(i.Reviews, Review{User: s.TokenUser, State: state, Body: req.Body})
+	s.write(w, http.StatusOK, map[string]any{"id": len(i.Reviews), "state": state})
 }
 
 func (s *Server) mergePull(w http.ResponseWriter, r *http.Request) {

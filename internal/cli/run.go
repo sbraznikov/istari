@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,6 +201,24 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	})
 	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input")
 	plan.AddCommand(planSubmit)
+	review := &cobra.Command{Use: "review", Short: "For the reviewer: submit the review of a pull request", Args: Args(cobra.NoArgs)}
+	var reviewFile string
+	reviewSubmit := writeCommand(opts, &cobra.Command{
+		Use: "submit --file <review.yaml>", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		data, err := readFileOrStdin(cmd, reviewFile)
+		if err != nil {
+			return err
+		}
+		var answer api.ReviewAnswer // istari checks every finding; the verdict is code's
+		if err := opts.call(cmd, "review.submit", key, api.ReviewSubmitRequest{Actor: opts.Actor, Report: string(data)}, &answer); err != nil {
+			return err
+		}
+		rows := [][]string{{"accepted", strconv.Itoa(answer.Accepted)}, {"dropped", strconv.Itoa(answer.Dropped)}}
+		return render(cmd.OutOrStdout(), opts, answer, []string{"FINDINGS", "COUNT"}, rows)
+	})
+	reviewSubmit.Flags().StringVar(&reviewFile, "file", "", "the review, YAML; - reads it from standard input")
+	review.AddCommand(reviewSubmit)
 	pr := &cobra.Command{Use: "pr", Short: "For the implementer: open the pull request", Args: Args(cobra.NoArgs)}
 	var prTitle, prBody string
 	prOpen := writeCommand(opts, &cobra.Command{
@@ -218,7 +237,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	prOpen.Flags().StringVar(&prTitle, "title", "", "the pull request's title")
 	prOpen.Flags().StringVar(&prBody, "body-file", "", "the description: Summary, Evidence, Merge Danger; - reads standard input")
 	pr.AddCommand(prOpen)
-	return []*cobra.Command{whoami, complete, checkpoint, refine, plan, pr}
+	return []*cobra.Command{whoami, complete, checkpoint, refine, plan, review, pr}
 }
 
 func budgetText(w api.Whoami) string {

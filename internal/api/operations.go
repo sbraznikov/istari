@@ -87,6 +87,10 @@ type (
 		Actor string `json:"actor"`
 		Plan  string `json:"plan"` // the YAML the planner wrote: code parses it
 	}
+	ReviewSubmitRequest struct {
+		Actor  string `json:"actor"`
+		Report string `json:"report"` // the YAML the reviewer wrote: code parses it
+	}
 	RefineSubmitRequest struct {
 		Actor  string `json:"actor"`
 		Result string `json:"result"` // the YAML the refiner wrote, as written: code parses it
@@ -151,6 +155,7 @@ func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
 func (r *RefineSubmitRequest) validate() error { return needActor(r.Actor) }
 func (r *PlanSubmitRequest) validate() error   { return needActor(r.Actor) }
+func (r *ReviewSubmitRequest) validate() error { return needActor(r.Actor) }
 func (r *PROpenRequest) validate() error       { return needActor(r.Actor) }
 func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
@@ -314,6 +319,15 @@ func (s *Server) operations() map[string]operation {
 			if !isAgent {
 				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari complete is for an agent: it needs the run token in ISTARI_TOKEN"}
 			}
+			if run.Role == "reviewer" {
+				// The verdict needs the report (spec 7.6): a reviewer that
+				// ends without one fails its run, and the attempt counts.
+				if _, submitted, err := s.reviewOf(ctx, run.Ticket, run.Task); err != nil {
+					return nil, err
+				} else if !submitted {
+					return nil, &core.Error{Code: core.CodeInvalidState, Message: "submit the review with istari review submit before istari complete"}
+				}
+			}
 			_, err := s.runs.Complete(ctx, run.ID, r.Message)
 			return ok(err)
 		}),
@@ -342,6 +356,9 @@ func (s *Server) operations() map[string]operation {
 		// plan.submit is istari plan submit (spec 4.9): code checks the plan
 		// against the repository and the ticket, records it, and splits.
 		"plan.submit": write(okAgain, func(ctx context.Context, r PlanSubmitRequest) (any, error) { return s.submitPlan(ctx, r) }),
+		// review.submit is istari review submit (spec 7.6): code checks the
+		// findings and records the report; the verdict is the pipeline's.
+		"review.submit": write(okAgain, func(ctx context.Context, r ReviewSubmitRequest) (any, error) { return s.submitReview(ctx, r) }),
 		// refine.submit is the refiner's structured result (spec 4.5): code
 		// checks and applies it; what it rejects fails the run.
 		"refine.submit": write(okAgain, func(ctx context.Context, r RefineSubmitRequest) (any, error) {

@@ -390,3 +390,31 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 		t.Fatal("the pull request is still a draft")
 	}
 }
+
+func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.PublishReview(ctx, githubtest.Repo, pr.Number, vcs.Review{
+		Standards: vcs.Axis{Summary: "1 finding: Get has no doc comment", Findings: []string{"cache.go:3: Get has no doc comment"}},
+		Spec:      vcs.Axis{Summary: "0 findings"},
+	})
+	if err != nil {
+		t.Fatalf("PublishReview: %v", err)
+	}
+	reviews := gh.Issue(pr.Number).Reviews
+	if len(reviews) != 1 || reviews[0].State != "COMMENTED" {
+		t.Fatalf("reviews = %+v, want one comment review: the verdict is istari's, not GitHub's", reviews)
+	}
+	body := reviews[0].Body
+	standards, spec := strings.Index(body, "## Standards"), strings.Index(body, "## Spec")
+	if standards < 0 || spec < standards {
+		t.Fatalf("body = %q, want the section Standards, then Spec", body)
+	}
+	if !strings.Contains(body[standards:spec], "cache.go:3: Get has no doc comment") || !strings.Contains(body[spec:], "0 findings") {
+		t.Fatalf("body = %q, want each axis with its own findings", body)
+	}
+}
