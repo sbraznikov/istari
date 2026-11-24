@@ -43,9 +43,11 @@ type RunnerOptions struct {
 	Projects []string      // the projects whose tasks the slots take
 	Lease    time.Duration // the task lease; renewed at a third of it. 0: core.DefaultLease
 	Timeout  time.Duration // per run; 0: DefaultRunTimeout
-	// BudgetUSD is the spending cap of one run; 0 means none. Exceeding it
-	// blocks the task as budget_exceeded (spec section 7.5).
-	BudgetUSD float64
+	// Budgets are the ticket budgets by size ([defaults.budget_usd], spec
+	// section 4.7). A run is capped at what is left of its ticket's budget;
+	// exceeding the cap blocks the task as budget_exceeded (spec section
+	// 7.5). A ticket without a size has the M budget. Empty: no caps.
+	Budgets map[string]float64
 	// Guard is the command the harness runs before every shell command of
 	// an agent (istari hook git-guard, spec section 7.7); "" means none.
 	Guard         string
@@ -142,6 +144,55 @@ func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func(
 		halt()
 		return r.tasks.Renew(ctx, current)
 	}, halt
+}
+
+// budgetLeft is what is left of the ticket's budget: the budget of its size,
+// or of the ticket whose budget it shares, less what the runs of every
+// ticket sharing it spent. capped is false when
+// no budgets are configured.
+func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, capped bool, err error) {
+	if len(r.opts.Budgets) == 0 {
+		return 0, false, nil
+	}
+	root := func(t core.Ticket) string {
+		if t.BudgetOf != "" {
+			return t.BudgetOf
+		}
+		return t.Ref
+	}
+	all, err := r.tickets.List(ctx)
+	if err != nil {
+		return 0, true, err
+	}
+	sharing := map[string]bool{}
+	for _, t := range all {
+		if root(t) == root(tk) {
+			sharing[t.Ref] = true
+		}
+	}
+	sharing[tk.Ref] = true
+	// A ticket that shares a budget has the budget of the one it shares
+	// (spec section 4.5: it inherits the parent's budget).
+	size := tk.Size
+	for _, t := range all {
+		if t.Ref == root(tk) {
+			size = t.Size
+		}
+	}
+	if size == "" {
+		size = "M"
+	}
+	runs, err := r.runs.List(ctx)
+	if err != nil {
+		return 0, true, err
+	}
+	left = r.opts.Budgets[size]
+	for _, run := range runs {
+		if sharing[run.Ticket] {
+			left -= run.Usage.CostUSD
+		}
+	}
+	return left, true, nil
 }
 
 // Working tells which of this runner's live runs works on a task, if any.
@@ -242,9 +293,20 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		fail(err.Error())
 		return
 	}
+	budget, capped, err := r.budgetLeft(bg, tk)
+	if err != nil {
+		fail("budget: " + err.Error())
+		return
+	}
+	if capped && budget <= 0 {
+		if err := r.tasks.Block(bg, lease, "budget_exceeded"); err != nil {
+			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
+		}
+		return
+	}
 	run := Run{
 		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
-		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout, BudgetUSD: r.opts.BudgetUSD,
+		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout, BudgetUSD: budget,
 	}
 	var conflicts []string
 	if slot.Role == "refiner" {
@@ -316,7 +378,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD, Guard: r.opts.Guard})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
@@ -395,7 +457,7 @@ loop:
 			reason := fmt.Sprintf("timeout after %s", r.opts.Timeout)
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-over:
-			reason := fmt.Sprintf("the run budget of $%.2f is spent", r.opts.BudgetUSD)
+			reason := fmt.Sprintf("the run budget of $%.2f is spent", run.BudgetUSD)
 			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, "budget_exceeded") }, save: true})
 		case who := <-stop:
 			reason := "stopped by " + who

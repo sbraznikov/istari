@@ -112,6 +112,7 @@ func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
 		log.Printf("istari: runner: off, the istari binary for the git guard is not known: %v", err)
 		return runner.RunnerOptions{}
 	}
+	opts.Budgets = cfg.Defaults.BudgetUSD // every run is capped by its ticket's budget
 	opts.Guard = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook git-guard"
 	defaults := harness.Defaults()
 	roles := make([]string, 0, len(defaults))
