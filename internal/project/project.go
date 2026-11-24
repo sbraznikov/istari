@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/pipeline"
+	"github.com/sbraznikov/istari/skill"
 )
 
 // ErrNotGit means a directory is not inside a git repository.
@@ -68,15 +70,6 @@ func ByRepo(cfg *config.Config, repo string) (config.Project, bool) {
 //go:embed templates
 var templates embed.FS
 
-// Skill returns the agent skill: how to work with istari (spec section 7.4).
-func Skill() string {
-	data, err := templates.ReadFile("templates/skill.md")
-	if err != nil {
-		panic(err) // embedded at build time
-	}
-	return string(data)
-}
-
 // Scaffold creates the files of .istari/ under root that do not exist yet:
 // the pipeline config, the ticket standard, the role instructions and the
 // agent skill. Existing files are left as they are. It returns the paths it
@@ -115,21 +108,30 @@ func Scaffold(root string) ([]string, error) {
 	if err != nil {
 		return created, err
 	}
-	// The role instructions: istari's built-in ones, to adapt to the project.
+	// The agent skill and the role instructions: istari's built-in ones, to
+	// adapt to the project.
+	own := map[string]string{".istari/skill.md": skill.Skill()}
 	for _, role := range pipeline.AgentRoles {
-		rel := path.Join(".istari", "roles", role+".md")
+		text, err := skill.Instruction(role, nil)
+		if err != nil {
+			return created, err
+		}
+		own[path.Join(".istari", "roles", role+".md")] = text
+	}
+	names := make([]string, 0, len(own))
+	for rel := range own {
+		names = append(names, rel)
+	}
+	slices.Sort(names)
+	for _, rel := range names {
 		target := filepath.Join(root, filepath.FromSlash(rel))
 		if _, err := os.Stat(target); err == nil {
 			continue
 		}
-		text, err := pipeline.BuiltInInstruction(role)
-		if err != nil {
-			return created, err
-		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return created, err
 		}
-		if err := os.WriteFile(target, []byte(text), 0o644); err != nil {
+		if err := os.WriteFile(target, []byte(own[rel]), 0o644); err != nil {
 			return created, err
 		}
 		created = append(created, rel)

@@ -2,7 +2,9 @@ package runner
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
@@ -81,8 +83,29 @@ func Brief(in BriefInput) string {
 		// is cut, and the agent reads it in full with istari ticket show.
 		body := strings.TrimSpace(journal.StripWorkState(in.Body))
 		cut := max(0, len(body)-over-200)
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
 		ticket = untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+body[:cut]+"\n\n[the ticket text is cut here; read it whole with istari ticket show "+in.Ref+"]")
 		out = assemble(ticket, keep)
+	}
+	// Still too long: the oldest of what must stay goes too, except the
+	// latest plan and the latest checkpoint; the brief says how many are
+	// left out.
+	latest := map[int]bool{}
+	for _, kind := range []journal.Kind{journal.Plan, journal.Checkpoint} {
+		for i := len(in.Journal) - 1; i >= 0; i-- {
+			if in.Journal[i].Kind == kind {
+				latest[i] = true
+				break
+			}
+		}
+	}
+	for i := 0; len(out) > MaxBrief && i < len(in.Journal); i++ {
+		if keep[i] && !latest[i] {
+			keep[i] = false
+			out = assemble(ticket, keep)
+		}
 	}
 	return out
 }
@@ -129,9 +152,11 @@ func workState(w journal.WorkState) string {
 		line("Open questions", strings.Join(w.OpenQuestions, "; "))
 }
 
+var closing = regexp.MustCompile(`(?i)</untrusted`)
+
 // untrusted delimits text from people and tools. Its own closing tags are
 // defused, so it cannot end the block early.
 func untrusted(source, text string) string {
-	text = strings.ReplaceAll(text, "</untrusted", "<\\/untrusted")
+	text = closing.ReplaceAllString(text, "<\\/untrusted")
 	return "<untrusted source=\"" + strings.ReplaceAll(source, "\"", "'") + "\">\n" + text + "\n</untrusted>\n"
 }

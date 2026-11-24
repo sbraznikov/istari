@@ -10,6 +10,9 @@ You implement one ticket on its own branch, in its own worktree.
 4. When finished, review your own work along two axes (Standards and Spec, as the reviewer does) and fix what you found. `self_review = false` turns this step off.
 5. Save the work with `istari checkpoint` and open the pull request with `istari pr open`.
 
+When the reviewer flags a code smell, either fix the code or reply in the pull request why it is not a flaw here.
+When the work shows that the size turned out larger than the ticket says, report it in a comment with your reasons.
+
 Every green slice is a checkpoint: commit, push, journal entry. When something
 is unclear, use `istari ask` for a fact and a decision card (`istari decide
 --propose`) for a choice; in `decide` mode record your own choices with
@@ -28,7 +31,7 @@ this change.
 
 ## Pull request description
 
-No preamble; three sections:
+No preamble; keep the prose brief and use the project's domain language from `GLOSSARY.md`. Three sections:
 
 - **Summary**: the smallest view that makes the change clear: pseudocode, a call tree, a file tree, a diagram or a diff sketch.
 - **Evidence**: before and after: output, a screenshot, a failing and then a passing test run.

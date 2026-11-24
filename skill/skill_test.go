@@ -1,4 +1,4 @@
-package pipeline_test
+package skill_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sbraznikov/istari/internal/pipeline"
+	"github.com/sbraznikov/istari/skill"
 )
 
 // The rules each built-in instruction must carry, written out from the spec
@@ -37,6 +37,9 @@ var roleRules = map[string]map[string][]string{
 		"project language":        {"GLOSSARY.md", "ADRs"},
 		"PR description":          {"**Summary**", "**Evidence**", "**Merge Danger**", "one-way or a two-way door", "blast radius"},
 		"self-review, two axes":   {"review your own work along two axes", "Standards and Spec"},
+		"answering a smell":       {"either fix the code or reply in the pull request why it is not a flaw here"},
+		"a larger size":           {"the size turned out larger"},
+		"brief PR prose":          {"keep the prose brief", "domain language from `GLOSSARY.md`"},
 	},
 	"reviewer": {
 		"two axes":                   {"**Standards**", "**Spec**", "Quote the line of the ticket"},
@@ -47,12 +50,16 @@ var roleRules = map[string]map[string][]string{
 		"smells are judgement calls": {"judgement call"},
 		"one line per axis":          {"one line per axis"},
 		"structured report":          {"istari review submit"},
+		"hard vs judgement":          {"Distinguish hard violations of a documented standard from judgement calls"},
+		"smells defined":             {"a method that reaches into another object's data more than its own", "the same few fields or parameters keep travelling together"},
+		"next round":                 {"In the next round", "accept the explanation or insist"},
+		"conflict resolution only":   {"check only the conflict resolution"},
 	},
 }
 
 func TestTheBuiltInInstructionsCarryTheRulesOfTheSpec(t *testing.T) {
 	for role, rules := range roleRules {
-		text, err := pipeline.Instruction(role, "")
+		text, err := skill.Instruction(role, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", role, err)
 		}
@@ -74,13 +81,14 @@ func TestARoleFileInTheRepositoryReplacesTheBuiltInOne(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".istari", "roles", "planner.md"), []byte("# Our planner\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if text, err := pipeline.Instruction("planner", dir); err != nil || text != "# Our planner\n" {
+	read := func(path string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, path)) }
+	if text, err := skill.Instruction("planner", read); err != nil || text != "# Our planner\n" {
 		t.Fatalf("planner = %q, %v; want the repository's file", text, err)
 	}
-	if text, _ := pipeline.Instruction("reviewer", dir); !strings.Contains(text, "two independent passes") {
+	if text, _ := skill.Instruction("reviewer", read); !strings.Contains(text, "two independent passes") {
 		t.Fatal("a role without a file of its own lost its built-in instruction")
 	}
-	if _, err := pipeline.Instruction("wizard", dir); err == nil {
+	if _, err := skill.Instruction("wizard", read); err == nil {
 		t.Fatal("an unknown role has an instruction")
 	}
 }

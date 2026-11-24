@@ -13,11 +13,10 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
-	"github.com/sbraznikov/istari/internal/pipeline"
-	"github.com/sbraznikov/istari/internal/project"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/skill"
 )
 
 // Defaults of the runner.
@@ -93,7 +92,7 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 		opts.TranscriptMax = DefaultTranscriptMax
 	}
 	if opts.Skill == "" {
-		opts.Skill = project.Skill()
+		opts.Skill = skill.Skill()
 	}
 	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
 }
@@ -213,7 +212,13 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
 	}
-	instructions, err := pipeline.Instruction(slot.Role, run.Dir)
+	// The instruction comes from the main branch: the ticket's own branch
+	// must not rewrite the instructions of the roles that check it.
+	var mainFile skill.ReadFile
+	if ref, err := tickets.ParseRef(task.Ticket); err == nil {
+		mainFile = func(path string) ([]byte, error) { return r.ws.MainFile(bg, ref.Repo, path) }
+	}
+	instructions, err := skill.Instruction(slot.Role, mainFile)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, err.Error())
 		fail(err.Error())
