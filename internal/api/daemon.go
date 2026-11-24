@@ -41,6 +41,9 @@ type DaemonOptions struct {
 	Standards    tickets.Standards // nil: no admission
 	SyncInterval time.Duration     // 0: tickets.DefaultSyncInterval
 	GitServer    string            // where repositories are cloned from; "": https://github.com
+	// Runner's slots turn the runner on; its data dir and socket are the
+	// daemon's.
+	Runner runner.RunnerOptions
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -73,13 +76,17 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	defer os.Remove(socket)
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
-		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}})
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket)})
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)
 	go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
 	background.Add(1)
 	go func() { defer background.Done(); srv.RunWorkspaces(bgCtx) }()
+	if srv.Runner() != nil {
+		background.Add(1)
+		go func() { defer background.Done(); srv.Runner().Run(bgCtx) }()
+	}
 	if srv.Syncer() != nil {
 		background.Add(1)
 		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval) }()
@@ -101,6 +108,11 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+func runnerOptions(o runner.RunnerOptions, dataDir, socket string) runner.RunnerOptions {
+	o.DataDir, o.Socket = dataDir, socket
+	return o
 }
 
 // lock takes an exclusive, non-blocking flock on path. The kernel releases it

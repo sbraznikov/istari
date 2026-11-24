@@ -17,11 +17,12 @@ import (
 var ctx = context.Background()
 
 type wsFixture struct {
-	root    string // holds the remotes
-	data    string
-	store   *store.SQLite
-	tickets *core.Tickets
-	ws      *runner.Workspaces
+	root     string // holds the remotes
+	storeDir string // holds istari.db
+	data     string
+	store    *store.SQLite
+	tickets  *core.Tickets
+	ws       *runner.Workspaces
 }
 
 // newWorkspaces serves acme/web from a local bare repository with one
@@ -39,7 +40,8 @@ func newWorkspaces(t *testing.T) *wsFixture {
 	gitIn(t, seed, "add", ".")
 	gitIn(t, seed, "commit", "-q", "-m", "initial")
 	gitIn(t, seed, "push", "-q", "origin", "main")
-	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	storeDir := t.TempDir()
+	s, err := store.Open(filepath.Join(storeDir, "istari.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,7 @@ func newWorkspaces(t *testing.T) *wsFixture {
 		Remote:  func(repo string) string { return "file://" + filepath.Join(root, "remotes", repo+".git") },
 		Clock:   clock,
 	})
-	return &wsFixture{root: root, data: data, store: s, tickets: core.NewTickets(s, core.TicketOptions{Clock: clock}), ws: ws}
+	return &wsFixture{root: root, storeDir: storeDir, data: data, store: s, tickets: core.NewTickets(s, core.TicketOptions{Clock: clock}), ws: ws}
 }
 
 func (f *wsFixture) ticket(t *testing.T, n int, title string) core.Ticket {
