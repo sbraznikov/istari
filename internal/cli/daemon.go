@@ -56,6 +56,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				}
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
+			daemonOpts.Defaults = cfg.Defaults
 			return api.RunDaemon(ctx, daemonOpts)
 		},
 	}

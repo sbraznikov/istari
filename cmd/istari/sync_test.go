@@ -106,12 +106,21 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	if out, stderr, code := istariEnv(t, t.TempDir(), config, asAlex, "ticket", "ready", ref); code != 0 {
 		t.Fatalf("ticket ready as alex: exit %d %s %s", code, out, stderr)
 	}
-	d.mustCLI(t, &tk, "ticket", "show", ref)
-	if tk.State != "ready" {
-		t.Fatalf("after ticket ready the ticket is %s", tk.State)
+	// Admitted by alex; the pipeline may start it at once (T3).
+	var events []struct {
+		Actor   string
+		Payload struct{ Trigger, To string }
 	}
-	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
-		t.Fatalf("issue labels = %v, want [istari:ready]", labels)
+	d.mustCLI(t, &events, "tail", "--ticket", ref, "--type", "ticket.transitioned")
+	admitted := false
+	for _, e := range events {
+		admitted = admitted || e.Payload.Trigger == "accept" && e.Actor == "human:alex" && e.Payload.To == "ready"
+	}
+	if !admitted {
+		t.Fatalf("transitions = %+v, want accept by human:alex", events)
+	}
+	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] == "istari:new" {
+		t.Fatalf("issue labels = %v, want one state label past new", labels)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
@@ -44,6 +45,8 @@ type DaemonOptions struct {
 	// Runner's slots turn the runner on; its data dir and socket are the
 	// daemon's.
 	Runner runner.RunnerOptions
+	// Defaults are the installation's pipeline defaults.
+	Defaults config.Defaults
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -76,7 +79,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	defer os.Remove(socket)
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
-		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket)})
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults})
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)

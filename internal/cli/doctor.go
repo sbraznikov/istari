@@ -2,12 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/pipeline"
+	"github.com/sbraznikov/istari/internal/project"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 )
@@ -44,6 +48,13 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				}
 				checks = append(checks, c)
 			}
+			// The pipeline of the repository the command runs in (spec 12).
+			if c, ok := pipelineCheck(); ok {
+				if !c.OK {
+					failed++
+				}
+				checks = append(checks, check(c))
+			}
 			// Worktrees without a ticket or of a finished ticket (spec 7.2),
 			// as the running daemon sees them.
 			var orphans []runner.Workspace
@@ -76,4 +87,36 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+type doctorCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// pipelineCheck validates .istari/pipeline.toml of the repository of the
+// working directory; ok is false when there is none.
+func pipelineCheck() (doctorCheck, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	root, err := project.Root(dir)
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(pipeline.Path)))
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	c := doctorCheck{Name: "pipeline " + pipeline.Path, OK: true}
+	p, err := pipeline.Parse(data)
+	if err == nil {
+		err = p.Validate()
+	}
+	if err != nil {
+		c.OK, c.Detail = false, err.Error()
+	}
+	return c, true
 }
