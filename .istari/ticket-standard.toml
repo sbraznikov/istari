@@ -1,0 +1,13 @@
+# The schema of a ticket that code checks (istari spec section 4.5).
+
+# Sections every ticket has, in this order.
+sections = ["Context", "What needs to be done", "Acceptance criteria", "Out of scope", "Dependencies"]
+
+types      = ["feature", "bug", "chore", "epic"]
+sizes      = ["XS", "S", "M", "L", "XL"]
+priorities = ["P0", "P1", "P2", "P3"]
+
+# The repository a ticket belongs to (owner/repo), and how it names the
+# tickets it needs: "- Needs: #12, gh:acme/component#57" under Dependencies.
+repository   = true
+dependencies = "Needs"
