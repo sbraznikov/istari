@@ -119,8 +119,8 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	if !admitted {
 		t.Fatalf("transitions = %+v, want accept by human:alex", events)
 	}
-	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] == "istari:new" {
-		t.Fatalf("issue labels = %v, want one state label past new", labels)
+	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
+		t.Fatalf("issue labels = %v, want [istari:ready]: the admission is written at once", labels)
 	}
 }
 

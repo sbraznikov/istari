@@ -45,8 +45,9 @@ type Engine struct {
 }
 
 type cached struct {
-	p  Pipeline
-	at time.Time
+	p   Pipeline
+	err error
+	at  time.Time
 }
 
 // NewEngine returns an engine.
@@ -69,8 +70,26 @@ func (e *Engine) Load(ctx context.Context, repo string) (Pipeline, error) {
 	c, ok := e.cache[repo]
 	e.mu.Unlock()
 	if ok && e.opts.Clock().Sub(c.at) < e.opts.CacheFor {
-		return c.p, nil
+		return c.p, c.err
 	}
+	p, err := e.read(ctx, repo)
+	var fetch *fetchError
+	if errors.As(err, &fetch) {
+		return Pipeline{}, err // the tracker failed: ask again next time
+	}
+	e.mu.Lock()
+	e.cache[repo] = cached{p: p, err: err, at: e.opts.Clock()}
+	e.mu.Unlock()
+	return p, err
+}
+
+type fetchError struct{ err error }
+
+func (f *fetchError) Error() string { return f.err.Error() }
+func (f *fetchError) Unwrap() error { return f.err }
+
+// read reads and validates a repository's pipeline.
+func (e *Engine) read(ctx context.Context, repo string) (Pipeline, error) {
 	p := Default()
 	if e.opts.Files != nil {
 		data, err := e.opts.Files.ReadFile(ctx, repo, Path)
@@ -80,15 +99,12 @@ func (e *Engine) Load(ctx context.Context, repo string) (Pipeline, error) {
 				return Pipeline{}, fmt.Errorf("%s: %w", repo, err)
 			}
 		case !errors.Is(err, tickets.ErrNotFound):
-			return Pipeline{}, err
+			return Pipeline{}, &fetchError{err}
 		}
 	}
 	if err := p.Validate(); err != nil {
 		return Pipeline{}, fmt.Errorf("%s: %w", repo, err)
 	}
-	e.mu.Lock()
-	e.cache[repo] = cached{p: p, at: e.opts.Clock()}
-	e.mu.Unlock()
 	return p, nil
 }
 
@@ -131,17 +147,23 @@ func parseID(id string) (round int, stage string) {
 	return round, stage
 }
 
-// round is a ticket's tasks of its latest round, by stage.
+// round is a ticket's tasks of its latest round, by stage; others counts its
+// tasks that the engine did not make.
 type round struct {
-	n     int
-	tasks map[string]core.Task
+	n      int
+	tasks  map[string]core.Task
+	others int
 }
 
 func roundOf(ref string, all []core.Task) round {
 	r := round{tasks: map[string]core.Task{}}
 	prefix := ticketPrefix(ref) + "_"
 	for _, t := range all {
-		if t.Ticket != ref || !strings.HasPrefix(t.ID, prefix) {
+		if t.Ticket != ref {
+			continue
+		}
+		if !strings.HasPrefix(t.ID, prefix) {
+			r.others++
 			continue
 		}
 		n, stage := parseID(t.ID)
@@ -155,8 +177,12 @@ func roundOf(ref string, all []core.Task) round {
 	return r
 }
 
-// done tells whether every one of the stages that the round has is completed.
+// done tells whether the engine's round exists and every one of the stages
+// it has is completed. A ticket without the engine's tasks is not moved on.
 func (r round) done(stages ...string) bool {
+	if r.n == 0 {
+		return false
+	}
 	for _, s := range stages {
 		if t, ok := r.tasks[s]; ok && t.State != core.TaskCompleted {
 			return false
@@ -192,13 +218,24 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	switch tk.State {
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
-		// ticket its worktree and its planner task (spec section 4.1).
+		// ticket its worktree and its planner task (spec section 4.1). A
+		// ticket whose pipeline is invalid does not start.
+		ref, err := tickets.ParseRef(tk.Ref)
+		if err != nil {
+			return err
+		}
+		if _, err := e.Load(ctx, ref.Repo); err != nil {
+			return err
+		}
 		if err := fire("start"); err != nil {
 			return err
 		}
 		tk.State = core.TicketPlanning
 		return e.reconcile(ctx, tk, all)
 	case core.TicketPlanning:
+		if r.n == 0 && r.others > 0 {
+			return nil // someone made this ticket's tasks by hand: they are theirs
+		}
 		if r.n == 0 {
 			if err := e.expand(ctx, tk, 1, nil); err != nil {
 				return err
@@ -253,14 +290,13 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(Ta
 				needs = append(needs, taskID(tk.Ref, n, need))
 			}
 		}
-		_, err := e.tasks.Create(ctx, e.opts.Actor, core.NewTask{
-			ID: taskID(tk.Ref, n, spec.Stage), Ticket: tk.Ref, Project: tk.Project, Role: spec.Role, Needs: needs, MaxAttempts: s.MaxAttempts,
-		})
-		var ce *core.Error
-		if errors.As(err, &ce) && ce.Code == core.CodeInvalidTask && strings.Contains(ce.Message, "already exists") {
+		id := taskID(tk.Ref, n, spec.Stage)
+		if _, err := e.tasks.Get(ctx, id); err == nil {
 			continue // an earlier reconcile made it
 		}
-		if err != nil {
+		if _, err := e.tasks.Create(ctx, e.opts.Actor, core.NewTask{
+			ID: id, Ticket: tk.Ref, Project: tk.Project, Role: spec.Role, Needs: needs, MaxAttempts: s.MaxAttempts,
+		}); err != nil {
 			return err
 		}
 	}

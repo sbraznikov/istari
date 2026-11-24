@@ -219,3 +219,62 @@ func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
 		}
 	}
 }
+
+func TestATicketWithoutTheEnginesTasksIsNotMovedOn(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	for _, tr := range []string{"start", "plan_accepted", "pr_ready"} {
+		if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("a ticket in review with no review task went on to %s", st)
+	}
+	// A ticket in planning with tasks someone made by hand is theirs.
+	other := "gh:acme/web#2"
+	f.readyTicket(t, other)
+	if _, err := f.tickets.Fire(ctx, "system", other, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: other, Project: "web", Role: "planner"}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	all, _ := f.tasks.List(ctx)
+	n := 0
+	for _, task := range all {
+		if task.Ticket == other {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%s has %d tasks, want only the hand-made one", other, n)
+	}
+}
+
+func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"x\"\nrole = \"wizard\"\n"})
+	f.readyTicket(t, ref)
+	all, _ := f.tickets.List(ctx)
+	if err := f.engine.Reconcile(ctx, all); err == nil || !strings.Contains(err.Error(), "wizard") {
+		t.Fatalf("Reconcile = %v, want the pipeline's error", err)
+	}
+	if st := f.state(t, ref); st != core.TicketReady {
+		t.Fatalf("the ticket is %s, want ready: its pipeline is invalid", st)
+	}
+}
+
+func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
+	// The scaffolded file: approve names no needs.
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	if approve := f.stage(t, ref, "approve"); approve.State != core.TaskWaiting || len(approve.Needs) != 1 || pipeline.StageOf(core.Task{ID: approve.Needs[0]}) != "review" {
+		t.Fatalf("approve = %+v, want waiting for review", approve)
+	}
+	if approve := f.stage(t, ref, "approve"); approve.Role == pipeline.RoleHuman {
+		t.Fatal("a GitHub review approval is a gate for istari gate approve")
+	}
+}

@@ -38,7 +38,7 @@ func TestTheDefaultPipelineHasTheSevenStagesOfTheSpec(t *testing.T) {
 		{"implement", "implementer", []string{"plan"}},
 		{"verify", "verify", []string{"implement"}},
 		{"review", "reviewer", []string{"implement", "verify"}},
-		{"approve", pipeline.RoleHuman, []string{"review"}},
+		{"approve", pipeline.RoleGitHubReview, []string{"review"}},
 		{"merge", "merge", []string{"approve"}},
 	}
 	if !reflect.DeepEqual(got, want) {

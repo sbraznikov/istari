@@ -29,6 +29,9 @@ const (
 	RoleHuman  = "human"  // a person approves: a gate
 	RoleVerify = "verify" // code waits for the checks
 	RoleMerge  = "merge"  // code merges
+	// RoleGitHubReview is a human approval given as a GitHub review (spec
+	// section 4.3): not a gate of istari gate approve.
+	RoleGitHubReview = "github_review"
 )
 
 // AgentRoles are the roles agents run (spec section 7.1).
@@ -39,7 +42,7 @@ type Stage struct {
 	Name      string   `toml:"name"`
 	Role      string   `toml:"role"`
 	Kind      string   `toml:"kind"` // "" (an agent's), human, verify or merge
-	Needs     []string `toml:"needs"`
+	Needs     []string `toml:"-"`
 	Harness   string   `toml:"harness"`
 	Gate      *bool    `toml:"gate"` // plan stage: overrides plan_gate
 	Via       string   `toml:"via"`
@@ -85,6 +88,20 @@ func Default() Pipeline {
 // order; the code stages verify and merge are added when it does not list
 // them: verify after implement, merge after the last stage.
 func Parse(data []byte) (Pipeline, error) {
+	// A stage that names no needs follows the stage before it; needs = []
+	// runs it in parallel (spec section 4.3: stages can be made parallel).
+	var raw struct {
+		Stages []struct {
+			Needs *[]string `toml:"needs"`
+		} `toml:"stage"`
+	}
+	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&raw); err != nil {
+		var perr toml.ParseError
+		if errors.As(err, &perr) {
+			return Pipeline{}, fmt.Errorf("%s line %d: %s", Path, perr.Position.Line, perr.Message)
+		}
+		return Pipeline{}, fmt.Errorf("%s: %w", Path, err)
+	}
 	var p Pipeline
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&p); err != nil {
 		var perr toml.ParseError
@@ -93,9 +110,17 @@ func Parse(data []byte) (Pipeline, error) {
 		}
 		return Pipeline{}, fmt.Errorf("%s: %w", Path, err)
 	}
+	for i := range p.Stages {
+		switch {
+		case raw.Stages[i].Needs != nil:
+			p.Stages[i].Needs = *raw.Stages[i].Needs
+		case i > 0:
+			p.Stages[i].Needs = []string{p.Stages[i-1].Name}
+		}
+	}
 	headers := 0
 	for i, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "[[stage]]" && headers < len(p.Stages) {
+		if strings.HasPrefix(strings.TrimSpace(line), "[[stage]]") && headers < len(p.Stages) {
 			p.Stages[headers].line = i + 1
 			headers++
 		}
@@ -128,7 +153,10 @@ func (s Stage) at() string {
 
 // role is the role of the stage's task.
 func (s Stage) role() string {
-	if s.Kind != "" {
+	switch {
+	case s.Kind == RoleHuman && s.Via == "github_review":
+		return RoleGitHubReview
+	case s.Kind != "":
 		return s.Kind
 	}
 	return s.Role
