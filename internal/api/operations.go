@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/tickets"
 )
 
 // Requests of the operations. Actor names who acts: on the local socket the
@@ -62,6 +64,10 @@ type (
 		Op      string          `json:"op"`
 		Request json.RawMessage `json:"request"`
 	}
+	TicketReadyRequest struct {
+		Actor string `json:"actor"`
+		Ref   string `json:"ref"`
+	}
 	Empty struct{}
 )
 
@@ -81,6 +87,7 @@ func (r *LeaseRequest) validate() error        { return needActor(r.Lease.Owner)
 func (r *TicketCreateRequest) validate() error { return needActor(r.Actor) }
 func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
+func (r *TicketReadyRequest) validate() error  { return needActor(r.Actor) }
 func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
@@ -165,6 +172,21 @@ func (s *Server) operations() map[string]operation {
 		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
 		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {
 			return ok(t.Resume(ctx, r.Actor, r.Project))
+		}),
+		// ticket.ready admits a ticket by hand (spec 4.5): the actor must be
+		// human:<tracker login> of a trusted member.
+		"ticket.ready": write(ticketAgain, func(ctx context.Context, r TicketReadyRequest) (any, error) {
+			if s.syncer == nil {
+				return nil, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker"}
+			}
+			login, ok := strings.CutPrefix(r.Actor, "human:")
+			if !ok || login == "" {
+				return nil, &core.Error{Code: tickets.CodeNotTrusted, Message: "admission needs a human actor: human:<tracker login>"}
+			}
+			if err := s.syncer.Ready(ctx, login, r.Ref); err != nil {
+				return nil, err
+			}
+			return k.Get(ctx, r.Ref)
 		}),
 		// sync.run polls the tracker now. It writes, but a repeat is harmless,
 		// so it takes no idempotency key.

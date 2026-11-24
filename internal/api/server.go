@@ -53,6 +53,8 @@ type ServerOptions struct {
 	// Tracker and Repos turn on the ticket sync; without a tracker there is none.
 	Tracker tickets.SyncProvider
 	Repos   []tickets.SyncRepo
+	// Standards turns on admission and the re-check on edit.
+	Standards tickets.Standards
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -74,7 +76,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock})
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards})
 	}
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {

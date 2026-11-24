@@ -54,6 +54,7 @@ var (
 	_ tickets.Provider = (*Provider)(nil)
 	_ tickets.History  = (*Provider)(nil)
 	_ tickets.Access   = (*Provider)(nil)
+	_ tickets.Files    = (*Provider)(nil)
 )
 
 // ownMark ends every comment istari writes, so that reading comments back
@@ -79,6 +80,18 @@ func FromEnvironment(ctx context.Context) (*Provider, error) {
 		return nil, errors.New("github: `gh auth token` printed no token; run `gh auth login`")
 	}
 	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+}
+
+// Login returns the GitHub login of the GitHub CLI's user (`gh api user`).
+func Login(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login").Output()
+	login := strings.TrimSpace(string(out))
+	if err != nil || login == "" {
+		return "", fmt.Errorf("github: no login from `gh api user` (run `gh auth login`, or pass --actor human:<login>): %v", err)
+	}
+	return login, nil
 }
 
 // requestTimeout bounds one API request of the default client.
@@ -409,6 +422,33 @@ func (p *Provider) LastActor(ctx context.Context, ref tickets.Ref, kind, label s
 		path = next
 	}
 	return actor, nil
+}
+
+// ReadFile implements tickets.Files with the contents API's raw media type.
+func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, error) {
+	if err := checkRepo(repo); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.raw+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	res, err := p.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github: read %s in %s: %w", path, repo, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(data))})
+	}
+	return data, nil
 }
 
 // CanWrite implements tickets.Access: admin, maintain and write may.

@@ -14,6 +14,7 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 var ctx = context.Background()
@@ -26,7 +27,9 @@ type syncFixture struct {
 	adapter *github.Provider
 }
 
-func newSync(t *testing.T) *syncFixture {
+// newSync syncs acme/web; trusted is its project's trusted list (empty:
+// whoever can write).
+func newSync(t *testing.T, trusted ...string) *syncFixture {
 	t.Helper()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
@@ -37,7 +40,7 @@ func newSync(t *testing.T) *syncFixture {
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	k := core.NewTickets(s, core.TicketOptions{Clock: clock})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
-	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Clock: clock})
+	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}})
 	return &syncFixture{gh: gh, store: s, tickets: k, sync: syncer, adapter: adapter}
 }
 
@@ -143,7 +146,7 @@ func TestIstarisOwnWritesDoNotCauseASecondTransition(t *testing.T) {
 
 func TestALegalLabelChangeByAnAuthorizedUserTransitionsTheTicket(t *testing.T) {
 	f := newSync(t)
-	n := f.gh.Seed("t", "", "bob")
+	n := f.gh.Seed("t", conforming, "bob")
 	f.run(t)
 	f.gh.SetPermission("bob", "write")
 	f.gh.HumanSetLabels(n, "bob", "istari:ready")
@@ -203,7 +206,7 @@ func TestAnIllegalOrUnauthorizedLabelChangeIsRevertedWithAReason(t *testing.T) {
 
 func TestAChangeMissedByOnePollIsRepairedByTheNext(t *testing.T) {
 	f := newSync(t)
-	n := f.gh.Seed("t", "", "alex")
+	n := f.gh.Seed("t", conforming, "carol") // carol may not write, so she is not trusted
 	f.run(t)
 	f.gh.HumanSetLabels(n, "alex", "istari:ready")
 	f.gh.FailNext(1)
@@ -261,7 +264,7 @@ func TestClosingAndReopeningAnIssueRequestCancelAndReopen(t *testing.T) {
 
 func TestAnIssueFirstSeenWithAStateLabelIsARequestToo(t *testing.T) {
 	f := newSync(t)
-	n := f.gh.Seed("t", "", "alex", "istari:ready") // alex is an admin
+	n := f.gh.Seed("t", conforming, "alex", "istari:ready") // alex is an admin
 	f.run(t)
 	if tk := f.ticket(t, n); tk.State != core.TicketReady {
 		t.Fatalf("state = %s, want ready", tk.State)
@@ -273,7 +276,7 @@ func TestAnIssueFirstSeenWithAStateLabelIsARequestToo(t *testing.T) {
 
 func TestAStateLabelAddedNextToTheOldOneIsSeen(t *testing.T) {
 	f := newSync(t)
-	n := f.gh.Seed("t", "", "bob")
+	n := f.gh.Seed("t", conforming, "bob")
 	f.run(t)
 	f.gh.SetPermission("bob", "write")
 	f.gh.HumanAddLabel(n, "bob", "istari:ready") // istari:new stays on the issue
@@ -288,7 +291,7 @@ func TestAStateLabelAddedNextToTheOldOneIsSeen(t *testing.T) {
 
 func TestOnlyTransitionsAHumanMayStartAreApplied(t *testing.T) {
 	f := newSync(t)
-	n := f.gh.Seed("t", "", "alex") // alex administers the repository
+	n := f.gh.Seed("t", conforming, "alex") // alex administers the repository
 	f.run(t)
 	f.gh.HumanSetLabels(n, "alex", "istari:ready")
 	f.run(t)
@@ -362,3 +365,8 @@ func TestAChangeByAnUnknownAuthorSaysSo(t *testing.T) {
 		t.Fatalf("comments = %+v, want one that says the author is unknown", comments)
 	}
 }
+
+// conforming is a ticket body that meets the default standard for acme/web.
+const conforming = "## Context\n\nLimits protect the API.\n\n## What needs to be done\n\n- Add a limiter.\n\n" +
+	"## Acceptance criteria\n\n- [ ] A burst is refused.\n\n## Out of scope\n\n- Per-user limits.\n\n" +
+	"## Dependencies\n\n- Needs: none\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"

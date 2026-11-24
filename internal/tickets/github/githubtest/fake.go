@@ -42,6 +42,7 @@ type Server struct {
 	deleted    map[int]bool
 	dropLabels bool
 	failNext   int
+	files      map[string]string // repository files on the default branch
 }
 
 // Label is a repository label.
@@ -88,7 +89,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	s := &Server{Token: "test-token", TokenUser: "alex", now: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC),
 		labels: map[string]Label{"bug": {Name: "bug", Color: "d73a4a"}}, issues: map[int]*Issue{}, nextID: 1000,
 		subIssues: map[int][]int64{}, perms: map[string]string{"alex": "admin"}, pageSize: 100,
-		moved: map[int]bool{}, deleted: map[int]bool{}}
+		moved: map[int]bool{}, deleted: map[int]bool{}, files: map[string]string{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -106,6 +107,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/labels/{name}", s.getLabel)
 	mux.HandleFunc("POST "+repo+"/labels", s.createLabel)
 	mux.HandleFunc("GET "+repo+"/collaborators/{user}/permission", s.permission)
+	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+s.Token {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
@@ -418,6 +420,35 @@ func (s *Server) permission(w http.ResponseWriter, r *http.Request) {
 		perm = "read" // anyone may read a public repository
 	}
 	s.write(w, http.StatusOK, map[string]any{"permission": perm, "user": map[string]string{"login": user}})
+}
+
+func (s *Server) contents(w http.ResponseWriter, r *http.Request) {
+	body, ok := s.files[r.PathValue("path")]
+	if !ok {
+		s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		return
+	}
+	if r.Header.Get("Accept") != "application/vnd.github.raw+json" {
+		s.write(w, http.StatusNotAcceptable, map[string]string{"message": "ask for the raw media type"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(body))
+}
+
+// SetFile puts a file on the repository's default branch.
+func (s *Server) SetFile(path, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.files[path] = body
+}
+
+// HumanEditBody replaces an issue's body as login would.
+func (s *Server) HumanEditBody(n int, login, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[n].Body = body
+	s.issues[n].Updated = s.tick()
 }
 
 // Seed adds an issue as a human would have created it, creating its labels.

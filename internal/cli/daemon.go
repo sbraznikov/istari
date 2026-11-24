@@ -20,6 +20,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
@@ -47,6 +48,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 					log.Printf("istari: ticket sync is off: %v", err)
 				} else {
 					daemonOpts.Tracker = tracker
+					daemonOpts.Standards = standard.ForTracker{Tracker: tracker, DefaultPriority: cfg.Defaults.Priority}
 				}
 			}
 			return api.RunDaemon(ctx, daemonOpts)
@@ -64,11 +66,8 @@ func syncRepos(cfg *config.Config) []tickets.SyncRepo {
 		if p.Tickets.Provider != "" && p.Tickets.Provider != "github" {
 			continue
 		}
-		if p.Repo != "" {
-			repos = append(repos, tickets.SyncRepo{Repo: p.Repo, Project: p.Name})
-		}
-		for _, r := range p.Repos {
-			repos = append(repos, tickets.SyncRepo{Repo: r.Repo, Project: p.Name})
+		for _, r := range p.RepoList() {
+			repos = append(repos, tickets.SyncRepo{Repo: r.Repo, Project: p.Name, Trusted: p.Trusted})
 		}
 	}
 	return repos
