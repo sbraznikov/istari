@@ -132,7 +132,10 @@ func (s *Server) accessToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Title, Body, Head, Base string }
+	var req struct {
+		Title, Body, Head, Base string
+		Draft                   bool
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 	for _, i := range s.issues {
 		if i.PullRequest && i.Branch == req.Head && i.State == "open" {
@@ -141,7 +144,7 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	i := s.add(req.Title, req.Body, s.TokenUser)
-	i.PullRequest, i.Branch, i.Base = true, req.Head, req.Base
+	i.PullRequest, i.Branch, i.Base, i.Draft = true, req.Head, req.Base, req.Draft
 	s.write(w, http.StatusCreated, s.pullJSON(i))
 }
 

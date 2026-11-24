@@ -34,6 +34,9 @@ type EngineOptions struct {
 	// "the plan is published in the ticket"); nil: the plan task's
 	// completion is enough.
 	HasPlan func(ctx context.Context, ref string) (bool, error)
+	// Checks tells the CI state of a ticket's pull request (pending, success
+	// or failure); ok is false while it has none. nil: CI is not watched.
+	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -330,6 +333,11 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			return fire("plan_accepted") // T4
 		}
 	case core.TicketInProgress:
+		if e.opts.Checks != nil && len(tk.Children) == 0 {
+			if state, ok := e.opts.Checks(ctx, tk.Ref); ok {
+				return e.verify(ctx, tk, r, state)
+			}
+		}
 		if len(tk.Children) > 0 {
 			for _, c := range tk.Children {
 				switch e.state(ctx, c) {
@@ -360,6 +368,37 @@ const waitingDependency = "waiting_dependency"
 
 // maxRefines bounds how often a ticket below the standard is refined.
 const maxRefines = 3
+
+// verify follows CI once the implementer is done (spec 4.3, stage verify):
+// green completes the verify task and fires T6; red starts a rework round.
+func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state string) error {
+	v, ok := r.tasks[StageVerify]
+	if !ok || v.State != core.TaskReady { // the implementer is not done, or it was handled
+		return nil
+	}
+	switch state {
+	case "success":
+		lease, err := e.tasks.Claim(ctx, e.opts.Actor, v.ID)
+		if err != nil {
+			return err
+		}
+		if err := e.tasks.Complete(ctx, lease); err != nil {
+			return err
+		}
+		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
+		return err
+	case "failure":
+		// The red CI is handled once: the next round's verify waits for its
+		// implementer, and a round that leaves CI red counts toward
+		// max_review_rounds.
+		err := e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
+		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
+			return nil // the ticket is held for a human
+		}
+		return err
+	}
+	return nil
+}
 
 // tooLarge tells whether a ticket is larger than its pipeline's max_size.
 func (e *Engine) tooLarge(ctx context.Context, tk core.Ticket) (bool, error) {

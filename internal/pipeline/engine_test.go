@@ -464,3 +464,59 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 		t.Fatalf("a parent with a canceled child has hold %q, want waiting_dependency", tk.Hold)
 	}
 }
+
+func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
+	ci := map[string]string{}
+	checks := func(_ context.Context, ref string) (string, bool) { s, ok := ci[ref]; return s, ok }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1") // it opened the pull request
+	ci[ref] = "pending"
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with CI pending the ticket is %s, want in_progress", st)
+	}
+	ci[ref] = "failure"
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("after red CI implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+	f.reconcile(t) // the red commit is handled: round 2 is not done yet
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("one red commit started round %d", pipeline.RoundOf(impl))
+	}
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	ci[ref] = "success"
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("with CI green the ticket is %s, want in_review (T6)", st)
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskCompleted {
+		t.Fatalf("verify is %s, want completed by green CI", v.State)
+	}
+}
+
+func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
+	checks := func(context.Context, string) (string, bool) { return "failure", true }
+	f := newEngine(t, config.Defaults{MaxReviewRounds: 2}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: config.Defaults{MaxReviewRounds: 2}, Checks: checks})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t) // red: round 2
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t) // still red after round 2: the rounds are used up
+	tk, err := f.tickets.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Hold != "attempts_exhausted" {
+		t.Fatalf("after two rounds with CI red the ticket is %s, hold %q", tk.State, tk.Hold)
+	}
+}

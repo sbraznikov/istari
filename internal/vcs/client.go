@@ -38,6 +38,7 @@ func (c *Client) Tokens() Tokens { return c.tokens }
 // NewPullRequest is a pull request to open for a ticket.
 type NewPullRequest struct {
 	Repo, Ticket, Head, Base, Title, Body string
+	Draft                                 bool // opened as a draft, until review
 }
 
 // Opened is an opened pull request.
@@ -55,7 +56,7 @@ func (c *Client) OpenPullRequest(ctx context.Context, p NewPullRequest) (Opened,
 		return Opened{}, err
 	}
 	var pr Opened
-	err = c.do(ctx, p.Repo, http.MethodPost, "/repos/"+p.Repo+"/pulls", map[string]string{"title": p.Title, "body": linked(p, ref), "head": p.Head, "base": p.Base}, &pr)
+	err = c.do(ctx, p.Repo, http.MethodPost, "/repos/"+p.Repo+"/pulls", map[string]any{"title": p.Title, "body": linked(p, ref), "head": p.Head, "base": p.Base, "draft": p.Draft}, &pr)
 	return pr, err
 }
 

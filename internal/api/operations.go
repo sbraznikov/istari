@@ -78,6 +78,11 @@ type (
 		Actor string       `json:"actor"`
 		Plan  tickets.Plan `json:"plan"`
 	}
+	PROpenRequest struct {
+		Actor string `json:"actor"`
+		Title string `json:"title"`
+		Body  string `json:"body"` // Summary, Evidence, Merge Danger
+	}
 	PlanSubmitRequest struct {
 		Actor string `json:"actor"`
 		Plan  string `json:"plan"` // the YAML the planner wrote: code parses it
@@ -142,6 +147,7 @@ func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *CheckpointRequest) validate() error   { return needActor(r.Actor) }
 func (r *RefineSubmitRequest) validate() error { return needActor(r.Actor) }
 func (r *PlanSubmitRequest) validate() error   { return needActor(r.Actor) }
+func (r *PROpenRequest) validate() error       { return needActor(r.Actor) }
 func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
@@ -305,6 +311,24 @@ func (s *Server) operations() map[string]operation {
 		// there (spec sections 2.1 and 11): the implementer's run alone.
 		"vcs.push": write(okAgain, func(ctx context.Context, r PushRequest) (any, error) { return ok(s.push(ctx, r)) }),
 		"whoami":   read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
+		// pr.open is istari pr open (spec 7.7): the full checks run by code,
+		// the description checked, a draft linked to the ticket.
+		"pr.open": write(okAgain, func(ctx context.Context, r PROpenRequest) (any, error) {
+			run, isAgent := runOf(ctx)
+			switch {
+			case !isAgent:
+				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari pr open is for the implementer: it needs the run token in ISTARI_TOKEN"}
+			case run.Role != "implementer":
+				return nil, &core.Error{Code: CodeTokenForbidden, Message: "only the implementer opens a pull request, not the " + run.Role}
+			case s.prs == nil:
+				return nil, &core.Error{Code: core.CodeInvalidState, Message: "pull requests are off: istari has no GitHub access"}
+			}
+			pr, err := s.prs.Open(ctx, run, r.Title, r.Body)
+			if err != nil {
+				return nil, &core.Error{Code: core.CodeInvalidState, Message: err.Error()}
+			}
+			return pr, nil
+		}),
 		// plan.submit is istari plan submit (spec 4.9): code checks the plan
 		// against the repository and the ticket, records it, and splits.
 		"plan.submit": write(okAgain, func(ctx context.Context, r PlanSubmitRequest) (any, error) { return s.submitPlan(ctx, r) }),

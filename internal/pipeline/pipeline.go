@@ -225,6 +225,7 @@ func (p Pipeline) Validate() error {
 // pipeline: the repository's, else the installation's defaults.
 type Settings struct {
 	MaxSize         string // tickets larger than this are split before T4; "L" by default
+	SelfReview      bool   // the implementer reviews its own work before the pull request; true by default
 	PlanGate        bool
 	MaxReviewRounds int
 	MaxAttempts     int
@@ -232,7 +233,7 @@ type Settings struct {
 
 // Settings resolves the pipeline's values over the installation's defaults.
 func (p Pipeline) Settings(global config.Defaults) Settings {
-	s := Settings{MaxSize: "L", PlanGate: global.PlanGate, MaxReviewRounds: global.MaxReviewRounds, MaxAttempts: global.MaxAttempts}
+	s := Settings{MaxSize: "L", SelfReview: p.Limits.SelfReview == nil || *p.Limits.SelfReview, PlanGate: global.PlanGate, MaxReviewRounds: global.MaxReviewRounds, MaxAttempts: global.MaxAttempts}
 	if p.Limits.MaxSize != "" {
 		s.MaxSize = p.Limits.MaxSize
 	}

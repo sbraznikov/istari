@@ -56,6 +56,9 @@ type RunnerOptions struct {
 		Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, error)
 		List(ctx context.Context, q tickets.Query) ([]tickets.Ticket, error)
 	}
+	// SelfReview tells whether a repository's implementer reviews its own
+	// work (pipeline self_review); nil: it does.
+	SelfReview func(ctx context.Context, repo string) bool
 	// Checkpoints, when set, saves the work of a run stopped on its timeout,
 	// its budget or by a human (spec section 7.2, step 6).
 	Checkpoints *Checkpoints
@@ -102,6 +105,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
 }
+
+// SetSelfReview sets how the runner learns a repository's self_review.
+func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { r.opts.SelfReview = f }
 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
@@ -409,10 +415,13 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 
 // brief assembles the run's brief from the ticket and its journal.
 func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket) string {
-	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title}
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Brief(in)
+	}
+	if r.opts.SelfReview != nil {
+		in.SelfReview = r.opts.SelfReview(ctx, ref.Repo)
 	}
 	if r.opts.Tickets != nil {
 		if t, err := r.opts.Tickets.Get(ctx, ref); err == nil {

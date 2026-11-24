@@ -13,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 var runHeader = []string{"RUN", "STATE", "PROFILE", "TICKET", "TASK", "STARTED", "REASON"}
@@ -199,7 +200,25 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	})
 	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input")
 	plan.AddCommand(planSubmit)
-	return []*cobra.Command{whoami, complete, checkpoint, refine, plan}
+	pr := &cobra.Command{Use: "pr", Short: "For the implementer: open the pull request", Args: Args(cobra.NoArgs)}
+	var prTitle, prBody string
+	prOpen := writeCommand(opts, &cobra.Command{
+		Use: "open --title <title> --body-file <file|->", Short: "Run the full checks and open a draft pull request linked to the ticket", Args: Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		body, err := readFileOrStdin(cmd, prBody)
+		if err != nil {
+			return err
+		}
+		var opened vcs.Opened
+		if err := opts.call(cmd, "pr.open", key, api.PROpenRequest{Actor: opts.Actor, Title: prTitle, Body: string(body)}, &opened); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, opened, []string{"PR", "URL"}, [][]string{{fmt.Sprint(opened.Number), opened.URL}})
+	})
+	prOpen.Flags().StringVar(&prTitle, "title", "", "the pull request's title")
+	prOpen.Flags().StringVar(&prBody, "body-file", "", "the description: Summary, Evidence, Merge Danger; - reads standard input")
+	pr.AddCommand(prOpen)
+	return []*cobra.Command{whoami, complete, checkpoint, refine, plan, pr}
 }
 
 func budgetText(w api.Whoami) string {

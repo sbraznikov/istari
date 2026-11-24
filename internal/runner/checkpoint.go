@@ -135,14 +135,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		}
 	}
 
-	url, private := c.ws.PushTarget(ws.Repo)
-	var token string
-	if c.tokens != nil {
-		if token, err = c.tokens.Token(ctx, ws.Repo); err != nil {
-			return journal.Entry{}, err
-		}
-	}
-	if err := vcs.Push(ctx, vcs.PushSpec{Worktree: run.Dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token}); err != nil {
+	if err := c.push(ctx, ws, run.Dir); err != nil {
 		return journal.Entry{}, err
 	}
 	e := journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry}
@@ -150,6 +143,19 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		return journal.Entry{}, err
 	}
 	return e, nil
+}
+
+// push pushes a worktree's branch to the ticket's remote branch.
+func (c *Checkpoints) push(ctx context.Context, ws Workspace, dir string) error {
+	url, private := c.ws.PushTarget(ws.Repo)
+	var token string
+	if c.tokens != nil {
+		var err error
+		if token, err = c.tokens.Token(ctx, ws.Repo); err != nil {
+			return err
+		}
+	}
+	return vcs.Push(ctx, vcs.PushSpec{Worktree: dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token})
 }
 
 // previous returns the commit of the ticket's last checkpoint, or where its

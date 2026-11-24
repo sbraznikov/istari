@@ -52,6 +52,7 @@ type Server struct {
 	saves     *runner.Checkpoints
 	refines   *runner.Refines
 	plans     *runner.Plans
+	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
@@ -176,7 +177,26 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		entries, err := journal.New(nil, ns, nil).Stored(ctx, r)
 		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan})
+	var checks func(ctx context.Context, ref string) (string, bool)
+	if srv.watch != nil {
+		checks = func(ctx context.Context, ref string) (string, bool) {
+			pr, err := srv.watch.PullRequestOf(ctx, ref)
+			if err != nil || pr.Checks == "" {
+				return "", false
+			}
+			return pr.Checks, true
+		}
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks})
+	if srv.runner != nil {
+		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
+			s, err := srv.engine.SettingsOf(ctx, repo)
+			return err != nil || s.SelfReview
+		})
+	}
+	if srv.saves != nil && srv.vcs != nil {
+		srv.prs = runner.NewPullRequests(srv.saves, srv.vcs, srv.watch)
+	}
 	if srv.spaces != nil {
 		var jt journal.Tracker
 		if t, ok := opts.Tracker.(journal.Tracker); ok {
