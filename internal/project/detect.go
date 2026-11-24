@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -37,20 +39,26 @@ type Proposal struct {
 func (p Proposal) SoftAvailable() bool { return p.Link != LinkNone }
 
 // DetectLink looks at the manifests of two checked-out repositories of one
-// project, in both directions, and proposes how the added one is completed.
-// repo is the added repository's owner/repo.
-func DetectLink(primaryDir, addedDir, repo string) Proposal {
-	for _, try := range []struct{ from, to string }{{primaryDir, addedDir}, {addedDir, primaryDir}} {
-		if p, ok := linkFrom(try.from, try.to, repo); ok {
-			return p
-		}
+// project and proposes how the added one is completed (spec section 4.4).
+// When the primary consumes the added repository as a published version, the
+// added one is done when released. When it is the other way round, the link
+// is recorded but the added repository is done when merged: the primary is
+// the one that publishes.
+func DetectLink(primaryDir, addedDir, primaryRepo, addedRepo string) Proposal {
+	if p, ok := linkFrom(primaryDir, addedDir, addedRepo); ok {
+		return p
+	}
+	if p, ok := linkFrom(addedDir, primaryDir, primaryRepo); ok {
+		p.DoneWhen = "merged"
+		return p
 	}
 	return Proposal{Link: LinkNone, DoneWhen: "merged"}
 }
 
 // linkFrom finds a reference in the manifests of dir to the repository in
-// target. Local paths and submodules win over versions: they are what the
-// build actually uses.
+// target, whose owner/repo is repo. Local paths and submodules win over
+// versions: they are what the build actually uses. A reference without a
+// version (a git URL) is not a link of the table: it proposes none.
 func linkFrom(dir, target, repo string) (Proposal, bool) {
 	names := identities(target)
 	var found []Proposal
@@ -60,7 +68,7 @@ func linkFrom(dir, target, repo string) (Proposal, bool) {
 	if p, ok := submoduleLink(dir, repo); ok {
 		found = append(found, p)
 	}
-	for _, want := range []Link{LinkPath, LinkSubmodule, LinkPackage} {
+	for _, want := range []Link{LinkPath, LinkSubmodule, LinkPackage, LinkNone} {
 		for _, p := range found {
 			if p.Link == want {
 				return p, true
@@ -69,6 +77,15 @@ func linkFrom(dir, target, repo string) (Proposal, bool) {
 	}
 	return Proposal{}, false
 }
+
+var (
+	moduleRe  = regexp.MustCompile(`(?m)^module\s+(\S+)`)
+	pyNameRe  = regexp.MustCompile(`^[A-Za-z0-9._-]+`)
+	pySepRe   = regexp.MustCompile(`[-_.]+`)
+	npmGitRe  = regexp.MustCompile(`^(git\+|git:|github:|gitlab:|bitbucket:|https?:|[\w.-]+/[\w.-]+(#.*)?$)`)
+	remoteRe  = regexp.MustCompile(`^(?:[a-z][a-z0-9+.-]*://(?:[^@/]+@)?[^/]+/|[^@/\s]+@[^:/\s]+:)([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$`)
+	relRemote = regexp.MustCompile(`^\.\.?/(?:\.\./)*([A-Za-z0-9._-]+?)(?:\.git)?/?$`)
+)
 
 func proposal(link Link, evidence string) Proposal {
 	done := "merged"
@@ -86,7 +103,7 @@ type identity struct {
 func identities(dir string) identity {
 	var id identity
 	if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
-		if m := regexp.MustCompile(`(?m)^module\s+(\S+)`).FindSubmatch(data); m != nil {
+		if m := moduleRe.FindSubmatch(data); m != nil {
 			id.goModule = string(m[1])
 		}
 	}
@@ -104,7 +121,11 @@ func identities(dir string) identity {
 			}
 		}
 		if toml.Unmarshal(data, &py) == nil {
-			id.pyName = normalizePy(py.Project.Name + py.Tool.Poetry.Name)
+			name := py.Project.Name
+			if name == "" {
+				name = py.Tool.Poetry.Name
+			}
+			id.pyName = normalizePy(name)
 		}
 	}
 	return id
@@ -155,20 +176,38 @@ func npmLinks(dir string, id identity) []Proposal {
 		if !ok {
 			continue
 		}
+		where := fmt.Sprintf("package.json %s %s: %s", section, id.npmName, spec)
 		switch {
 		case strings.HasPrefix(spec, "file:"), strings.HasPrefix(spec, "link:"), strings.HasPrefix(spec, "workspace:"), isLocal(spec):
-			out = append(out, proposal(LinkPath, fmt.Sprintf("package.json %s %s: %s", section, id.npmName, spec)))
+			out = append(out, proposal(LinkPath, where))
+		case npmGitRe.MatchString(spec):
+			out = append(out, proposal(LinkNone, where+" has no version"))
 		default:
-			out = append(out, proposal(LinkPackage, fmt.Sprintf("package.json %s %s: %s", section, id.npmName, spec)))
+			out = append(out, proposal(LinkPackage, where))
 		}
 	}
 	return out
 }
 
-var pyNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+`)
-
 func normalizePy(name string) string {
-	return strings.ToLower(regexp.MustCompile(`[-_.]+`).ReplaceAllString(name, "-"))
+	return strings.ToLower(pySepRe.ReplaceAllString(name, "-"))
+}
+
+type pyproject struct {
+	Project struct {
+		Dependencies         []string
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+	}
+	DependencyGroups map[string][]any `toml:"dependency-groups"`
+	Tool             struct {
+		Poetry struct {
+			Dependencies map[string]any
+			Group        map[string]struct{ Dependencies map[string]any }
+		}
+		UV struct {
+			Sources map[string]any
+		} `toml:"uv"`
+	}
 }
 
 func pythonLinks(dir string, id identity) []Proposal {
@@ -179,39 +218,66 @@ func pythonLinks(dir string, id identity) []Proposal {
 	if err != nil {
 		return nil
 	}
-	var py struct {
-		Project struct {
-			Dependencies []string
-		}
-		Tool struct {
-			Poetry struct {
-				Dependencies map[string]any
-			}
-		}
-	}
+	var py pyproject
 	if toml.Unmarshal(data, &py) != nil {
 		return nil
 	}
 	var out []Proposal
-	for _, dep := range py.Project.Dependencies {
-		name := pyNameRe.FindString(dep)
-		if normalizePy(name) != id.pyName {
+	// A uv source decides where a dependency comes from.
+	for name, src := range py.Tool.UV.Sources {
+		table, ok := src.(map[string]any)
+		if !ok || normalizePy(name) != id.pyName {
 			continue
 		}
-		if strings.Contains(dep, "@ file:") {
+		switch {
+		case table["path"] != nil:
+			out = append(out, proposal(LinkPath, fmt.Sprintf("pyproject.toml tool.uv.sources %s path = %v", name, table["path"])))
+		case table["git"] != nil:
+			out = append(out, proposal(LinkNone, fmt.Sprintf("pyproject.toml tool.uv.sources %s git = %v has no version", name, table["git"])))
+		}
+	}
+	deps := slices.Clone(py.Project.Dependencies)
+	for _, group := range py.Project.OptionalDependencies {
+		deps = append(deps, group...)
+	}
+	for _, group := range py.DependencyGroups {
+		for _, d := range group {
+			if s, ok := d.(string); ok {
+				deps = append(deps, s)
+			}
+		}
+	}
+	for _, dep := range deps {
+		if normalizePy(pyNameRe.FindString(dep)) != id.pyName {
+			continue
+		}
+		switch {
+		case strings.Contains(dep, "@ file:"):
 			out = append(out, proposal(LinkPath, "pyproject.toml dependency "+dep))
-		} else {
+		case strings.Contains(dep, "@"):
+			out = append(out, proposal(LinkNone, "pyproject.toml dependency "+dep+" has no version"))
+		default:
 			out = append(out, proposal(LinkPackage, "pyproject.toml dependency "+dep))
 		}
 	}
-	for name, spec := range py.Tool.Poetry.Dependencies {
-		if normalizePy(name) != id.pyName {
-			continue
-		}
-		if table, ok := spec.(map[string]any); ok && table["path"] != nil {
-			out = append(out, proposal(LinkPath, fmt.Sprintf("pyproject.toml poetry %s path = %v", name, table["path"])))
-		} else {
-			out = append(out, proposal(LinkPackage, fmt.Sprintf("pyproject.toml poetry %s = %v", name, spec)))
+	poetry := []map[string]any{py.Tool.Poetry.Dependencies}
+	for _, g := range py.Tool.Poetry.Group {
+		poetry = append(poetry, g.Dependencies)
+	}
+	for _, group := range poetry {
+		for name, spec := range group {
+			if normalizePy(name) != id.pyName {
+				continue
+			}
+			table, isTable := spec.(map[string]any)
+			switch {
+			case isTable && table["path"] != nil:
+				out = append(out, proposal(LinkPath, fmt.Sprintf("pyproject.toml poetry %s path = %v", name, table["path"])))
+			case isTable && table["git"] != nil:
+				out = append(out, proposal(LinkNone, fmt.Sprintf("pyproject.toml poetry %s git = %v has no version", name, table["git"])))
+			default:
+				out = append(out, proposal(LinkPackage, fmt.Sprintf("pyproject.toml poetry %s = %v", name, spec)))
+			}
 		}
 	}
 	return out
@@ -227,19 +293,26 @@ func submoduleLink(dir, repo string) (Proposal, bool) {
 		if !ok || strings.TrimSpace(key) != "url" {
 			continue
 		}
-		if r, err := ParseRemote(strings.TrimSpace(value)); err == nil && strings.EqualFold(r, repo) {
-			return proposal(LinkSubmodule, ".gitmodules has "+strings.TrimSpace(value)), true
+		url := strings.TrimSpace(value)
+		if r, err := ParseRemote(url); err == nil {
+			if strings.EqualFold(r, repo) {
+				return proposal(LinkSubmodule, ".gitmodules has "+url), true
+			}
+			continue
+		}
+		// A relative URL (../component.git) names a sibling on the same host.
+		if m := relRemote.FindStringSubmatch(url); m != nil && strings.EqualFold(m[1], path.Base(repo)) {
+			return proposal(LinkSubmodule, ".gitmodules has "+url), true
 		}
 	}
 	return Proposal{}, false
 }
 
-var remoteRe = regexp.MustCompile(`^(?:[a-z+]+://)?(?:[^@/]+@)?[^:/]+[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$`)
-
-// ParseRemote returns the owner/repo of a git remote URL.
+// ParseRemote returns the owner/repo of a git remote URL: scheme://host/…
+// or user@host:…. Local paths are not remotes.
 func ParseRemote(url string) (string, error) {
 	m := remoteRe.FindStringSubmatch(strings.TrimSpace(url))
-	if m == nil || strings.HasPrefix(url, "/") || strings.HasPrefix(url, ".") {
+	if m == nil {
 		return "", fmt.Errorf("%q is not a remote repository URL", url)
 	}
 	return m[1], nil

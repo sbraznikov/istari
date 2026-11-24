@@ -194,3 +194,25 @@ func TestRepoAddWithAnExplicitChoiceAndRepoRemove(t *testing.T) {
 		t.Fatal("a removed repository still resolves to the project")
 	}
 }
+
+func TestRepoAddRunsFromThePrimaryRepository(t *testing.T) {
+	service := gitRepo(t, "git@github.com:acme/service.git", nil)
+	component := gitRepo(t, "git@github.com:acme/component.git", nil)
+	lib := gitRepo(t, "git@github.com:acme/lib.git", nil)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	if _, stderr, code := istariIn(t, service, config, "init"); code != 0 {
+		t.Fatal(stderr)
+	}
+	if _, stderr, code := istariIn(t, service, config, "repo", "add", component, "--yes"); code != 0 {
+		t.Fatal(stderr)
+	}
+	_, stderr, code := istariIn(t, component, config, "repo", "add", lib, "--yes")
+	if code != 1 || !strings.Contains(stderr, "primary") {
+		t.Fatalf("repo add from a non-primary repository: exit %d %q", code, stderr)
+	}
+	stdout, _, code := istariIn(t, service, config, "--json", "repo", "remove", "ACME/Component")
+	var res struct{ Removed string }
+	if code != 0 || json.Unmarshal([]byte(stdout), &res) != nil || res.Removed != "acme/component" {
+		t.Fatalf("repo remove in another case: exit %d %q", code, stdout)
+	}
+}

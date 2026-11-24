@@ -87,7 +87,11 @@ func Scaffold(root string) ([]string, error) {
 			return err
 		}
 		if rel == ".istari/pipeline.toml" {
-			body = []byte(strings.Replace(string(body), "{{checks}}", checksFor(root), 1))
+			irreversible := ""
+			if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+				irreversible = `, "go.mod"`
+			}
+			body = []byte(strings.NewReplacer("{{checks}}", checksFor(root), "{{irreversible}}", irreversible).Replace(string(body)))
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err

@@ -50,7 +50,7 @@ func TestDetectLink(t *testing.T) {
 		{"nothing", "bare", map[string]string{"README.md": "a service\n"}, "acme/component", project.LinkNone, "merged", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := project.DetectLink(tree(t, tc.service), tree(t, component[tc.component]), tc.repo)
+			p := project.DetectLink(tree(t, tc.service), tree(t, component[tc.component]), "acme/service", tc.repo)
 			if p.Link != tc.link || p.DoneWhen != tc.doneWhen || p.SoftAvailable() != tc.softUsable || p.Evidence == "" && tc.link != project.LinkNone {
 				t.Fatalf("DetectLink = %+v (soft %v), want link %s, done_when %s, soft %v", p, p.SoftAvailable(), tc.link, tc.doneWhen, tc.softUsable)
 			}
@@ -62,7 +62,7 @@ func TestDetectLinkLooksBothWays(t *testing.T) {
 	// The component depends on the service: still a published package.
 	service := tree(t, map[string]string{"go.mod": "module github.com/acme/service\n"})
 	component := tree(t, map[string]string{"go.mod": "module github.com/acme/component\n\nrequire github.com/acme/service v2.0.1\n"})
-	if p := project.DetectLink(service, component, "acme/component"); p.Link != project.LinkPackage {
+	if p := project.DetectLink(service, component, "acme/service", "acme/component"); p.Link != project.LinkPackage {
 		t.Fatalf("DetectLink = %+v, want a package link found in the added repository", p)
 	}
 }
@@ -81,5 +81,44 @@ func TestParseRemote(t *testing.T) {
 	}
 	if _, err := project.ParseRemote("/local/path/repo"); err == nil {
 		t.Error("ParseRemote accepted a local path")
+	}
+}
+
+func TestDetectLinkEdgeCases(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		primary, added map[string]string
+		link           project.Link
+		doneWhen       string
+	}{
+		{"npm git reference has no version", map[string]string{"package.json": `{"dependencies": {"@acme/component": "github:acme/component#main"}}`},
+			map[string]string{"package.json": `{"name": "@acme/component"}`}, project.LinkNone, "merged"},
+		{"pep 508 git reference has no version", map[string]string{"pyproject.toml": "[project]\ndependencies = [\"acme-component @ git+https://github.com/acme/component\"]\n"},
+			map[string]string{"pyproject.toml": "[project]\nname = \"acme-component\"\n"}, project.LinkNone, "merged"},
+		{"uv path source", map[string]string{"pyproject.toml": "[project]\ndependencies = [\"acme-component\"]\n\n[tool.uv.sources]\nacme-component = { path = \"../component\" }\n"},
+			map[string]string{"pyproject.toml": "[project]\nname = \"acme-component\"\n"}, project.LinkPath, "merged"},
+		{"poetry 2 sets both names", map[string]string{"pyproject.toml": "[project]\ndependencies = [\"acme-component>=1.0\"]\n"},
+			map[string]string{"pyproject.toml": "[project]\nname = \"acme-component\"\n\n[tool.poetry]\nname = \"acme-component\"\n"}, project.LinkPackage, "released"},
+		{"relative submodule url", map[string]string{".gitmodules": "[submodule \"c\"]\n\tpath = c\n\turl = ../component.git\n"},
+			nil, project.LinkSubmodule, "merged"},
+		{"the added repository consumes the primary's package", map[string]string{"go.mod": "module github.com/acme/service\n"},
+			map[string]string{"go.mod": "module github.com/acme/component\n\nrequire github.com/acme/service v2.0.1\n"}, project.LinkPackage, "merged"},
+		{"the added repository has the primary as a submodule", nil,
+			map[string]string{".gitmodules": "[submodule \"s\"]\n\turl = git@github.com:acme/service.git\n"}, project.LinkSubmodule, "merged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := project.DetectLink(tree(t, tc.primary), tree(t, tc.added), "acme/service", "acme/component")
+			if p.Link != tc.link || p.DoneWhen != tc.doneWhen {
+				t.Fatalf("DetectLink = %+v, want %s / %s", p, tc.link, tc.doneWhen)
+			}
+		})
+	}
+}
+
+func TestParseRemoteRejectsLocalPaths(t *testing.T) {
+	for _, path := range []string{"mirrors/acme/web", "../component.git", "acme/web"} {
+		if got, err := project.ParseRemote(path); err == nil {
+			t.Errorf("ParseRemote(%q) = %q, want an error", path, got)
+		}
 	}
 }

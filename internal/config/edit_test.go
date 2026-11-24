@@ -1,8 +1,11 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/config"
@@ -76,4 +79,80 @@ func TestAnEditThatWouldBreakTheConfigIsNotWritten(t *testing.T) {
 	if string(after) != string(before) {
 		t.Fatal("a refused edit changed the file")
 	}
+}
+
+func TestEditsKeepUnusualButValidFiles(t *testing.T) {
+	for name, text := range map[string]string{
+		"single quotes":                "[[project]]\nname = 'service'\nrepo = 'acme/service'\n",
+		"crlf":                         "[[project]]\r\nname = \"service\"\r\nrepo = \"acme/service\"\r\n",
+		"no newline":                   "[[project]]\nname = \"service\"\nrepo = \"acme/service\"",
+		"comment above the next table": "[[project]]\nname = \"service\"\nrepo = \"acme/service\"\n\n# --- UI ---\n[tui]\ntheme = \"terminal\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, text)
+			if err := config.AddRepo(path, "service", config.ProjectRepo{Repo: "acme/component"}); err != nil {
+				t.Fatalf("AddRepo: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := cfg.Projects[0].RepoList()
+			if len(got) != 2 || got[0].Repo != "acme/service" || !got[0].Primary || got[1].Repo != "acme/component" {
+				t.Fatalf("repos = %+v", got)
+			}
+			out, _ := os.ReadFile(path)
+			if strings.Contains(name, "comment") && !strings.Contains(string(out), "# --- UI ---\n[tui]") {
+				t.Fatalf("the comment that heads [tui] moved:\n%s", out)
+			}
+			if name == "crlf" && strings.Count(string(out), "\r\n") != strings.Count(string(out), "\n") {
+				t.Fatalf("mixed line endings:\n%q", out)
+			}
+		})
+	}
+}
+
+func TestEditsFollowASymlinkedConfig(t *testing.T) {
+	real := writeConfig(t, handwritten)
+	link := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.AddRepo(link, "web", config.ProjectRepo{Repo: "acme/docs"}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the symlink was replaced by a file")
+	}
+	if text, _ := os.ReadFile(real); !strings.Contains(string(text), "acme/docs") {
+		t.Fatal("the edit did not reach the linked file")
+	}
+}
+
+func TestConcurrentEditsAreNotLost(t *testing.T) {
+	path := writeConfig(t, handwritten)
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := config.AddRepo(path, "web", config.ProjectRepo{Repo: fmt.Sprintf("acme/r%d", i)}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Projects[1].RepoList(); len(got) != 9 {
+		t.Fatalf("web has %d repositories after 8 concurrent adds, want 9", len(got))
+	}
+}
+
+func TestAProjectWithBothRepoAndReposIsInvalid(t *testing.T) {
+	path := writeConfig(t, "[[project]]\nname = \"s\"\nrepo = \"a/b\"\n\n[[project.repos]]\nrepo = \"a/c\"\n")
+	_, err := config.Load(path)
+	assertErrorNames(t, err, "project[0].repo")
 }

@@ -14,7 +14,7 @@ self_review = true
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
 
 [merge]
-irreversible_paths = ["migrations/**", "api/**", "deploy/**"]
+irreversible_paths = ["migrations/**", "api/**", "deploy/**"{{irreversible}}]
 
 [[stage]]
 name = "refine"
@@ -24,6 +24,7 @@ standard = ".istari/ticket-standard.md"
 [[stage]]
 name = "plan"
 role = "planner"
+gate = false                          # true: the implementer waits for a human to approve the plan
 
 [[stage]]
 name = "implement"

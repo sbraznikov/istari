@@ -236,6 +236,9 @@ func (c *Config) validate() error {
 			fail(key, "%q is used by another project", p.Name)
 		}
 		names[p.Name] = true
+		if p.Repo != "" && len(p.Repos) > 0 {
+			fail(fmt.Sprintf("project[%d].repo", i), "set either repo or [[project.repos]], not both")
+		}
 		for j, r := range p.Repos {
 			rkey := fmt.Sprintf("project[%d].repos[%d]", i, j)
 			if r.DoneWhen != "" {

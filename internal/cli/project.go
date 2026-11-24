@@ -61,9 +61,19 @@ func newInitCommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
+			// The files first: a failure leaves no half-registered project.
+			created, err := project.Scaffold(root)
+			if err != nil {
+				return err
+			}
+			res := struct {
+				Project    string   `json:"project"`
+				Repo       string   `json:"repo"`
+				Registered bool     `json:"registered"`
+				Created    []string `json:"created"`
+			}{Repo: repo, Created: created}
 			if p, ok := project.ByRepo(cfg, repo); ok {
-				fmt.Fprintf(out, "%s is already part of project %s\n", repo, p.Name)
+				res.Project = p.Name
 			} else {
 				if name == "" {
 					name = path.Base(repo)
@@ -76,11 +86,16 @@ func newInitCommand(opts *Options) *cobra.Command {
 				if err := config.AppendProject(cfgPath, name, repo); err != nil {
 					return err
 				}
-				fmt.Fprintf(out, "registered project %s (%s) in %s\n", name, repo, cfgPath)
+				res.Project, res.Registered = name, true
 			}
-			created, err := project.Scaffold(root)
-			if err != nil {
-				return err
+			if opts.JSON {
+				return render(cmd.OutOrStdout(), opts, res, nil, nil)
+			}
+			out := cmd.OutOrStdout()
+			if res.Registered {
+				fmt.Fprintf(out, "registered project %s (%s) in %s\n", res.Project, repo, cfgPath)
+			} else {
+				fmt.Fprintf(out, "%s is already part of project %s\n", repo, res.Project)
 			}
 			for _, f := range created {
 				fmt.Fprintf(out, "created %s\n", f)
@@ -131,7 +146,8 @@ func newRepoCommand(opts *Options) *cobra.Command {
 			var rows []repoRow
 			var table [][]string
 			for _, r := range p.RepoList() {
-				row := repoRow{Repo: r.Repo, Primary: r.Primary, DoneWhen: r.DoneWhen, Link: r.Link, Soft: r.Link != "none"}
+				row := repoRow{Repo: r.Repo, Primary: r.Primary, DoneWhen: r.DoneWhen, Link: r.Link,
+					Soft: project.Proposal{Link: project.Link(r.Link)}.SoftAvailable()}
 				if row.DoneWhen == "" {
 					row.DoneWhen = "merged"
 				}
@@ -162,6 +178,19 @@ func newRepoCommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			hereRepo, err := project.Remote(here)
+			if err != nil {
+				return err
+			}
+			primary := p.RepoList()[0]
+			for _, r := range p.RepoList() {
+				if r.Primary {
+					primary = r
+				}
+			}
+			if !strings.EqualFold(hereRepo, primary.Repo) {
+				return fmt.Errorf("run repo add from the primary repository %s: the link is measured against it", primary.Repo)
+			}
 			addedRoot, err := project.Root(args[0])
 			if err != nil {
 				return err
@@ -181,8 +210,11 @@ func newRepoCommand(opts *Options) *cobra.Command {
 				}
 				return fmt.Errorf("%s already belongs to project %s", repo, other.Name)
 			}
-			proposal := project.DetectLink(here, addedRoot, repo)
+			proposal := project.DetectLink(here, addedRoot, primary.Repo, repo)
 			out := cmd.OutOrStdout()
+			if opts.JSON {
+				out = cmd.ErrOrStderr() // the proposal is for the human; stdout carries the result
+			}
 			fmt.Fprintf(out, "%s: link %s", repo, proposal.Link)
 			if proposal.Evidence != "" {
 				fmt.Fprintf(out, " (%s)", proposal.Evidence)
@@ -204,8 +236,12 @@ func newRepoCommand(opts *Options) *cobra.Command {
 				fmt.Fprintln(out, "confirm with --yes, or choose with --done-when merged|released")
 				return errors.New("not added: a human has to confirm the proposal")
 			}
-			if err := config.AddRepo(cfgPath, p.Name, config.ProjectRepo{Repo: repo, DoneWhen: choice, Link: string(proposal.Link)}); err != nil {
+			added := config.ProjectRepo{Repo: repo, DoneWhen: choice, Link: string(proposal.Link)}
+			if err := config.AddRepo(cfgPath, p.Name, added); err != nil {
 				return err
+			}
+			if opts.JSON {
+				return render(cmd.OutOrStdout(), opts, map[string]any{"project": p.Name, "added": repoRow{Repo: repo, DoneWhen: choice, Link: added.Link, Soft: proposal.SoftAvailable()}}, nil, nil)
 			}
 			fmt.Fprintf(out, "added %s to project %s with done_when = %q\n", repo, p.Name, choice)
 			return nil
@@ -222,15 +258,25 @@ func newRepoCommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			name := ""
 			for _, r := range p.RepoList() {
-				if strings.EqualFold(r.Repo, args[0]) && r.Primary {
-					return fmt.Errorf("%s is the project's primary repository and cannot be removed", r.Repo)
+				if strings.EqualFold(r.Repo, args[0]) {
+					if r.Primary {
+						return fmt.Errorf("%s is the project's primary repository and cannot be removed", r.Repo)
+					}
+					name = r.Repo
 				}
 			}
-			if err := config.RemoveRepo(cfgPath, p.Name, args[0]); err != nil {
+			if name == "" {
+				return fmt.Errorf("project %s has no repository %s", p.Name, args[0])
+			}
+			if err := config.RemoveRepo(cfgPath, p.Name, name); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed %s from project %s\n", args[0], p.Name)
+			if opts.JSON {
+				return render(cmd.OutOrStdout(), opts, map[string]string{"project": p.Name, "removed": name}, nil, nil)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed %s from project %s\n", name, p.Name)
 			return nil
 		},
 	})
