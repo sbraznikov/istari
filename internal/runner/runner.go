@@ -115,6 +115,43 @@ func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
 
+// holdLease renews a lease in the background until the returned function is
+// called; that renews it once more and returns it. Calling it again returns
+// the same.
+func (r *Runner) holdLease(ctx context.Context, lease core.Lease) func() (core.Lease, error) {
+	stop, done := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	current := lease
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(r.opts.Lease / 3)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if l, err := r.tasks.Renew(ctx, current); err == nil {
+					mu.Lock()
+					current = l
+					mu.Unlock()
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	var final core.Lease
+	var err error
+	return func() (core.Lease, error) {
+		once.Do(func() {
+			close(stop)
+			<-done
+			final, err = r.tasks.Renew(ctx, current)
+		})
+		return final, err
+	}
+}
+
 // Working tells which of this runner's live runs works on a task, if any.
 func (r *Runner) Working(ctx context.Context, task string) (run string, ok bool) {
 	runs, err := r.runs.List(ctx)
@@ -195,6 +232,10 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			log.Printf("istari: runner %s: fail %s: %v", slot.Profile, lease.Task, err)
 		}
 	}
+	// The lease is kept while the run is prepared (the worktree, a fetch, a
+	// merge), however long that takes.
+	prepared := r.holdLease(bg, lease)
+	defer prepared()
 	task, err := r.tasks.Get(bg, lease.Task)
 	if err != nil {
 		fail(err.Error())
@@ -240,9 +281,8 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			}
 		}
 	}
-	// Preparing the run (the worktree, a fetch, a merge) took part of the
-	// lease: the run starts with a whole one, or not at all.
-	renewed, err := r.tasks.Renew(bg, lease)
+	// The run starts with a whole lease, or not at all.
+	renewed, err := prepared()
 	if err != nil {
 		log.Printf("istari: runner %s: task %s: the lease ran out while the run was prepared: %v", slot.Profile, lease.Task, err)
 		return

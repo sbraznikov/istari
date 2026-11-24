@@ -456,3 +456,14 @@ func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 		t.Fatalf("the run started on the lease of its claim: until %s, renewed at %s", got.LeaseUntil, started)
 	}
 }
+
+func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Lease: 90 * time.Millisecond}) // shorter than making a worktree
+	_, task := f.readyTask(t, 12)
+	f.start(t)
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.Env["ISTARI_TASK"] != task.ID || len(f.events(t, "task.expired")) != 0 {
+		t.Fatalf("the run of %s lost its lease while it was prepared: %d expirations", task.ID, len(f.events(t, "task.expired")))
+	}
+}
