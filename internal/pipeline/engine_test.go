@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -538,6 +539,37 @@ func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
 	}
 	if st := f.state(t, ref); st != core.TicketInReview {
 		t.Fatalf("after Ready the ticket is %s, want in_review (T6)", st)
+	}
+}
+
+func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
+	checks := func(context.Context, string) (string, bool) { return "success", true }
+	readyErr := errors.New("github: 502")
+	ready := func(context.Context, string) error { return readyErr }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Ready: ready})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	all, err := f.tickets.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Reconcile(ctx, all); !errors.Is(err, readyErr) {
+		t.Fatalf("Reconcile = %v, want the failure to mark ready", err)
+	}
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with the pull request still a draft the ticket is %s, want in_progress", st)
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready", v.State)
+	}
+	readyErr = nil
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("once marked ready the ticket is %s, want in_review (T6)", st)
 	}
 }
 
