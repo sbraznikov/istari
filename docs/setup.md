@@ -404,7 +404,7 @@ Add the workflow and make `istari/ticket-link` a required status check of the ma
 
 ## 11. The first ticket, up to a draft pull request
 
-**Every open issue of a registered repository becomes a ticket** at the first sync. An issue that falls short of the standard gets a refiner run, whoever wrote it, and that run costs money. Register a repository whose open issues you are ready to have refined, or start with an empty one.
+Every open issue of a registered repository becomes a ticket at the first sync. Only a ticket that would be admitted gets a refiner run, which costs money: one by a trusted author, or one a trusted member asked to admit (step 2 below). Anyone else's ticket that falls short waits in `new`.
 
 1. Create the issue. Either in GitHub, with the body in the form of step 6, or with the daemon running:
 
@@ -420,7 +420,13 @@ Add the workflow and make `istari/ticket-link` a required status check of the ma
    istari ticket ready gh:owner/repo#<n>
    ```
 
-   or sets the label `istari:ready` in GitHub. istari reverts the label, with a comment, if the person is not trusted or the ticket does not meet the standard.
+   or sets the label `istari:ready` in GitHub. istari reverts the label, with a comment, if the person is not trusted. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the command says so:
+
+   ```
+   istari: gh:owner/repo#<n> does not meet the standard yet: it is refined first and admitted as soon as it does
+   ```
+
+   and the label goes back to `istari:new` with a comment that says the same.
 
 3. What happens. The ticket's state is the label `istari:<state>`:
    - `new`: a ticket that falls short gets a refiner run. It rewrites the ticket (keeping the original text), sets the size, or asks the author questions and puts the ticket on the `needs_input` hold.
@@ -492,7 +498,6 @@ It restores every open ticket labelled past `ready` that istari does not have, w
 ## 14. Advice for first use
 
 - Start with XS and S tickets with precise acceptance criteria.
-- Start on a repository with few open issues (see step 11).
 - At first, set `gate = true` on the `plan` stage of `.istari/pipeline.toml` (step 7), to read each plan before code is written.
 - There is no Slack yet, so nobody is notified of questions: check `istari ticket list` for `needs_input` holds and read the questions in the ticket's comments.
 - Run the daemon from a stable build (step 2) and do not rebuild that binary while runs are in progress.

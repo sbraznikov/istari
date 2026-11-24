@@ -42,6 +42,9 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		if err := opts.call(cmd, "ticket.ready", key, api.TicketReadyRequest{Actor: actor, Ref: args[0]}, &ticket); err != nil {
 			return err
 		}
+		if ticket.State == core.TicketNew {
+			fmt.Fprintf(cmd.ErrOrStderr(), "istari: %s does not meet the standard yet: it is refined first and admitted as soon as it does\n", ticket.Ref)
+		}
 		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 	}))
 	cmd.AddCommand(&cobra.Command{

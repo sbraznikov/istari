@@ -307,7 +307,7 @@ Creating a ticket and working on it are separated. For istari it does not matter
 | Structure | mandatory sections ("Context", "What needs to be done", "Acceptance criteria", "Out of scope"), ticket type, T-shirt size, priority, repository, links to dependencies; the dependency graph has no cycles and no links to nonexistent tickets; the file paths mentioned exist in the repository | by code |
 | Quality | the acceptance criteria are verifiable; there are no contradictions or ambiguities; the size matches the scope and does not exceed the allowed one; the modules and APIs mentioned exist in the code; the ticket does not duplicate or contradict tickets from the candidate list selected by code | by the refiner agent |
 
-**Check and refinement.** Performed for every ticket in `new`:
+**Check and refinement.** The structural check by code is performed for every ticket in `new`. The refiner is an agent run that costs money, so it works only on a ticket that is admitted once it meets the standard (see Admission): its author is trusted, it was created by an agent working on an admitted ticket, or a trusted member asked to admit it. A ticket of anyone else that falls short waits in `new` for a trusted member. For a ticket the refiner works on:
 
 1. Structural check by code. Code fills in a missing priority with the default value.
 2. Code selects duplicate candidates: open and recently completed tickets with matching paths, identifiers and keywords.
@@ -322,7 +322,7 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 
 - the ticket author is a trusted member of the project;
 - the ticket was created by an agent while working on an already admitted ticket; it inherits the parent's admission and budget;
-- a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`.
+- a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 

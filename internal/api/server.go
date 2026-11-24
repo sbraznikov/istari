@@ -159,7 +159,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 				return false, err
 			}
 			conf, err := opts.Standards.Check(ctx, ref.Repo, t)
-			return len(conf.Deviations) > 0, err
+			if err != nil || len(conf.Deviations) == 0 {
+				return false, err
+			}
+			// Only a ticket that would be admitted costs a refiner run (spec 4.5).
+			return srv.syncer.Refinable(ctx, tk.Ref)
 		}
 		if rt, ok := opts.Tracker.(runner.RefineTracker); ok {
 			var jt journal.Tracker

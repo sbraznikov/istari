@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
@@ -154,5 +155,51 @@ func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 	d.mustCLI(t, &events, "tail", "--type", "ticket.prioritized")
 	if len(events) != 1 || events[0].Actor != "human:alex" {
 		t.Fatalf("ticket.prioritized events = %+v, want one by human:alex", events)
+	}
+}
+
+func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
+	gh := githubtest.New(t)
+	n := gh.Seed("Limits", "We should add rate limits.\n", "carol") // carol may only read
+	ours := gh.Seed("Quotas", "We should add quotas.\n", "alex")    // alex can write: trusted
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := startDaemonWithConfig(t, dataDir, config, env...)
+	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
+	refinesOf := func(ref string) int {
+		var tasks []struct{ Ticket, Role string }
+		d.mustCLI(t, &tasks, "task", "list")
+		c := 0
+		for _, task := range tasks {
+			if task.Ticket == ref && task.Role == "refiner" {
+				c++
+			}
+		}
+		return c
+	}
+	refines := func() int { return refinesOf(ref) }
+	d.mustCLI(t, nil, "sync")
+	// The trusted author's raw ticket is refined: then the pipeline has run.
+	for deadline := time.Now().Add(10 * time.Second); refinesOf(fmt.Sprintf("gh:%s#%d", githubtest.Repo, ours)) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a trusted author's raw ticket got no refine task")
+		}
+	}
+	if c := refines(); c != 0 {
+		t.Fatalf("an outsider's raw ticket got %d refine tasks", c)
+	}
+	_, stderr, code := istariEnv(t, t.TempDir(), config, []string{"PATH=" + fakeGH(t, gh.Token)}, "ticket", "ready", ref)
+	if code != 0 || !strings.Contains(stderr, "refined first") {
+		t.Fatalf("ticket ready as alex on a raw ticket: exit %d %q", code, stderr)
+	}
+	for deadline := time.Now().Add(10 * time.Second); refines() == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no refine task after a trusted ready")
+		}
 	}
 }
