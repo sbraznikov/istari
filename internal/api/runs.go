@@ -1,12 +1,8 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
-	"os"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -16,43 +12,23 @@ import (
 
 // RunLogs is a piece of a run's transcript.
 type RunLogs struct {
-	Lines []json.RawMessage `json:"lines"`
-	Next  int64             `json:"next"`  // ask again with after = next for what follows
-	Ended bool              `json:"ended"` // the run has ended: nothing will follow
+	Lines []json.RawMessage    `json:"lines"`
+	Next  runner.TranscriptPos `json:"next"`  // ask again from here for what follows
+	Ended bool                 `json:"ended"` // the run has ended: nothing will follow
 }
 
-// runLogs reads the run's transcript from a byte offset. A transcript rotated
-// since is read from its start.
+// runLogs reads the run's transcript after a position.
 func (s *Server) runLogs(ctx context.Context, r RunLogsRequest) (RunLogs, error) {
 	run, err := s.runs.Get(ctx, r.ID)
 	if err != nil {
 		return RunLogs{}, err
 	}
-	out := RunLogs{Lines: []json.RawMessage{}, Next: r.After, Ended: run.State == runner.RunEnded}
-	f, err := os.Open(run.Transcript)
-	if errors.Is(err, os.ErrNotExist) {
-		return out, nil
-	}
+	ended := run.State == runner.RunEnded // read before the lines: none can follow these
+	lines, next, err := runner.ReadTranscript(run.Transcript, r.After)
 	if err != nil {
 		return RunLogs{}, err
 	}
-	defer f.Close()
-	if info, err := f.Stat(); err == nil && info.Size() < r.After {
-		out.Next = 0
-	}
-	if _, err := f.Seek(out.Next, io.SeekStart); err != nil {
-		return RunLogs{}, err
-	}
-	reader := bufio.NewReader(f)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil { // a line not yet complete is read the next time
-			break
-		}
-		out.Next += int64(len(line))
-		out.Lines = append(out.Lines, json.RawMessage(line[:len(line)-1]))
-	}
-	return out, nil
+	return RunLogs{Lines: lines, Next: next, Ended: ended}, nil
 }
 
 // Whoami is what an agent learns of itself (spec section 7.2).

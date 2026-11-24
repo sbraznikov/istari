@@ -65,8 +65,8 @@ type (
 		ID    string `json:"id"`
 	}
 	RunLogsRequest struct {
-		ID    string `json:"id"`
-		After int64  `json:"after,omitempty"` // a byte offset in the transcript, from an earlier answer
+		ID    string               `json:"id"`
+		After runner.TranscriptPos `json:"after"` // from an earlier answer's next
 	}
 	RunCompleteRequest struct {
 		Actor   string `json:"actor"`

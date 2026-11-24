@@ -3,6 +3,8 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -247,4 +249,83 @@ func runOf(t *testing.T, e store.Event) string {
 		t.Fatalf("event %s names no run: %s", e.Type, e.Payload)
 	}
 	return p.Run
+}
+
+func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	f.readyTask(t, 7)
+	f.start(t)
+	s := f.session(t)
+	if err := f.runner.Stop(ctx, s.spec.Env["ISTARI_RUN"], "human:alex"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if failed := f.waitEvent(t, "task.failed"); !strings.Contains(string(failed.Payload), "stopped by human:alex") {
+		t.Fatalf("task.failed = %s", failed.Payload)
+	}
+}
+
+func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	tk := f.ticket(t, 8, "Raw idea") // new: before planning
+	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
+		runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Slots: []runner.Slot{{Profile: "refiner-1", Role: "refiner", Harness: harness.Profile{Harness: f.h.name}}}})
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "refiner"}); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	s := f.session(t)
+	if s.spec.Workdir == f.dir(8) || exists(f.dir(8)) {
+		t.Fatal("the refiner got the ticket's worktree")
+	}
+	if !exists(filepath.Join(s.spec.Workdir, "README.md")) {
+		t.Fatalf("the refiner's directory %s lacks the main branch", s.spec.Workdir)
+	}
+	if branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current")); branch != "" {
+		t.Fatalf("the refiner is on branch %q, want main detached", branch)
+	}
+	dir := s.spec.Workdir
+	s.finish <- harness.Result{ExitCode: 1}
+	f.waitEvent(t, "run.exited")
+	for deadline := time.Now().Add(5 * time.Second); exists(dir); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the refiner's checkout outlived its run")
+		}
+	}
+}
+
+func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
+	var events []harness.Event
+	for i := range 6 {
+		events = append(events, harness.Event{Kind: harness.EventMessage, Text: "message number " + strconv.Itoa(i)})
+	}
+	f := newRunner(t, runner.RunnerOptions{TranscriptMax: 120}, events...)
+	f.readyTask(t, 9)
+	f.start(t)
+	s := f.session(t)
+	s.finish <- harness.Result{ExitCode: 1}
+	run, err := f.runner.Runs().Get(ctx, runOf(t, f.waitEvent(t, "run.exited")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, _ := filepath.Glob(filepath.Join(filepath.Dir(run.Transcript), run.ID+"*.jsonl"))
+	if len(parts) < 2 {
+		t.Fatalf("transcript parts = %v, want it rotated", parts)
+	}
+	var got []string
+	var pos runner.TranscriptPos
+	for range 10 {
+		lines, next, err := runner.ReadTranscript(run.Transcript, pos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range lines {
+			var e harness.Event
+			json.Unmarshal(l, &e)
+			got = append(got, e.Text)
+		}
+		pos = next
+	}
+	if len(got) != 6 || got[0] != "message number 0" || got[5] != "message number 5" {
+		t.Fatalf("read back %q, want the six messages in order", got)
+	}
 }

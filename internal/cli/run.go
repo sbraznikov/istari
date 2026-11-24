@@ -49,7 +49,7 @@ func newRunCommand(opts *Options) *cobra.Command {
 	logs := &cobra.Command{
 		Use: "logs <run>", Short: "Print a run's transcript; -f follows it until the run ends", Args: Args(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var after int64
+			var after runner.TranscriptPos
 			for {
 				var page api.RunLogs
 				if err := opts.call(cmd, "run.logs", "", api.RunLogsRequest{ID: args[0], After: after}, &page); err != nil {

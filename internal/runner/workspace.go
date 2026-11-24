@@ -439,6 +439,40 @@ func (w *Workspaces) split(ctx context.Context, ref string) (bool, error) {
 	return split, nil
 }
 
+// Scratch returns a detached checkout of the main branch of the ticket's
+// repository in dir, for a role that works before the ticket has a worktree:
+// the refiner reads the main branch (spec section 7.2). remove deletes it.
+func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove func(), err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		return nil, err
+	}
+	clone, err := w.clone(ctx, ref.Repo)
+	if err != nil {
+		return nil, err
+	}
+	main, err := mainBranch(ctx, clone)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return nil, err
+	}
+	if _, err := gitOut(ctx, clone, "worktree", "add", "--detach", dir, "origin/"+main); err != nil {
+		return nil, err
+	}
+	return func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		bg := context.WithoutCancel(ctx)
+		gitOut(bg, clone, "worktree", "remove", "--force", dir)
+		os.RemoveAll(dir)
+		gitOut(bg, clone, "worktree", "prune")
+	}, nil
+}
+
 // Get returns the ticket's workspace record; a ticket without one gets a zero
 // Workspace.
 func (w *Workspaces) Get(ctx context.Context, ref string) (Workspace, error) {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -158,11 +157,6 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err != nil {
 		tk = core.Ticket{Ref: task.Ticket, Project: task.Project}
 	}
-	ws, err := r.ws.Ensure(bg, tk)
-	if err != nil {
-		fail("workspace: " + err.Error())
-		return
-	}
 	h, err := harness.Get(slot.Harness.Harness)
 	if err != nil {
 		fail(err.Error())
@@ -170,7 +164,25 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	}
 	run := Run{
 		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
-		Profile: slot.Profile, Harness: h.Name(), Dir: ws.Dir, Timeout: r.opts.Timeout, BudgetUSD: r.opts.BudgetUSD,
+		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout, BudgetUSD: r.opts.BudgetUSD,
+	}
+	if slot.Role == "refiner" {
+		// The refiner works before the ticket has a worktree and reads the
+		// main branch (spec section 7.2).
+		run.Dir = filepath.Join(r.opts.DataDir, "runs", run.ID, "main")
+		remove, err := r.ws.Scratch(bg, task.Ticket, run.Dir)
+		if err != nil {
+			fail("workspace: " + err.Error())
+			return
+		}
+		defer remove()
+	} else {
+		ws, err := r.ws.Ensure(bg, tk)
+		if err != nil {
+			fail("workspace: " + err.Error())
+			return
+		}
+		run.Dir = ws.Dir
 	}
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
 	token, err := r.runs.create(bg, &run)
@@ -185,7 +197,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: ws.Dir, Brief: brief(task, tk), Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: brief(task, tk), Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
@@ -227,57 +239,73 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		}
 	}
 	var res harness.Result
+	done := ctx.Done()
 loop:
 	for {
 		select {
 		case res = <-waited:
 			break loop
 		case <-renew.C:
-			if l, err := r.tasks.Renew(bg, lease); err == nil {
+			l, err := r.tasks.Renew(bg, lease)
+			var e *core.Error
+			switch {
+			case err == nil:
 				lease = l
-			} else {
+			case errors.As(err, &e):
+				// The claim is gone (expired, taken): the work is not this
+				// run's any more.
 				stopWith(ending{reason: "the lease was lost: " + err.Error(), outcome: func(context.Context, core.Lease) error { return nil }})
+			default:
+				log.Printf("istari: run %s: renewing the lease: %v; trying again", run.ID, err)
 			}
 		case <-timeout.C:
 			reason := fmt.Sprintf("timeout after %s", r.opts.Timeout)
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Fail(c, l, reason) }})
+			stopWith(ending{reason: reason, outcome: r.failWith(reason)})
 		case <-over:
 			reason := fmt.Sprintf("the run budget of $%.2f is spent", r.opts.BudgetUSD)
 			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, "budget_exceeded") }})
 		case who := <-stop:
 			reason := "stopped by " + who
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Fail(c, l, reason) }})
-		case <-ctx.Done():
+			stopWith(ending{reason: reason, outcome: r.failWith(reason)})
+		case <-done:
+			done = nil // once: then wait for the process
 			stopWith(ending{reason: "the runner stopped", outcome: r.tasks.Release, released: true})
 		}
 	}
 	<-streamed
 
-	var outcome func(context.Context, core.Lease) error
-	reason := res.Reason
-	if end != nil {
+	reason, outcome, completed := r.outcome(bg, run.ID, res)
+	if end != nil && !(end.released && completed) {
+		// A runner that stops while the agent finishes its work keeps the
+		// work: a completed run completes its task even then.
 		reason, outcome = end.reason, end.outcome
-	} else {
-		done, err := r.runs.Get(bg, run.ID)
-		switch {
-		case err != nil:
-			reason = err.Error()
-			outcome = func(c context.Context, l core.Lease) error { return r.tasks.Fail(c, l, reason) }
-		case done.Completed != "" && res.ExitCode == 0 && !res.Failed:
-			reason = "completed: " + done.Completed
-			outcome = r.tasks.Complete
-		case done.Completed == "":
-			reason = fmt.Sprintf("exited with code %d without istari complete", res.ExitCode)
-			outcome = func(c context.Context, l core.Lease) error { return r.tasks.Fail(c, l, reason) }
-		default:
-			reason = fmt.Sprintf("exited with code %d", res.ExitCode)
-			outcome = func(c context.Context, l core.Lease) error { return r.tasks.Fail(c, l, reason) }
-		}
 	}
 	r.end(bg, run, res, usage, reason)
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
+}
+
+// outcome decides by the exit and istari complete (spec section 7.3): the
+// task completes only when the agent said so and the process exited cleanly.
+func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (reason string, outcome func(context.Context, core.Lease) error, completed bool) {
+	run, err := r.runs.Get(ctx, id)
+	switch {
+	case err != nil:
+		return err.Error(), r.failWith(err.Error()), false
+	case run.Completed != "" && res.ExitCode == 0 && !res.Failed:
+		return "completed: " + run.Completed, r.tasks.Complete, true
+	case run.Completed == "":
+		reason := fmt.Sprintf("exited with code %d without istari complete", res.ExitCode)
+		return reason, r.failWith(reason), false
+	default:
+		reason := fmt.Sprintf("exited with code %d", res.ExitCode)
+		return reason, r.failWith(reason), false
+	}
+}
+
+func (r *Runner) failWith(reason string) func(context.Context, core.Lease) error {
+	return func(ctx context.Context, l core.Lease) error { return r.tasks.Fail(ctx, l, reason) }
 }
 
 // stream writes the harness's events to the transcript and the log, and
@@ -333,49 +361,4 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 func brief(task core.Task, tk core.Ticket) string {
 	return fmt.Sprintf("You are the %s of ticket %s (%s), task %s. Run `istari whoami` and `istari ticket show %s`; when your work is done, run `istari complete`.",
 		task.Role, tk.Ref, tk.Title, task.ID, tk.Ref)
-}
-
-// transcript is a run's transcript file: one JSON event per line, rotated to
-// <path>.1 when it grows past max.
-type transcript struct {
-	path string
-	max  int64
-	f    *os.File
-	size int64
-}
-
-func (t *transcript) write(e harness.Event) error {
-	if t.f == nil {
-		if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(t.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		info, _ := f.Stat()
-		t.f, t.size = f, info.Size()
-	}
-	line, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	line = append(line, '\n')
-	if t.size > 0 && t.size+int64(len(line)) > t.max {
-		t.f.Close()
-		if err := os.Rename(t.path, t.path+".1"); err != nil {
-			return err
-		}
-		t.f, t.size = nil, 0
-		return t.write(e)
-	}
-	n, err := t.f.Write(line)
-	t.size += int64(n)
-	return err
-}
-
-func (t *transcript) close() {
-	if t.f != nil {
-		t.f.Close()
-	}
 }
