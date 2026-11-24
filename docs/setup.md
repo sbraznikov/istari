@@ -124,7 +124,7 @@ Keep `data_dir` short. The daemon's unix socket is `<data_dir>/istari.sock`, and
 istari: listen …/data/istari.sock: listen unix …/data/istari.sock: bind: invalid argument
 ```
 
-Optional keys, with their defaults. Unknown keys are an error.
+Optional keys. The values shown are the defaults, except where a comment says "example". Unknown keys are an error.
 
 ```toml
 [daemon]
@@ -134,7 +134,7 @@ max_concurrent_runs = 4          # claimed tasks at once in the installation
 [defaults]
 max_review_rounds = 3
 max_attempts      = 3            # attempts per task before the attempts_exhausted hold
-plan_gate         = false        # true: a human approves the plan (istari gate approve)
+plan_gate         = false        # true: a human approves the plan; a repository's pipeline.toml overrides it (step 7)
 priority          = "P2"         # for tickets that set none
 zones             = "serialize"  # serialize | warn | off
 
@@ -145,13 +145,13 @@ M  = 15
 L  = 30
 
 [defaults.max_concurrent_runs_by_role]   # a role not listed has no limit of its own
-implementer = 1
+implementer = 1                  # example
 
 [[project]]
-name    = "demo"
-repo    = "example/demo"
-trusted = ["your-login"]         # whose tickets are admitted without a human; absent: everyone with write access
-max_concurrent_runs = 2          # absent: no limit of its own
+name    = "demo"                 # example
+repo    = "example/demo"         # example
+trusted = ["your-login"]         # example; whose tickets are admitted without a human; absent: everyone with write access
+max_concurrent_runs = 2          # example; absent: no limit of its own
 ```
 
 `[defaults.merge]`, `[slack]`, `[tui]`, `[report]` and `[[project.repos]]` are parsed and validated too, but merging, Slack and the TUI are not built yet.
@@ -289,7 +289,9 @@ verify_red = true
 - `verify_red`: the new tests of a checkpoint must fail on the code of the previous checkpoint.
 - `full` gates `istari pr open`: if it fails, the pull request is not opened. Without `full`, `test` is used.
 
-For other languages init proposes npm or pytest commands, or leaves them commented out; fill them in. In `[limits]`, `max_attempts`, `max_review_rounds`, `max_size` and `self_review` take effect. `questions` and `max_assumptions` are read but not used yet.
+For other languages init proposes npm or pytest commands, or leaves them commented out; fill them in.
+
+The file also lists the stages. Its `plan` stage carries `gate = false`, which overrides `[defaults] plan_gate`: to have a human approve each plan in this repository, set `gate = true` there. In `[limits]`, `max_attempts`, `max_review_rounds`, `max_size` and `self_review` take effect. `questions` and `max_assumptions` are read but not used yet.
 
 ## 8. The harness and `istari doctor`
 
@@ -459,7 +461,7 @@ Holds stop a ticket's tasks from being handed out; the ticket keeps its state. T
 | Hold | Lifted by |
 |---|---|
 | `paused` | `istari ticket resume <ref>` |
-| `attempts_exhausted` (a task failed `max_attempts` times, or a ticket was refined three times and still falls short) | `istari ticket retry <ref>`: restarts the failed tasks and lifts the hold |
+| `attempts_exhausted` (a task failed `max_attempts` times, a ticket was refined three times and still falls short, or it used up `max_review_rounds`) | `istari ticket retry <ref>`: restarts the failed tasks and lifts the hold |
 | `waiting_dependency` | istari, when the needed ticket is done |
 | `needs_input` (the refiner asked the author a question, or planning ended without a plan, or the ticket is larger than `max_size`) | an answer, which arrives through Slack (M4). There is no CLI command for it yet. |
 
@@ -491,6 +493,6 @@ It restores every open ticket labelled past `ready` that istari does not have, w
 
 - Start with XS and S tickets with precise acceptance criteria.
 - Start on a repository with few open issues (see step 11).
-- Keep `plan_gate = true` in `[defaults]` at first, to read each plan before code is written.
+- At first, set `gate = true` on the `plan` stage of `.istari/pipeline.toml` (step 7), to read each plan before code is written.
 - There is no Slack yet, so nobody is notified of questions: check `istari ticket list` for `needs_input` holds and read the questions in the ticket's comments.
 - Run the daemon from a stable build (step 2) and do not rebuild that binary while runs are in progress.
