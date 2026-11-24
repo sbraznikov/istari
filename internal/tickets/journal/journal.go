@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
@@ -53,8 +56,9 @@ type DecisionEntry struct {
 	Problem        string   `json:"problem"`
 	State          string   `json:"state"`
 	Options        []Option `json:"options"`
-	Recommendation string   `json:"recommendation"`
-	Status         string   `json:"status"` // proposed, chosen or dismissed
+	Recommendation string   `json:"recommendation"` // which option and why
+	Recommended    string   `json:"recommended"`    // the letter of the recommended option
+	Status         string   `json:"status"`         // proposed, chosen or dismissed
 	Chosen         string   `json:"chosen,omitempty"`
 	ChosenBy       string   `json:"chosen_by,omitempty"`
 	Comment        string   `json:"comment,omitempty"`
@@ -121,15 +125,7 @@ func (e Entry) validate() error {
 			return missing("a text")
 		}
 	case Decision:
-		d := e.Decision
-		switch {
-		case d == nil || d.Problem == "" || d.State == "":
-			return missing("the problem and the current state")
-		case len(d.Options) < 2:
-			return missing("at least two options")
-		case d.Recommendation == "":
-			return missing("a recommendation with its reasons")
-		}
+		return e.Decision.validate()
 	case Plan:
 		if e.Plan == nil || e.Plan.Summary == "" {
 			return missing("a summary")
@@ -152,6 +148,49 @@ func (e Entry) validate() error {
 	return nil
 }
 
+// validate checks a decision card against its schema (spec sections 4.6 and
+// 7.7): problem, current state, at least two complete options with sizes from
+// the scale, and a recommendation and a choice that name existing options.
+func (d *DecisionEntry) validate() error {
+	bad := func(format string, args ...any) error {
+		return fmt.Errorf("journal: a decision card "+format, args...)
+	}
+	if d == nil || d.Problem == "" || d.State == "" {
+		return bad("needs the problem and the current state")
+	}
+	if len(d.Options) < 2 {
+		return bad("needs at least two options")
+	}
+	letters := map[string]bool{}
+	for _, o := range d.Options {
+		switch {
+		case o.Letter == "" || letters[o.Letter]:
+			return bad("needs a distinct letter for every option")
+		case o.Gist == "" || o.Consequences == "" || o.Risks == "" || o.Changes == "":
+			return bad("needs the gist, consequences, risks and changes of option %s", o.Letter)
+		case !slices.Contains(core.Sizes(), o.Size):
+			return bad("sizes option %s %q, not one of %s", o.Letter, o.Size, strings.Join(core.Sizes(), ", "))
+		}
+		letters[o.Letter] = true
+	}
+	if d.Recommendation == "" || !letters[d.Recommended] {
+		return bad("needs a recommendation of one of its options, with its reasons")
+	}
+	switch d.Status {
+	case "proposed", "dismissed":
+	case "chosen":
+		if !letters[d.Chosen] || d.ChosenBy == "" {
+			return bad("chosen needs one of its options and who chose it")
+		}
+	default:
+		return bad("status %q is not proposed, chosen or dismissed", d.Status)
+	}
+	return nil
+}
+
+// maxComment keeps a comment below the tracker's limit (GitHub: 65536).
+const maxComment = 60000
+
 // marker carries the entry, machine-readable, in its comment. JSON escapes
 // '<' and '>', so the entry cannot end the HTML comment early.
 var marker = regexp.MustCompile(`<!-- istari:journal (\{.*\}) -->`)
@@ -166,7 +205,11 @@ func Render(e Entry) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return headline(e) + "\n\n<!-- istari:journal " + string(data) + " -->", nil
+	out := headline(e) + "\n\n<!-- istari:journal " + string(data) + " -->"
+	if len(out) > maxComment {
+		return "", fmt.Errorf("journal: the %s entry is %d characters as a comment, more than %d", e.Kind, len(out), maxComment)
+	}
+	return out, nil
 }
 
 // Parse returns the entry of a comment; ok is false for any other comment.
@@ -196,10 +239,11 @@ func headline(e Entry) string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "**Decision** (%s)%s\n\n**Problem.** %s\n\n**Current state.** %s\n", d.Status, by, d.Problem, d.State)
 		for _, o := range d.Options {
-			fmt.Fprintf(&b, "\n- **%s.** %s", o.Letter, o.Gist)
-			if o.Size != "" {
-				fmt.Fprintf(&b, " (%s)", o.Size)
+			mark := ""
+			if o.Letter == d.Recommended {
+				mark = " — recommended"
 			}
+			fmt.Fprintf(&b, "\n**Option %s** (%s)%s: %s\n- Consequences: %s\n- Risks: %s\n- Changes: %s\n", o.Letter, o.Size, mark, o.Gist, o.Consequences, o.Risks, o.Changes)
 		}
 		fmt.Fprintf(&b, "\n\n**Recommendation.** %s", d.Recommendation)
 		if d.Chosen != "" {
@@ -222,7 +266,10 @@ func headline(e Entry) string {
 		return "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
 	case Transition:
 		t := e.Transition
-		s := "**Transition**" + by + ": `" + t.From + "` → `" + t.To + "`"
+		s := "**Transition**" + by + ": `" + t.To + "`"
+		if t.From != "" {
+			s = "**Transition**" + by + ": `" + t.From + "` → `" + t.To + "`"
+		}
 		if t.Hold != "" {
 			s += " (hold: " + t.Hold + ")"
 		}
@@ -302,7 +349,31 @@ const (
 	blockEnd   = "<!-- istari:work-state:end -->"
 )
 
-var block = regexp.MustCompile(`(?s)\n*` + regexp.QuoteMeta(blockStart) + `.*?` + regexp.QuoteMeta(blockEnd) + `\n?`)
+// orphan is a marker line left without its partner.
+var orphan = regexp.MustCompile(`(?m)^.*(` + regexp.QuoteMeta(blockStart) + `|` + regexp.QuoteMeta(blockEnd) + `).*\n?`)
+
+var markers = regexp.MustCompile(regexp.QuoteMeta(blockStart) + `|` + regexp.QuoteMeta(blockEnd))
+
+// blocks returns the complete blocks of body, each a start marker whose next
+// marker is an end marker, with the line break after it; and whether every
+// marker in body belongs to one of them.
+func blocks(body string) (found [][2]int, clean bool) {
+	ms := markers.FindAllStringIndex(body, -1)
+	clean = true
+	for i := 0; i < len(ms); i++ {
+		if body[ms[i][0]:ms[i][1]] == blockStart && i+1 < len(ms) && body[ms[i+1][0]:ms[i+1][1]] == blockEnd {
+			stop := ms[i+1][1]
+			if stop < len(body) && body[stop] == '\n' {
+				stop++
+			}
+			found = append(found, [2]int{ms[i][0], stop})
+			i++
+			continue
+		}
+		clean = false
+	}
+	return found, clean
+}
 
 // render returns the block, markers included.
 func (w WorkState) render() string {
@@ -323,19 +394,43 @@ func (w WorkState) render() string {
 		"\n_Maintained by istari from the ticket journal._\n" + blockEnd + "\n"
 }
 
-// WithWorkState returns body with its work state block replaced by w's, or
-// with the block added at the end. Nothing outside the markers changes.
+// WithWorkState returns body with its work state block replaced by w's,
+// keeping everything outside the markers as it is. A body without a block
+// gets one at the end. A block a human broke (a marker deleted or copied) is
+// not trusted: the stray markers are dropped, the text around them stays,
+// and a new block goes at the end.
 func WithWorkState(body string, w WorkState) string {
-	if loc := block.FindStringIndex(body); loc != nil {
-		return body[:loc[0]] + "\n\n" + w.render() + body[loc[1]:]
+	if found, clean := blocks(body); clean && len(found) > 0 {
+		var b strings.Builder
+		b.WriteString(body[:found[0][0]])
+		b.WriteString(w.render())
+		prev := found[0][1]
+		for _, loc := range found[1:] { // a copy of the block: only one is kept
+			b.WriteString(body[prev:loc[0]])
+			prev = loc[1]
+		}
+		b.WriteString(body[prev:])
+		return b.String()
 	}
-	return strings.TrimRight(body, "\n") + "\n\n" + w.render()
+	body = StripWorkState(body)
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	return body + "\n" + w.render()
 }
 
-// StripWorkState returns body without its work state block: the ticket's own
-// text, as the ticket standard reads it.
+// StripWorkState returns body without its work state blocks and without stray
+// markers: the ticket's own text, as the ticket standard reads it.
 func StripWorkState(body string) string {
-	return strings.TrimRight(block.ReplaceAllString(body, "\n"), "\n") + "\n"
+	found, _ := blocks(body)
+	var b strings.Builder
+	prev := 0
+	for _, loc := range found {
+		b.WriteString(body[prev:loc[0]])
+		prev = loc[1]
+	}
+	b.WriteString(body[prev:])
+	return orphan.ReplaceAllString(b.String(), "")
 }
 
 // Tracker is what the journal needs of a ticket tracker.
@@ -353,6 +448,7 @@ const EventPrefix = "journal."
 // Journal writes entries to the ticket and to istari's log, and keeps the
 // work state block.
 type Journal struct {
+	mu      sync.Mutex // one entry at a time, so the log and the tracker agree on the order
 	tracker Tracker
 	store   store.Store
 	clock   func() time.Time
@@ -369,6 +465,8 @@ func New(t Tracker, s store.Store, clock func() time.Time) *Journal {
 // Append records an entry: as a comment on the ticket, in istari's log, and
 // in the work state block of the ticket body.
 func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	if e.At.IsZero() {
 		e.At = j.clock().UTC()
 	}
@@ -379,7 +477,10 @@ func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	if _, err := j.tracker.Comment(ctx, ref, body); err != nil {
 		return err
 	}
-	data, _ := json.Marshal(e)
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
 	if _, err := j.store.Append(ctx, store.Event{Type: EventPrefix + string(e.Kind), At: e.At, Actor: e.Actor, Ticket: ref.String(), Payload: data}); err != nil {
 		return err
 	}
