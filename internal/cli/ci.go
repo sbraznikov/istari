@@ -32,7 +32,7 @@ func newCICommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p := vcs.PullRequest{Repo: repo, Branch: pull.Branch, Messages: pull.Messages}
+			p := vcs.PullRequest{Repo: repo, HeadRepo: pull.HeadRepo, Branch: pull.Branch, Messages: pull.Messages}
 			if err := vcs.CheckTicketLink(cmd.Context(), p, gh); err != nil {
 				return err
 			}

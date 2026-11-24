@@ -551,7 +551,7 @@ func (s *Server) pull(w http.ResponseWriter, r *http.Request) *Issue {
 
 func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 	if i := s.pull(w, r); i != nil {
-		s.write(w, http.StatusOK, map[string]any{"number": i.Number, "state": i.State, "head": map[string]any{"ref": i.Branch}})
+		s.write(w, http.StatusOK, map[string]any{"number": i.Number, "state": i.State, "head": map[string]any{"ref": i.Branch, "repo": map[string]any{"full_name": Repo}}})
 	}
 }
 

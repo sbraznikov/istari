@@ -488,6 +488,7 @@ func (p *Provider) CanWrite(ctx context.Context, repo, login string) (bool, erro
 
 // Pull is a pull request as the ticket-link check reads it.
 type Pull struct {
+	HeadRepo string   // owner/repo of the head branch: another one for a fork
 	Branch   string   // the head branch
 	Messages []string // the commit messages, oldest first
 }
@@ -497,13 +498,16 @@ func (p *Provider) PullRequest(ctx context.Context, repo string, n int) (Pull, e
 	base := "/repos/" + repo + "/pulls/" + strconv.Itoa(n)
 	var pr struct {
 		Head struct {
-			Ref string `json:"ref"`
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 	}
 	if err := p.do(ctx, http.MethodGet, base, nil, &pr); err != nil {
 		return Pull{}, fmt.Errorf("github: pull request %s#%d: %w", repo, n, err)
 	}
-	out := Pull{Branch: pr.Head.Ref}
+	out := Pull{HeadRepo: pr.Head.Repo.FullName, Branch: pr.Head.Ref}
 	for page := base + "/commits?per_page=100"; page != ""; {
 		var commits []struct {
 			Commit struct {

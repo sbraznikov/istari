@@ -14,6 +14,7 @@ import (
 // PullRequest is what the ticket-link check reads of a pull request.
 type PullRequest struct {
 	Repo     string   // owner/repo
+	HeadRepo string   // the head branch's repository; "" means Repo
 	Branch   string   // the head branch
 	Messages []string // the commit messages
 }
@@ -24,15 +25,20 @@ type TicketGetter interface {
 }
 
 // CheckTicketLink is the required check istari/ticket-link (spec section 2.1,
-// level 5): a pull request passes when its branch istari/<number>/<slug> or a
-// "Ticket:" trailer of its commits references a ticket, and every ticket it
-// references is open and not canceled. The error says why it fails.
+// level 5): a pull request passes when its branch istari/<number>/<slug> (not
+// a fork's) or a "Ticket:" trailer of its commits references a ticket, and
+// every ticket it references is an open, not canceled issue of the pull
+// request's repository (spec 4.4: a ticket belongs to one repository). The
+// error says why it fails.
 func CheckTicketLink(ctx context.Context, pr PullRequest, tracker TicketGetter) error {
 	refs := ticketRefs(pr)
 	if len(refs) == 0 {
 		return fmt.Errorf("the pull request references no ticket: name the branch istari/<ticket>/<slug> or add the trailer \"Ticket: gh:%s#<number>\" to its commits", pr.Repo)
 	}
 	for _, ref := range refs {
+		if ref.Provider != "gh" || ref.Repo != pr.Repo {
+			return fmt.Errorf("ticket %s belongs to another repository than %s", ref, pr.Repo)
+		}
 		t, err := tracker.Get(ctx, ref)
 		switch {
 		case errors.Is(err, tickets.ErrNotFound):
@@ -46,6 +52,24 @@ func CheckTicketLink(ctx context.Context, pr PullRequest, tracker TicketGetter) 
 		}
 	}
 	return nil
+}
+
+// trailerBlock returns the lines of a commit message's last paragraph when it
+// is a trailer block (every line "Key: value"), as git interpret-trailers
+// reads it; a "Ticket:" line in the body is quoted text, not a reference.
+func trailerBlock(msg string) []string {
+	paragraphs := strings.Split(strings.TrimSpace(strings.ReplaceAll(msg, "\r\n", "\n")), "\n\n")
+	if len(paragraphs) < 2 {
+		return nil // a subject alone has no trailers
+	}
+	lines := strings.Split(strings.TrimSpace(paragraphs[len(paragraphs)-1]), "\n")
+	for _, l := range lines {
+		key, _, ok := strings.Cut(l, ":")
+		if !ok || key == "" || strings.ContainsAny(key, " \t") {
+			return nil
+		}
+	}
+	return lines
 }
 
 // TicketRefsText lists the tickets a pull request references.
@@ -68,14 +92,14 @@ func ticketRefs(pr PullRequest) []tickets.Ref {
 		}
 		refs = append(refs, r)
 	}
-	if rest, ok := strings.CutPrefix(pr.Branch, "istari/"); ok {
+	if rest, ok := strings.CutPrefix(pr.Branch, "istari/"); ok && (pr.HeadRepo == "" || pr.HeadRepo == pr.Repo) {
 		key, _, _ := strings.Cut(rest, "/")
 		if n, err := strconv.Atoi(key); err == nil && n > 0 {
 			add(tickets.Ref{Provider: "gh", Repo: pr.Repo, Number: n})
 		}
 	}
 	for _, msg := range pr.Messages {
-		for _, line := range strings.Split(msg, "\n") {
+		for _, line := range trailerBlock(msg) {
 			if v, ok := strings.CutPrefix(line, "Ticket:"); ok {
 				if ref, err := tickets.ParseRef(strings.TrimSpace(v)); err == nil {
 					add(ref)

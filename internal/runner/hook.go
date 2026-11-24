@@ -14,16 +14,13 @@ import (
 // InstallTicketHook makes every commit in the ticket's worktree carry the
 // trailer "Ticket: <ref>" (spec sections 2.1 and 7.7: added by a git hook, the
 // agent does not need to remember it). The hook applies to this worktree only:
-// it is set through the worktree's own core.hooksPath, so the human's main
-// checkout is unchanged. The repository's own hooks keep running in the
-// worktree: istari's hooks directory calls them.
+// it is set through the worktree's own core.hooksPath, so the files, HEAD and
+// hooks of the human's main checkout are unchanged; the repository's shared
+// config only gains extensions.worktreeConfig, which per-worktree config
+// needs. The repository's own hooks keep running in the worktree: istari's
+// hooks call them whenever they are executable. Installing again is safe.
 func InstallTicketHook(ctx context.Context, worktree, ref string) error {
 	if _, err := tickets.ParseRef(ref); err != nil {
-		return err
-	}
-	// The repository's hooks as they apply now, before istari's take over.
-	own, err := gitOut(ctx, worktree, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
-	if err != nil {
 		return err
 	}
 	gitDir, err := gitOut(ctx, worktree, "rev-parse", "--path-format=absolute", "--git-dir")
@@ -31,19 +28,25 @@ func InstallTicketHook(ctx context.Context, worktree, ref string) error {
 		return err
 	}
 	dir := filepath.Join(gitDir, "istari-hooks")
+	// The repository's own hooks, without istari's: a second install (a
+	// resumed ticket) must not take istari's hooks for the repository's.
+	if set, _ := gitOut(ctx, worktree, "config", "--worktree", "--get", "core.hooksPath"); set == dir {
+		if _, err := gitOut(ctx, worktree, "config", "--worktree", "--unset", "core.hooksPath"); err != nil {
+			return err
+		}
+	}
+	own, err := gitOut(ctx, worktree, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(own)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || name == "commit-msg" || strings.HasSuffix(name, ".sample") {
-			continue
-		}
-		wrapper := fmt.Sprintf("#!/bin/sh\nexec %s \"$@\"\n", quote(filepath.Join(own, name)))
+	// Every other hook runs the repository's own one if it is executable at
+	// that moment, as git would.
+	for _, name := range clientHooks {
+		target := quote(filepath.Join(own, name))
+		wrapper := fmt.Sprintf("#!/bin/sh\nif [ -x %s ]; then exec %s \"$@\"; fi\n", target, target)
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(wrapper), 0o755); err != nil {
 			return err
 		}
@@ -62,6 +65,13 @@ if [ -x %s ]; then exec %s "$@"; fi
 	}
 	_, err = gitOut(ctx, worktree, "config", "--worktree", "core.hooksPath", dir)
 	return err
+}
+
+// clientHooks are git's client-side hooks other than commit-msg (githooks(5)).
+var clientHooks = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
+	"pre-auto-gc", "post-rewrite", "sendemail-validate", "post-index-change",
 }
 
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
