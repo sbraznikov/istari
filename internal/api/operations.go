@@ -319,6 +319,15 @@ func (s *Server) operations() map[string]operation {
 			if !isAgent {
 				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari complete is for an agent: it needs the run token in ISTARI_TOKEN"}
 			}
+			if run.Role == "reviewer" {
+				// The verdict needs the report (spec 7.6): a reviewer that
+				// ends without one fails its run, and the attempt counts.
+				if _, submitted, err := s.reviewOf(ctx, run.Ticket, run.Task); err != nil {
+					return nil, err
+				} else if !submitted {
+					return nil, &core.Error{Code: core.CodeInvalidState, Message: "submit the review with istari review submit before istari complete"}
+				}
+			}
 			_, err := s.runs.Complete(ctx, run.ID, r.Message)
 			return ok(err)
 		}),

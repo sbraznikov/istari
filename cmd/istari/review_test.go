@@ -36,7 +36,18 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) {
+// reviewed is a ticket recovered in in_review, with its branch, its pull
+// request and a daemon whose claude is agent.
+type reviewed struct {
+	d   *daemon
+	gh  *githubtest.Server
+	ref tickets.Ref
+	pr  int
+	log string
+}
+
+func newReviewed(t *testing.T, agent string) reviewed {
+	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
@@ -65,7 +76,7 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(reviewAgent, binary, log)), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(agent, binary, log)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "config.toml")
@@ -76,6 +87,12 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	d.mustCLI(t, nil, "recover")
+	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log}
+}
+
+func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) {
+	r := newReviewed(t, reviewAgent)
+	d, gh, ref, pr, log := r.d, r.gh, r.ref, r.pr, r.log
 
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		var tk struct{ State string }
@@ -98,5 +115,40 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	reviews := gh.Issue(pr).Reviews
 	if len(reviews) != 1 || !strings.Contains(reviews[0].Body, "## Spec") || !strings.Contains(reviews[0].Body, "nothing refuses a burst") {
 		t.Fatalf("reviews = %+v, want the report published under its axis", reviews)
+	}
+}
+
+// silentReviewer completes without a report.
+const silentReviewer = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+[ "$ISTARI_ROLE" = reviewer ] && "$istari" complete "looks fine" >> "$log" 2>&1
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
+	r := newReviewed(t, silentReviewer)
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		var runs []struct{ Role, State, Reason string }
+		r.d.mustCLI(t, &runs, "run", "list")
+		if len(runs) > 0 && runs[0].State == "ended" {
+			if !strings.Contains(runs[0].Reason, "without istari complete") {
+				t.Fatalf("the run ended %q, want it failed: its complete was refused", runs[0].Reason)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no reviewer run ended after a minute: %+v\n%s", runs, r.d.stderr)
+		}
+	}
+	out, _ := os.ReadFile(r.log)
+	if !strings.Contains(string(out), "istari review submit") {
+		t.Fatalf("the refusal does not say what is missing:\n%s", out)
+	}
+	var tk struct{ State string }
+	r.d.mustCLI(t, &tk, "ticket", "show", r.ref.String())
+	if tk.State != "in_review" {
+		t.Fatalf("the ticket is %s, want in_review: no report, no verdict", tk.State)
 	}
 }

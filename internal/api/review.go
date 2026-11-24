@@ -9,7 +9,6 @@ import (
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
-	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // ReviewAnswer is what istari review submit answers: the findings code
@@ -81,16 +80,7 @@ func (s *Server) publishReview(ctx context.Context, ticket string, c runner.Revi
 	if err != nil {
 		return err
 	}
-	review := vcs.Review{Standards: vcs.Axis{Summary: c.Result.Standards}, Spec: vcs.Axis{Summary: c.Result.Spec}}
-	for _, f := range c.Accepted {
-		line := fmt.Sprintf("`%s:%d` %s: %s\n  > %s (%s)", f.File, f.Line, f.Kind, f.Text, f.Quote, f.Source)
-		if f.Axis == "standards" {
-			review.Standards.Findings = append(review.Standards.Findings, line)
-		} else {
-			review.Spec.Findings = append(review.Spec.Findings, line)
-		}
-	}
-	return s.vcs.PublishReview(ctx, pr.Repo, pr.Number, review)
+	return s.vcs.PublishReview(ctx, pr.Repo, pr.Number, c.Published())
 }
 
 // reviewOf tells how many findings code accepted in the report of a review

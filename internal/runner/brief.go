@@ -230,8 +230,8 @@ func reviewSection(r *ReviewInput) string {
 		"```yaml\nstandards: one line, the number of findings and the most serious one\nspec: one line, the number of findings and the most serious one\n" +
 		"findings:\n  - axis: standards | spec\n    kind: standard | smell  # standards; spec: missing | partial | wrong | extra\n" +
 		"    file: a path of the diff\n    line: a line of the new version the diff shows\n" +
-		"    source: ticket | instructions | the standard's path  # instructions: the baseline of code smells\n" +
-		"    quote: verbatim from the source\n    text: the finding\n```\n\n" +
+		"    source: ticket | instructions | the standard's path  # spec: ticket; standard: its standards file; smell: instructions\n" +
+		"    quote: verbatim from the source  # a smell's starts with its name\n    text: the finding\n```\n\n" +
 		"Code drops a finding whose place is not in the diff or whose quote is not in its source, and computes the verdict: any finding it accepts returns the ticket for rework.\n\n")
 	return b.String()
 }

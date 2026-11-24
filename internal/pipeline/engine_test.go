@@ -633,15 +633,15 @@ func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
 	}
 }
 
-func TestAReviewDoneWithoutAReportHoldsTheTicket(t *testing.T) {
+func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
 	f := inReview(t, config.Defaults{}, map[string]string{}, reports{})
-	f.finish(t, ref, "review", "agent:reviewer-1")
+	f.finish(t, ref, "review", "human:alex") // only a human can: a reviewer's complete needs a report
 	f.reconcile(t)
 	tk, err := f.tickets.Get(ctx, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tk.State != core.TicketInReview || tk.Hold != "needs_input" {
-		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review on hold needs_input", tk.State, tk.Hold)
+	if tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review, no verdict and no hold", tk.State, tk.Hold)
 	}
 }

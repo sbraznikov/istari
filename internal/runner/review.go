@@ -3,9 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 	"github.com/sbraznikov/istari/skill"
 )
 
@@ -25,7 +24,7 @@ type Finding struct {
 	Kind   string `yaml:"kind" json:"kind"`
 	File   string `yaml:"file" json:"file"`
 	Line   int    `yaml:"line" json:"line"`
-	Source string `yaml:"source" json:"source"` // "ticket", or the repository path of the standard
+	Source string `yaml:"source" json:"source"` // ticket, instructions, or the repository path of the standard
 	Quote  string `yaml:"quote" json:"quote"`
 	Text   string `yaml:"text" json:"text"`
 }
@@ -60,7 +59,7 @@ func ParseReviewResult(data []byte) (ReviewResult, error) {
 		case f.File == "" || f.Line < 1:
 			return ReviewResult{}, bad("finding %d: a file and a line of the diff are needed", i+1)
 		case f.Source == "" || strings.TrimSpace(f.Quote) == "":
-			return ReviewResult{}, bad("finding %d: a source (ticket or the standard's path) and a quote from it are needed", i+1)
+			return ReviewResult{}, bad("finding %d: a source (ticket, instructions or the standard's path) and a quote from it are needed", i+1)
 		case strings.TrimSpace(f.Text) == "":
 			return ReviewResult{}, bad("finding %d: the text of the finding is needed", i+1)
 		}
@@ -73,8 +72,8 @@ func ParseReviewResult(data []byte) (ReviewResult, error) {
 // or behaviour the ticket did not ask for; on Standards a documented
 // standard violated, or a code smell of the baseline.
 var FindingKinds = map[string][]string{
-	"spec":      {"missing", "partial", "wrong", "extra"},
-	"standards": {"standard", "smell"},
+	AxisSpec:      {"missing", "partial", "wrong", "extra"},
+	AxisStandards: {KindStandard, KindSmell},
 }
 
 // DroppedFinding is a finding code did not accept, and why.
@@ -105,19 +104,31 @@ func NewReviews(ws *Workspaces, j *journal.Journal) *Reviews {
 // Check verifies each finding of a report against the run's diff and the
 // sources it quotes; ticket is the ticket's text.
 func (r *Reviews) Check(ctx context.Context, run Run, res ReviewResult, ticket string) (ReviewCheck, error) {
-	diff, err := r.diff(ctx, run)
+	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
+		return ReviewCheck{}, err
+	}
+	diff, err := r.ws.reviewDiff(ctx, run.Ticket, run.Dir)
+	if err != nil {
+		return ReviewCheck{}, err
+	}
+	src := sources{ticket: ticket}
+	if src.standards, err = r.ws.mainStandards(ctx, ref.Repo); err != nil {
+		return ReviewCheck{}, err
+	}
+	mainFile := func(path string) ([]byte, error) { return r.ws.MainFile(ctx, ref.Repo, path) }
+	if src.instructions, err = skill.Instruction("reviewer", mainFile); err != nil {
 		return ReviewCheck{}, err
 	}
 	out := ReviewCheck{Result: res}
 	for _, f := range res.Findings {
+		reason := ""
 		if !diff.has(f.File, f.Line) {
-			out.Dropped = append(out.Dropped, DroppedFinding{f, fmt.Sprintf("%s:%d is not in the diff", f.File, f.Line)})
-			continue
-		}
-		if reason, err := r.quoted(ctx, run, f, ticket); err != nil {
+			reason = fmt.Sprintf("%s:%d is not in the diff", f.File, f.Line)
+		} else if reason, err = src.check(f, mainFile); err != nil {
 			return ReviewCheck{}, err
-		} else if reason != "" {
+		}
+		if reason != "" {
 			out.Dropped = append(out.Dropped, DroppedFinding{f, reason})
 			continue
 		}
@@ -126,42 +137,80 @@ func (r *Reviews) Check(ctx context.Context, run Run, res ReviewResult, ticket s
 	return out, nil
 }
 
-// quoted tells why a finding's quote is not verbatim in its source, or "":
-// the ticket, or a file of the main branch. Runs of white space count as one
-// space, as Markdown wraps lines.
-func (r *Reviews) quoted(ctx context.Context, run Run, f Finding, ticket string) (string, error) {
-	ref, err := tickets.ParseRef(run.Ticket)
-	if err != nil {
-		return "", err
-	}
-	text, name := ticket, "the ticket"
-	switch f.Source {
-	case "ticket":
-	case SourceInstructions: // the baseline of code smells
-		mainFile := func(path string) ([]byte, error) { return r.ws.MainFile(ctx, ref.Repo, path) }
-		if text, err = skill.Instruction("reviewer", mainFile); err != nil {
-			return "", err
+// sources are what a quote may come from (spec sections 7.6 and 7.7): the
+// ticket for the Spec axis; a standards file of the main branch for a
+// documented standard; the baseline of code smells in the reviewer's
+// instructions for a smell.
+type sources struct {
+	ticket, instructions string
+	standards            []string
+}
+
+// check tells why a finding's quote is not verbatim in a source its axis and
+// kind allow, or "". Runs of white space count as one space, as Markdown
+// wraps lines.
+func (s sources) check(f Finding, mainFile skill.ReadFile) (string, error) {
+	var text, name string
+	switch {
+	case f.Axis == AxisSpec:
+		if f.Source != SourceTicket {
+			return "a spec finding quotes the ticket, not " + f.Source, nil
 		}
-		name = "the reviewer's instructions"
-	default:
-		data, err := r.ws.MainFile(ctx, ref.Repo, f.Source)
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Sprintf("the source %s does not exist on the main branch", f.Source), nil
+		text, name = s.ticket, "the ticket"
+	case f.Kind == KindSmell:
+		if f.Source != SourceInstructions {
+			return "a smell finding quotes the baseline of code smells (source " + SourceInstructions + "), not " + f.Source, nil
 		}
+		if !isBaselineSmell(f.Quote) {
+			return "the quote is not a code smell of the baseline: it starts with the smell's name", nil
+		}
+		text, name = s.instructions, "the reviewer's instructions"
+	default: // a documented standard
+		if f.Source == SourceTicket || f.Source == SourceInstructions {
+			return "a standard finding quotes a standards file, not " + f.Source, nil
+		}
+		if !slices.Contains(s.standards, f.Source) {
+			return f.Source + " is not a standards file on the main branch", nil
+		}
+		data, err := mainFile(f.Source)
 		if err != nil {
 			return "", err
 		}
 		text, name = string(data), f.Source
 	}
-	if strings.TrimSpace(f.Quote) == "" || !strings.Contains(squeeze(text), squeeze(f.Quote)) {
+	if !strings.Contains(squeeze(text), squeeze(f.Quote)) {
 		return "the quote is not in " + name, nil
 	}
 	return "", nil
 }
 
-// SourceInstructions is the source of a quote from the reviewer's
-// instructions, where the baseline of code smells is.
-const SourceInstructions = "instructions"
+// baselineSmells are the code smells every review checks (spec section 7.6).
+var baselineSmells = []string{"mysterious name", "duplicated code", "feature envy", "data clumps", "primitive obsession", "repeated switches",
+	"shotgun surgery", "divergent change", "speculative generality", "message chains", "middle man", "refused bequest"}
+
+// isBaselineSmell tells whether a quote is one of the baseline's smells: it
+// starts with the smell's name.
+func isBaselineSmell(quote string) bool {
+	q := strings.ToLower(squeeze(quote))
+	return slices.ContainsFunc(baselineSmells, func(name string) bool { return strings.HasPrefix(q, name) })
+}
+
+// The axes, the kinds the verdict table names and the sources of quotes
+// that are not a file's path (spec section 7.6).
+const (
+	AxisStandards = "standards"
+	AxisSpec      = "spec"
+	KindStandard  = "standard"
+	KindSmell     = "smell"
+	// SourceTicket is the ticket's text.
+	SourceTicket = "ticket"
+	// SourceInstructions is the reviewer's instructions, where the baseline
+	// of code smells is.
+	SourceInstructions = "instructions"
+	// The verdicts a review entry records.
+	VerdictPassed           = "passed"
+	VerdictChangesRequested = "changes_requested"
+)
 
 // squeeze turns every run of white space into one space.
 func squeeze(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -173,22 +222,37 @@ func (r *Reviews) Record(ctx context.Context, run Run, c ReviewCheck) error {
 	if err != nil {
 		return err
 	}
-	verdict := "passed"
+	verdict := VerdictPassed
 	if len(c.Accepted) > 0 {
-		verdict = "changes_requested"
+		verdict = VerdictChangesRequested
 	}
 	e := journal.ReviewEntry{Verdict: verdict, Task: run.Task}
 	for _, f := range c.Accepted {
-		e.Findings = append(e.Findings, describe(f))
+		e.Findings = append(e.Findings, f.String())
 	}
 	for _, d := range c.Dropped {
-		e.Dropped = append(e.Dropped, describe(d.Finding)+" — dropped: "+d.Reason)
+		e.Dropped = append(e.Dropped, d.Finding.String()+" — dropped: "+d.Reason)
 	}
 	return r.journal.Append(ctx, ref, journal.Entry{Kind: journal.Review, Actor: run.Agent(), Review: &e})
 }
 
-func describe(f Finding) string {
-	return fmt.Sprintf("%s %s at %s:%d: %s (%q, %s)", f.Axis, f.Kind, f.File, f.Line, f.Text, f.Quote, f.Source)
+// String renders a finding for the journal and the pull request.
+func (f Finding) String() string {
+	return fmt.Sprintf("`%s:%d` %s %s: %s (“%s”, %s)", f.File, f.Line, f.Axis, f.Kind, f.Text, f.Quote, f.Source)
+}
+
+// Published is the review istari publishes on the pull request: the
+// accepted findings under their axis, the two apart (spec section 7.6).
+func (c ReviewCheck) Published() vcs.Review {
+	review := vcs.Review{Standards: vcs.Axis{Summary: c.Result.Standards}, Spec: vcs.Axis{Summary: c.Result.Spec}}
+	for _, f := range c.Accepted {
+		if f.Axis == AxisStandards {
+			review.Standards.Findings = append(review.Standards.Findings, f.String())
+		} else {
+			review.Spec.Findings = append(review.Spec.Findings, f.String())
+		}
+	}
+	return review
 }
 
 // reviewDiff is the diff of a ticket's branch against its merge base with
@@ -207,11 +271,6 @@ func (d reviewDiff) has(file string, line int) bool {
 		}
 	}
 	return false
-}
-
-// diff computes the run's diff against the main branch.
-func (r *Reviews) diff(ctx context.Context, run Run) (reviewDiff, error) {
-	return r.ws.reviewDiff(ctx, run.Ticket, run.Dir)
 }
 
 // reviewDiff computes the diff of a ticket's worktree dir against the merge

@@ -195,3 +195,24 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 		t.Fatalf("standards = %v, want the one standards file on main", in.Standards)
 	}
 }
+
+func TestAQuoteMustComeFromTheSourceItsAxisAndKindAllow(t *testing.T) {
+	f := newReviews(t)
+	finding := func(axis, kind, source, quote string) string {
+		return "  - {axis: " + axis + ", kind: " + kind + ", file: cache/cache.go, line: 3, source: " + source + ", quote: \"" + quote + "\", text: t}\n"
+	}
+	checked := f.submit(t, "standards: s\nspec: s\nfindings:\n"+
+		finding("spec", "missing", "CODING_STANDARDS.md", "Every exported function has a doc comment.")+ // Spec quotes the ticket
+		finding("standards", "standard", "ticket", "Add a cache in front of the store.")+ // a standard quotes a standard
+		finding("standards", "standard", "cache/cache.go", "package cache")+ // code is no standard
+		finding("standards", "smell", "CODING_STANDARDS.md", "Every exported function has a doc comment.")+ // a smell quotes the baseline
+		finding("standards", "smell", "instructions", "You did not write this code.")) // the baseline, not any line
+	if len(checked.Accepted) != 0 || len(checked.Dropped) != 5 {
+		t.Fatalf("checked = %+v, want all five dropped", checked)
+	}
+	for i, want := range []string{"a spec finding quotes the ticket", "a standard finding quotes a standards file", "cache/cache.go is not a standards file", "a smell finding quotes the baseline", "not a code smell of the baseline"} {
+		if !strings.Contains(checked.Dropped[i].Reason, want) {
+			t.Errorf("finding %d dropped for %q, want %q", i+1, checked.Dropped[i].Reason, want)
+		}
+	}
+}

@@ -457,15 +457,15 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 // verdict computes the review's verdict from the accepted report (spec
 // sections 4.1 and 7.6): any accepted finding returns the ticket for rework
 // (T7) while rounds are left, else it is held; none passes it once CI is
-// green (T8). A review that ended without a report waits for a human.
+// green (T8). Without a report there is no verdict: a reviewer cannot
+// complete its task without one.
 func (e *Engine) verdict(ctx context.Context, tk core.Ticket, r round, fire func(string) error) error {
 	findings, submitted, err := e.opts.Review(ctx, tk.Ref, r.tasks["review"].ID)
 	switch {
 	case err != nil:
 		return err
 	case !submitted:
-		_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
-		return err
+		return nil
 	case findings > 0:
 		err := e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
 		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
