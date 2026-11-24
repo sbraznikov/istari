@@ -25,6 +25,12 @@ type fakeGitHub struct {
 	comments  map[int][]string
 	subIssues map[int][]int64
 	pageSize  int
+	prefix    string       // API path prefix, e.g. /api/v3 on GitHub Enterprise
+	moved     map[int]bool // transferred issues: GitHub answers 301
+	deleted   map[int]bool // deleted issues: GitHub answers 410
+	// dropLabels makes issue creation ignore labels, as GitHub does for a
+	// token without push access.
+	dropLabels bool
 }
 
 type fakeLabel struct {
@@ -44,8 +50,15 @@ type fakeIssue struct {
 }
 
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
+	return newFakeGitHubAt(t, "")
+}
+
+// newFakeGitHubAt serves the API under a path prefix; the server URL to give
+// the adapter is srv.URL + prefix.
+func newFakeGitHubAt(t *testing.T, prefix string) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{t: t, token: "test-token", labels: map[string]fakeLabel{"bug": {Name: "bug", Color: "d73a4a"}},
-		issues: map[int]*fakeIssue{}, comments: map[int][]string{}, subIssues: map[int][]int64{}, nextID: 1000, pageSize: 100}
+		issues: map[int]*fakeIssue{}, comments: map[int][]string{}, subIssues: map[int][]int64{}, nextID: 1000, pageSize: 100,
+		prefix: prefix, moved: map[int]bool{}, deleted: map[int]bool{}}
 	mux := http.NewServeMux()
 	const repo = "/repos/acme/web"
 	mux.HandleFunc("GET "+repo+"/issues/{n}", f.getIssue)
@@ -64,6 +77,11 @@ func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if !strings.HasPrefix(r.URL.Path, prefix+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
 		mux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -92,6 +110,17 @@ func (f *fakeGitHub) issueJSON(i *fakeIssue) map[string]any {
 
 func (f *fakeGitHub) issue(w http.ResponseWriter, r *http.Request) *fakeIssue {
 	n, _ := strconv.Atoi(r.PathValue("n"))
+	if f.moved[n] {
+		// Point at an issue that exists, so that a client following the
+		// redirect would get an answer instead of an error.
+		w.Header().Set("Location", "http://"+r.Host+f.prefix+"/repos/acme/web/issues/1")
+		f.write(w, http.StatusMovedPermanently, map[string]string{"message": "Moved Permanently"})
+		return nil
+	}
+	if f.deleted[n] {
+		f.write(w, http.StatusGone, map[string]string{"message": "This issue was deleted"})
+		return nil
+	}
 	i, ok := f.issues[n]
 	if !ok {
 		f.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -167,7 +196,7 @@ func (f *fakeGitHub) listIssues(w http.ResponseWriter, r *http.Request) {
 		nq := next.Query()
 		nq.Set("page", strconv.Itoa(page+1))
 		next.RawQuery = nq.Encode()
-		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s>; rel="next"`, r.Host, next.RequestURI()))
+		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s%s>; rel="next"`, r.Host, f.prefix, next.RequestURI()))
 	}
 	f.write(w, http.StatusOK, all[from:to])
 }
@@ -189,6 +218,9 @@ func (f *fakeGitHub) createIssue(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	if !f.checkLabels(w, req.Labels) {
 		return
+	}
+	if f.dropLabels {
+		req.Labels = nil
 	}
 	f.nextID++
 	i := &fakeIssue{ID: f.nextID, Number: len(f.issues) + 1, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels, Author: "istari-bot"}
@@ -274,4 +306,33 @@ func (f *fakeGitHub) snapshot(n int) fakeIssue {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return *f.issues[n]
+}
+
+// label returns a label of the repository.
+func (f *fakeGitHub) label(name string) (fakeLabel, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	l, ok := f.labels[name]
+	return l, ok
+}
+
+// subIssuesOf returns the ids of an issue's sub-issues and the id of child.
+func (f *fakeGitHub) subIssuesOf(n, child int) ([]int64, int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.subIssues[n]), f.issues[child].ID
+}
+
+// commentsOf returns the comments on an issue.
+func (f *fakeGitHub) commentsOf(n int) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.comments[n])
+}
+
+// set changes the fake under its lock.
+func (f *fakeGitHub) set(change func(f *fakeGitHub)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
 }

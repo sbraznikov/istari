@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -48,20 +49,28 @@ type Provider struct {
 
 var _ tickets.Provider = (*Provider)(nil)
 
-// New returns the adapter.
+// requestTimeout bounds one API request of the default client.
+const requestTimeout = 30 * time.Second
+
+// New returns the adapter. Its HTTP client never follows redirects: GitHub
+// answers 301 for a transferred issue, and following it would turn a write
+// into a GET that "succeeds" without writing.
 func New(opts Options) *Provider {
 	if opts.BaseURL == "" {
 		opts.BaseURL = DefaultBaseURL
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = http.DefaultClient
+		opts.HTTPClient = &http.Client{Timeout: requestTimeout}
 	}
+	client := *opts.HTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	opts.HTTPClient = &client
 	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}}
 }
 
 // Capabilities implements tickets.Provider.
 func (p *Provider) Capabilities() tickets.Caps {
-	return tickets.Caps{SubIssues: true, CustomStates: false, Webhooks: true}
+	return tickets.Caps{SubIssues: true, CustomStates: false, Webhooks: false} // webhooks come with #16
 }
 
 // Subscribe implements tickets.Provider. Webhooks and polling come with the
@@ -115,6 +124,20 @@ func stateOf(labels []string) tickets.State {
 	return s
 }
 
+// validRepo matches owner/repo.
+var validRepo = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+
+func checkRepo(repo string) error {
+	if !validRepo.MatchString(repo) {
+		return fmt.Errorf("github: %q is not owner/repo", repo)
+	}
+	return nil
+}
+
+func issuePath(ref tickets.Ref, rest string) string {
+	return fmt.Sprintf("/repos/%s/issues/%d%s", ref.Repo, ref.Number, rest)
+}
+
 func repoOf(ref tickets.Ref) (string, error) {
 	if ref.Provider != "gh" || ref.Repo == "" || ref.Number < 1 {
 		return "", fmt.Errorf("github: %s is not a GitHub issue reference", ref)
@@ -129,7 +152,7 @@ func (p *Provider) Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, er
 		return tickets.Ticket{}, err
 	}
 	var i issue
-	if err := p.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, ref.Number), nil, &i); err != nil {
+	if err := p.do(ctx, http.MethodGet, issuePath(ref, ""), nil, &i); err != nil {
 		return tickets.Ticket{}, fmt.Errorf("github: get %s: %w", ref, err)
 	}
 	if i.PullRequest != nil {
@@ -141,6 +164,14 @@ func (p *Provider) Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, er
 // List implements tickets.Provider. Pull requests, which the issues API also
 // returns, are left out.
 func (p *Provider) List(ctx context.Context, q tickets.Query) ([]tickets.Ticket, error) {
+	if err := checkRepo(q.Repo); err != nil {
+		return nil, err
+	}
+	for _, l := range q.Labels {
+		if strings.Contains(l, ",") {
+			return nil, fmt.Errorf("github: cannot filter on label %q: the API separates labels with commas", l)
+		}
+	}
 	v := url.Values{"per_page": {"100"}, "state": {"open"}}
 	if q.Closed {
 		v.Set("state", "all")
@@ -168,8 +199,17 @@ func (p *Provider) List(ctx context.Context, q tickets.Query) ([]tickets.Ticket,
 
 // Create implements tickets.Provider: the issue is created in state new (T1),
 // and labels missing from the repository are created first.
+//
+// istari's own labels in the draft are dropped: a new ticket has exactly the
+// state label istari:new. GitHub silently drops the labels of an issue made
+// with a token that cannot push; that is reported as an error, since the
+// ticket would otherwise have no state.
 func (p *Provider) Create(ctx context.Context, d tickets.Draft) (tickets.Ticket, error) {
-	labels := append(slices.Clone(d.Labels), statePrefix+string(core.TicketNew))
+	if err := checkRepo(d.Repo); err != nil {
+		return tickets.Ticket{}, err
+	}
+	labels := slices.DeleteFunc(slices.Clone(d.Labels), func(l string) bool { return strings.HasPrefix(l, statePrefix) })
+	labels = append(labels, statePrefix+string(core.TicketNew))
 	if err := p.ensureLabels(ctx, d.Repo, labels); err != nil {
 		return tickets.Ticket{}, err
 	}
@@ -178,7 +218,30 @@ func (p *Provider) Create(ctx context.Context, d tickets.Draft) (tickets.Ticket,
 	if err := p.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues", d.Repo), req, &i); err != nil {
 		return tickets.Ticket{}, fmt.Errorf("github: create in %s: %w", d.Repo, err)
 	}
-	return i.ticket(d.Repo), nil
+	created := i.ticket(d.Repo)
+	if created.State.State != core.TicketNew {
+		return created, fmt.Errorf("github: %s was created without its labels; the token needs push access to %s", created.Ref, d.Repo)
+	}
+	return created, nil
+}
+
+// ticketStates are the states a ticket can be in (spec section 4.1).
+var ticketStates = []core.TicketState{
+	core.TicketNew, core.TicketReady, core.TicketPlanning, core.TicketInProgress,
+	core.TicketInReview, core.TicketAwaitingApproval, core.TicketDone, core.TicketCanceled,
+}
+
+func checkState(s tickets.State) error {
+	if !slices.Contains(ticketStates, s.State) {
+		return fmt.Errorf("github: %q is not a ticket state", s.State)
+	}
+	if s.Hold != "" && !slices.Contains(core.HoldReasons(), s.Hold) {
+		return fmt.Errorf("github: %q is not a hold reason", s.Hold)
+	}
+	if s.Hold != "" && (s.State == core.TicketDone || s.State == core.TicketCanceled) {
+		return fmt.Errorf("github: a %s ticket cannot be on hold", s.State)
+	}
+	return nil
 }
 
 // SetState implements tickets.Provider. It replaces istari's labels with
@@ -186,6 +249,9 @@ func (p *Provider) Create(ctx context.Context, d tickets.Draft) (tickets.Ticket,
 // label, and closes the issue for done (completed) and canceled (not
 // planned) or reopens it for any other state.
 func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.State) error {
+	if err := checkState(s); err != nil {
+		return err
+	}
 	current, err := p.Get(ctx, ref)
 	if err != nil {
 		return err
@@ -198,8 +264,8 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 	if err := p.ensureLabels(ctx, ref.Repo, labels); err != nil {
 		return err
 	}
-	if !slices.Equal(labels, current.Labels) {
-		if err := p.do(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/issues/%d/labels", ref.Repo, ref.Number), map[string]any{"labels": labels}, nil); err != nil {
+	if !sameSet(labels, current.Labels) {
+		if err := p.do(ctx, http.MethodPut, issuePath(ref, "/labels"), map[string]any{"labels": labels}, nil); err != nil {
 			return fmt.Errorf("github: set labels of %s: %w", ref, err)
 		}
 	}
@@ -213,24 +279,30 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 		patch = map[string]any{"state": "open", "state_reason": "reopened"}
 	}
 	if patch != nil {
-		if err := p.do(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number), patch, nil); err != nil {
+		if err := p.do(ctx, http.MethodPatch, issuePath(ref, ""), patch, nil); err != nil {
 			return fmt.Errorf("github: set state of %s: %w", ref, err)
 		}
 	}
 	return nil
 }
 
+func sameSet(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(slices.Compact(a), slices.Compact(b))
+}
+
 // Comment implements tickets.Provider.
 func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (tickets.CommentRef, error) {
-	repo, err := repoOf(ref)
-	if err != nil {
+	if _, err := repoOf(ref); err != nil {
 		return tickets.CommentRef{}, err
 	}
 	var c struct {
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 	}
-	if err := p.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, ref.Number), map[string]any{"body": body}, &c); err != nil {
+	if err := p.do(ctx, http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body}, &c); err != nil {
 		return tickets.CommentRef{}, fmt.Errorf("github: comment on %s: %w", ref, err)
 	}
 	return tickets.CommentRef{ID: c.ID, URL: c.HTMLURL}, nil
@@ -239,8 +311,7 @@ func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (t
 // Link implements tickets.Provider: a child ticket becomes a sub-issue; a pull
 // request or a Slack thread is linked in a comment.
 func (p *Provider) Link(ctx context.Context, ref tickets.Ref, l tickets.Link) error {
-	repo, err := repoOf(ref)
-	if err != nil {
+	if _, err := repoOf(ref); err != nil {
 		return err
 	}
 	switch l.Kind {
@@ -249,10 +320,13 @@ func (p *Provider) Link(ctx context.Context, ref tickets.Ref, l tickets.Link) er
 		if _, err := repoOf(l.Child); err != nil {
 			return err
 		}
-		if err := p.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", l.Child.Repo, l.Child.Number), nil, &child); err != nil {
+		if err := p.do(ctx, http.MethodGet, issuePath(l.Child, ""), nil, &child); err != nil {
 			return fmt.Errorf("github: link child %s: %w", l.Child, err)
 		}
-		if err := p.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, ref.Number), map[string]any{"sub_issue_id": child.ID}, nil); err != nil {
+		if child.PullRequest != nil {
+			return fmt.Errorf("github: link child %s: it is a pull request, not an issue", l.Child)
+		}
+		if err := p.do(ctx, http.MethodPost, issuePath(ref, "/sub_issues"), map[string]any{"sub_issue_id": child.ID}, nil); err != nil {
 			return fmt.Errorf("github: link child %s to %s: %w", l.Child, ref, err)
 		}
 		return nil
@@ -313,9 +387,17 @@ type apiError struct {
 
 func (e *apiError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Message) }
 
-// Is makes a 404 match tickets.ErrNotFound.
+// Is makes 404 (missing), 410 (deleted) and 301 (transferred to another
+// repository) match tickets.ErrNotFound: the ticket is not at its ref.
 func (e *apiError) Is(target error) bool {
-	return target == tickets.ErrNotFound && e.Status == http.StatusNotFound
+	if target != tickets.ErrNotFound {
+		return false
+	}
+	switch e.Status {
+	case http.StatusNotFound, http.StatusGone, http.StatusMovedPermanently:
+		return true
+	}
+	return false
 }
 
 func isStatus(err error, status int) bool {
@@ -340,11 +422,7 @@ func (p *Provider) doPage(ctx context.Context, path string, out any) (string, er
 	if m == nil {
 		return "", nil
 	}
-	u, err := url.Parse(m[1])
-	if err != nil {
-		return "", err
-	}
-	return u.RequestURI(), nil
+	return m[1], nil // an absolute URL, followed as given
 }
 
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) (*http.Response, error) {
@@ -356,7 +434,11 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		}
 		reader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, p.base+path, reader)
+	target := path
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		target = p.base + path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +464,9 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		json.Unmarshal(data, &e)
 		if e.Message == "" {
 			e.Message = strconv.Quote(string(data))
+		}
+		if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
+			e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
 		}
 		return nil, &apiError{Status: res.StatusCode, Message: e.Message}
 	}
