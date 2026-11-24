@@ -163,7 +163,12 @@ func (s *Server) operations() map[string]operation {
 		"ticket.create": write(ticketAgain, func(ctx context.Context, r TicketCreateRequest) (any, error) {
 			return k.Create(ctx, r.Actor, r.Ref, r.Project)
 		}),
+		// ticket.fire never admits (spec 4.5, 7.7): admission checks trust
+		// and the standard, so it goes through ticket.ready or the sync.
 		"ticket.fire": write(ticketAgain, func(ctx context.Context, r TicketFireRequest) (any, error) {
+			if r.Trigger == "accept" {
+				return nil, &core.Error{Code: core.CodeInvalidTransition, Message: "a ticket is admitted with istari ticket ready, not by firing accept"}
+			}
 			return k.Fire(ctx, r.Actor, r.Ref, r.Trigger)
 		}),
 		"ticket.hold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {

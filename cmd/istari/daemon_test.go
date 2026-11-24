@@ -410,3 +410,27 @@ func TestTheSystemdUnitEscapesSpecifiersAndVariables(t *testing.T) {
 		t.Fatalf("ExecStart does not escape %% and $:\n%s", unit)
 	}
 }
+
+func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	ref := "gh:acme/web#1"
+	createTicket(t, d, ref)
+	resp, err := d.client.Post("http://istari/v1/ticket.fire", "application/json",
+		strings.NewReader(`{"actor":"human:alex","ref":"gh:acme/web#1","trigger":"accept"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var e struct{ Code, Message string }
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatalf("ticket.fire accept: %s, body is not an error: %v", resp.Status, err)
+	}
+	if resp.StatusCode != http.StatusConflict || e.Code != "invalid_transition" || !strings.Contains(e.Message, "istari ticket ready") {
+		t.Fatalf("ticket.fire accept = %d %+v, want 409 invalid_transition naming istari ticket ready", resp.StatusCode, e)
+	}
+	var tk struct{ State string }
+	d.call(t, "ticket.show", map[string]any{"ref": ref}, &tk)
+	if tk.State != "new" {
+		t.Fatalf("after a refused accept the ticket is %s, want new", tk.State)
+	}
+}
