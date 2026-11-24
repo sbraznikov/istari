@@ -146,6 +146,9 @@ func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func(
 	}, halt
 }
 
+// blockBudget is the block kind of a task whose ticket's budget is spent.
+const blockBudget = "budget_exceeded"
+
 // budgetLeft is what is left of the ticket's budget: the budget of its size,
 // or of the ticket whose budget it shares, less what the runs of every
 // ticket sharing it spent. capped is false when
@@ -154,31 +157,35 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	if len(r.opts.Budgets) == 0 {
 		return 0, false, nil
 	}
-	root := func(t core.Ticket) string {
-		if t.BudgetOf != "" {
-			return t.BudgetOf
-		}
-		return t.Ref
-	}
 	all, err := r.tickets.List(ctx)
 	if err != nil {
 		return 0, true, err
 	}
-	sharing := map[string]bool{}
+	byRef := map[string]core.Ticket{}
 	for _, t := range all {
-		if root(t) == root(tk) {
+		byRef[t.Ref] = t
+	}
+	// The budget is the first ticket's of a chain of budget_of.
+	root := func(t core.Ticket) core.Ticket {
+		for range len(all) + 1 {
+			parent, ok := byRef[t.BudgetOf]
+			if t.BudgetOf == "" || !ok {
+				break
+			}
+			t = parent
+		}
+		return t
+	}
+	owner := root(tk)
+	sharing := map[string]bool{tk.Ref: true}
+	for _, t := range all {
+		if root(t).Ref == owner.Ref {
 			sharing[t.Ref] = true
 		}
 	}
-	sharing[tk.Ref] = true
 	// A ticket that shares a budget has the budget of the one it shares
 	// (spec section 4.5: it inherits the parent's budget).
-	size := tk.Size
-	for _, t := range all {
-		if t.Ref == root(tk) {
-			size = t.Size
-		}
-	}
+	size := owner.Size
 	if size == "" {
 		size = "M"
 	}
@@ -299,7 +306,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		return
 	}
 	if capped && budget <= 0 {
-		if err := r.tasks.Block(bg, lease, "budget_exceeded"); err != nil {
+		if err := r.tasks.Block(bg, lease, blockBudget); err != nil {
 			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
 		}
 		return
@@ -458,7 +465,7 @@ loop:
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-over:
 			reason := fmt.Sprintf("the run budget of $%.2f is spent", run.BudgetUSD)
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, "budget_exceeded") }, save: true})
+			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, blockBudget) }, save: true})
 		case who := <-stop:
 			reason := "stopped by " + who
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})

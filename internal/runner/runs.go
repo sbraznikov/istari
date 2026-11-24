@@ -57,7 +57,7 @@ type Run struct {
 	Started    time.Time     `json:"started"`
 	Ended      time.Time     `json:"ended,omitzero"`
 	Timeout    time.Duration `json:"timeout"`
-	BudgetUSD  float64       `json:"budget_usd,omitempty"` // 0: none
+	BudgetUSD  float64       `json:"budget_usd,omitempty"` // the run's cap: what was left of its ticket's budget; 0: none
 	Usage      harness.Usage `json:"usage"`
 	Completed  string        `json:"completed,omitempty"` // what the agent said with istari complete
 	Rejected   string        `json:"rejected,omitempty"`  // why code rejected what the agent submitted: the run fails

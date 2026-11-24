@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -74,5 +75,30 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 	defer c.Stop(0)
 	if c.spec.MaxBudgetUSD != 11 {
 		t.Fatalf("the child's run is capped at $%v, want the parent's M budget of $15 less the $4 spent", c.spec.MaxBudgetUSD)
+	}
+}
+
+func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
+	first := f.ticket(t, 40, "First")
+	sized(t, f, first.Ref, "L")
+	ref := first.Ref
+	for n, size := range []string{"S", "XS"} { // a child, then its child
+		tk, err := f.tickets.CreateWith(ctx, "agent:planner-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", 41+n), Project: "web", BudgetOf: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sized(t, f, tk.Ref, size)
+		ref = tk.Ref
+	}
+	f.fire(t, ref, "accept", "start")
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: ref, Project: "web", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 30 {
+		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30", s.spec.MaxBudgetUSD)
 	}
 }
