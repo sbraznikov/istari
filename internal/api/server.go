@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
@@ -40,6 +42,7 @@ type Server struct {
 	spaces  *runner.Workspaces
 	runs    *runner.Runs
 	runner  *runner.Runner
+	engine  *pipeline.Engine
 	repos   map[string]bool // the configured repositories: only their tickets get worktrees
 	ops     map[string]operation
 	changed *notifier
@@ -66,6 +69,9 @@ type ServerOptions struct {
 	Workspaces runner.WorkspaceOptions
 	// Runner turns on the runner when it has slots; it needs workspaces.
 	Runner runner.RunnerOptions
+	// Defaults are the installation's pipeline defaults; the repositories'
+	// pipeline files are read from the tracker when it has them.
+	Defaults config.Defaults
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -104,6 +110,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	srv.runs = runner.NewRuns(ns, srv.tasks, opts.Clock)
+	var files pipeline.Files
+	if f, ok := opts.Tracker.(pipeline.Files); ok {
+		files = f
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock})
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -128,24 +139,34 @@ func (s *Server) Tickets() *core.Tickets { return s.tickets }
 // Syncer returns the ticket sync, or nil when no tracker is configured.
 func (s *Server) Syncer() *tickets.Syncer { return s.syncer }
 
-// RunWorkspaces gives every ticket of a configured repository the worktree its
-// state calls for, at once
+// RunWorkspaces moves every ticket of a configured repository through its
+// pipeline and gives it the worktree its state calls for, at once
 // and after every change, and once a minute to repair what was missed, until
 // ctx ends. Without workspaces it returns at once.
 func (s *Server) RunWorkspaces(ctx context.Context) {
-	if s.spaces == nil {
+	if len(s.repos) == 0 {
 		return
 	}
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		changed := s.changed.wait()
+		// The pipeline first: a ticket it starts gets its worktree at once.
 		all, err := s.tickets.List(ctx)
 		if err == nil {
-			err = s.spaces.Reconcile(ctx, s.configured(all))
+			err = s.engine.Reconcile(ctx, s.configured(all))
 		}
 		if err != nil && ctx.Err() == nil {
-			log.Printf("istari: workspaces: %v", err)
+			log.Printf("istari: pipeline: %v", err)
+		}
+		if s.spaces != nil {
+			all, err := s.tickets.List(ctx)
+			if err == nil {
+				err = s.spaces.Reconcile(ctx, s.configured(all))
+			}
+			if err != nil && ctx.Err() == nil {
+				log.Printf("istari: workspaces: %v", err)
+			}
 		}
 		select {
 		case <-ctx.Done():

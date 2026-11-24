@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
@@ -219,6 +220,40 @@ func (s *Server) operations() map[string]operation {
 				return s.syncer.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
 			}
 			return k.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
+		}),
+		// Gates: the tasks a human performs (spec section 9).
+		"gate.list": read(func(ctx context.Context, _ Empty) (any, error) {
+			all, err := t.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			gates := []core.Task{}
+			for _, task := range all {
+				if task.Role == pipeline.RoleHuman && task.State == core.TaskReady {
+					gates = append(gates, task)
+				}
+			}
+			return gates, nil
+		}),
+		"gate.approve": write(taskAgain, func(ctx context.Context, r TaskActRequest) (any, error) {
+			if !strings.HasPrefix(r.Actor, "human:") {
+				return nil, &core.Error{Code: core.CodeHumanOnly, Message: "a gate is approved by a human, not " + r.Actor}
+			}
+			task, err := t.Get(ctx, r.ID)
+			if err != nil {
+				return nil, err
+			}
+			if task.Role != pipeline.RoleHuman {
+				return nil, &core.Error{Code: core.CodeInvalidTask, Message: r.ID + " is a " + task.Role + " task, not a gate"}
+			}
+			lease, err := t.Claim(ctx, r.Actor, r.ID)
+			if err != nil {
+				return nil, err
+			}
+			if err := t.Complete(ctx, lease); err != nil {
+				return nil, err
+			}
+			return t.Get(ctx, r.ID)
 		}),
 		// Runs (spec sections 7.2 and 9).
 		"run.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.runs.List(ctx) }),

@@ -46,7 +46,8 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	if _, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: "gh:acme/web#5", Project: "web", Title: "Add limits"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, tr := range []string{"accept", "start"} {
+	// in_progress: the pipeline has nothing to start; only this task runs.
+	for _, tr := range []string{"accept", "start", "plan_accepted"} {
 		if _, err := k.Fire(ctx, "system", "gh:acme/web#5", tr); err != nil {
 			t.Fatal(err)
 		}
