@@ -17,12 +17,20 @@ import (
 
 // Config is the installation config.
 type Config struct {
-	Daemon   Daemon    `toml:"daemon"`
-	Defaults Defaults  `toml:"defaults"`
-	Slack    Slack     `toml:"slack"`
-	TUI      TUI       `toml:"tui"`
-	Report   Report    `toml:"report"`
-	Projects []Project `toml:"project"`
+	Daemon    Daemon    `toml:"daemon"`
+	Defaults  Defaults  `toml:"defaults"`
+	GitHubApp GitHubApp `toml:"github_app"`
+	Slack     Slack     `toml:"slack"`
+	TUI       TUI       `toml:"tui"`
+	Report    Report    `toml:"report"`
+	Projects  []Project `toml:"project"`
+}
+
+// GitHubApp is the GitHub App istari pushes, opens pull requests and reads
+// checks as (spec section 12). Without it the gh CLI's token is used.
+type GitHubApp struct {
+	AppID      int64  `toml:"app_id"`
+	PrivateKey string `toml:"private_key"` // a path to the App's PEM key
 }
 
 // Daemon configures the long-running istari process.

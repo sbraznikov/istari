@@ -1083,7 +1083,7 @@ The TUI supports themes. A theme changes only colors; the set of screens, the pa
 ## 11. Security
 
 - **Least privilege.** The run token is bound to a ticket and a role. Refiner, planner and reviewer cannot push; implementer pushes only to its own branch; the merge is done by the daemon, not by an agent.
-- **Secrets outside the agent's environment.** Only the daemon has the Slack, tracker and GitHub App tokens.
+- **Secrets outside the agent's environment.** Only the daemon has the Slack, tracker and GitHub App tokens. The App's installation tokens live in the daemon's memory, are renewed before they expire and never reach an agent's environment. Without `[github_app]` the daemon uses the token of `gh auth token`: pushes and pull requests are then made as that user, `istari doctor` warns, and the daemon still limits every agent to its own ticket branch.
 - **Main branch protection** is configured in GitHub (required reviews and checks). istari relies on it and does not try to replace it. In merge mode `auto` the branch rules must allow the istari app to merge without a human review; `istari doctor` checks that the mode and the rules are consistent.
 - **Network.** At the `container` level outbound traffic is restricted to a list: the daemon API, package registries, hosts from the project config.
 - **Audit.** Every event contains an actor; for agent actions, also the human whose decision opened the stage.
@@ -1119,6 +1119,11 @@ XS = 2
 S  = 5
 M  = 15
 L  = 30
+
+[github_app]                          # VCS (section 3.1): pushes, pull requests, checks and reviews; absent — the gh CLI's token (section 11)
+app_id      = 123456
+private_key = "~/.config/istari/istari-app.pem"   # the App's private key; only the daemon reads it
+                                      # the installation is looked up per repository
 
 [slack]
 app_token = "env:SLACK_APP_TOKEN"     # Socket Mode

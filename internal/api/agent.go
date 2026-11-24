@@ -8,6 +8,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/runner"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // CodeTokenForbidden refuses an operation that a run token may not perform.
@@ -15,7 +16,7 @@ const CodeTokenForbidden = "token_forbidden"
 
 // agentOps are the operations a run token may perform. The agent commands of
 // spec section 7.4 join them with their tickets.
-var agentOps = []string{"whoami", "run.complete", "run.show", "run.logs", "ticket.show", "task.show"}
+var agentOps = []string{"whoami", "run.complete", "vcs.push", "run.show", "run.logs", "ticket.show", "task.show"}
 
 type runKey struct{}
 
@@ -69,4 +70,35 @@ func (s *Server) asAgent(ctx context.Context, op string, raw json.RawMessage, to
 		raw, _ = json.Marshal(fields)
 	}
 	return run, raw, nil
+}
+
+// push pushes the worktree of an agent's run to its ticket branch, with a
+// token the agent never sees.
+func (s *Server) push(ctx context.Context, r PushRequest) error {
+	run, isAgent := runOf(ctx)
+	switch {
+	case !isAgent:
+		return &core.Error{Code: runner.CodeTokenInvalid, Message: "a push is an agent's: it needs the run token in ISTARI_TOKEN"}
+	case run.Role != "implementer":
+		return &core.Error{Code: CodeTokenForbidden, Message: "only the implementer pushes, not the " + run.Role}
+	case s.vcs == nil || s.spaces == nil:
+		return &core.Error{Code: core.CodeInvalidState, Message: "pushing is off: istari has no GitHub access"}
+	}
+	ws, err := s.spaces.Get(ctx, run.Ticket)
+	if err != nil {
+		return err
+	}
+	if ws.Branch == "" || ws.Dir != run.Dir {
+		return &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no worktree of this run"}
+	}
+	target := r.Branch
+	if target == "" {
+		target = ws.Branch
+	}
+	token, err := s.vcs.Tokens().Token(ctx, ws.Repo)
+	if err != nil {
+		return err
+	}
+	url, private := s.spaces.PushTarget(ws.Repo)
+	return vcs.Push(ctx, vcs.PushSpec{Worktree: ws.Dir, URL: url, Private: private, Own: ws.Branch, Target: target, Force: r.Force, Token: token})
 }

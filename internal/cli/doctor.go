@@ -14,6 +14,7 @@ import (
 	"github.com/sbraznikov/istari/internal/project"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets/github"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // newDoctorCommand returns istari doctor (spec section 9). It checks what is
@@ -39,6 +40,21 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 					failed++
 				}
 				checks = append(checks, c)
+				// Pushes and pull requests: the GitHub App, or the gh CLI's
+				// token as that user (spec section 11).
+				v := check{Name: "vcs github", OK: true}
+				switch {
+				case cfg.GitHubApp.AppID == 0:
+					v.Detail = "no [github_app]: pushes and pull requests are made as the gh CLI's user, whose credentials an agent running as you can reach"
+				default:
+					if _, err := vcs.NewAppTokens(cfg.GitHubApp.AppID, cfg.GitHubApp.PrivateKey, ""); err != nil {
+						v.OK, v.Detail = false, err.Error()
+						failed++
+					} else {
+						v.Detail = fmt.Sprintf("GitHub App %d", cfg.GitHubApp.AppID)
+					}
+				}
+				checks = append(checks, v)
 			}
 			for _, h := range harness.All() {
 				c := check{Name: "harness " + h.Name(), OK: true}

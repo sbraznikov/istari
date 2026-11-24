@@ -23,6 +23,9 @@ func TestSpecExampleLoads(t *testing.T) {
 	if got := cfg.Defaults.BudgetUSD["M"]; got != 15 {
 		t.Errorf("defaults.budget_usd.M = %v, want 15", got)
 	}
+	if got := cfg.GitHubApp; got.AppID != 123456 || got.PrivateKey != "~/.config/istari/istari-app.pem" {
+		t.Errorf("github_app = %+v", got)
+	}
 	if got := cfg.Slack.OpsChannel; got != "#agents-ops" {
 		t.Errorf("slack.ops_channel = %q, want #agents-ops", got)
 	}

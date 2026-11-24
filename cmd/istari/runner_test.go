@@ -23,6 +23,12 @@ const fakeAgent = `#!/bin/sh
 out=%[1]q
 istari=%[2]q
 env | grep '^ISTARI_' | sort > "$out/env"
+env > "$out/allenv"
+git -c user.name=agent -c user.email=agent@example.com commit -q --allow-empty -m "work" > /dev/null 2>&1
+push() { curl -s -o /dev/null -w "%%{http_code}" --unix-socket "$ISTARI_SOCKET" -H "Authorization: Bearer $ISTARI_TOKEN" -d "$1" http://istari/v1/vcs.push; }
+push '{"actor":"x","branch":"main"}' > "$out/push_main"
+push '{"actor":"x","branch":"istari/6/other"}' > "$out/push_other"
+push '{"actor":"x"}' > "$out/push_own"
 pwd > "$out/pwd"
 "$istari" whoami --json > "$out/whoami" 2>&1
 "$istari" ticket show gh:acme/web#99 > /dev/null 2> "$out/scope"; echo "exit $?" >> "$out/scope"
@@ -112,6 +118,15 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	}
 	if scope := read("scope"); !strings.Contains(scope, "token_scope") || !strings.Contains(scope, "exit 1") {
 		t.Errorf("acting on another ticket: %s", scope)
+	}
+	if got := read("push_main") + " " + read("push_other") + " " + read("push_own"); got != "403 403 200" {
+		t.Errorf("pushes to main, another ticket's branch and its own: %s, want 403 403 200", got)
+	}
+	if out, err := exec.Command("git", "-C", filepath.Join(server, "acme", "web.git"), "rev-parse", "--verify", "istari/5/add-limits").CombinedOutput(); err != nil {
+		t.Errorf("the own branch did not reach the remote: %s", out)
+	}
+	if strings.Contains(read("allenv"), gh.Token) {
+		t.Error("the GitHub token is in the agent's environment")
 	}
 	if p := read("priority"); !strings.Contains(p, "token_forbidden") || !strings.Contains(p, "exit 1") {
 		t.Errorf("an agent setting a priority: %s", p)

@@ -8,6 +8,7 @@
 package githubtest
 
 import (
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -43,6 +44,14 @@ type Server struct {
 	dropLabels bool
 	failNext   int
 	files      map[string]string // repository files on the default branch
+
+	appID           int64
+	appKey          *rsa.PublicKey
+	installation    int64
+	issued          map[string]time.Time // installation tokens → expiry
+	checks          map[string][]Check   // commit → check runs
+	statuses        map[string]string    // commit → combined status
+	deletedBranches []string
 }
 
 // Label is a repository label.
@@ -62,6 +71,11 @@ type Issue struct {
 	Author      string
 	PullRequest bool
 	Branch      string   // a pull request's head branch
+	Base        string   // a pull request's base branch
+	HeadSHA     string   // a pull request's head commit
+	Reviews     []Review // a pull request's reviews
+	Merged      bool
+	MergeMethod string
 	Commits     []string // a pull request's commit messages
 	Updated     time.Time
 	Events      []Event
@@ -91,7 +105,8 @@ func New(t testing.TB, opts ...Option) *Server {
 	s := &Server{Token: "test-token", TokenUser: "alex", now: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC),
 		labels: map[string]Label{"bug": {Name: "bug", Color: "d73a4a"}}, issues: map[int]*Issue{}, nextID: 1000,
 		subIssues: map[int][]int64{}, perms: map[string]string{"alex": "admin"}, pageSize: 100,
-		moved: map[int]bool{}, deleted: map[int]bool{}, files: map[string]string{}}
+		moved: map[int]bool{}, deleted: map[int]bool{}, files: map[string]string{},
+		issued: map[string]time.Time{}, checks: map[string][]Check{}, statuses: map[string]string{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -111,14 +126,24 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/collaborators/{user}/permission", s.permission)
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
+	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
+	mux.HandleFunc("PATCH "+repo+"/pulls/{n}", s.updatePull)
+	mux.HandleFunc("GET "+repo+"/pulls/{n}/reviews", s.reviews)
+	mux.HandleFunc("PUT "+repo+"/pulls/{n}/merge", s.mergePull)
+	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
+	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)
+	mux.HandleFunc("DELETE "+repo+"/git/refs/{ref...}", s.deleteRef)
+	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/commits", s.listPullCommits)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+s.Token {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		appOnly := strings.HasSuffix(r.URL.Path, "/installation") || strings.HasPrefix(strings.TrimPrefix(r.URL.Path, s.prefix), "/app/")
+		if appOnly && !s.appAuth(r) || !appOnly && !s.tokenOK(r) {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		if s.failNext > 0 {
 			s.failNext--
 			s.write(w, http.StatusInternalServerError, map[string]string{"message": "Server Error"})
@@ -556,7 +581,7 @@ func (s *Server) pull(w http.ResponseWriter, r *http.Request) *Issue {
 
 func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 	if i := s.pull(w, r); i != nil {
-		s.write(w, http.StatusOK, map[string]any{"number": i.Number, "state": i.State, "head": map[string]any{"ref": i.Branch, "repo": map[string]any{"full_name": Repo}}})
+		s.write(w, http.StatusOK, s.pullJSON(i))
 	}
 }
 

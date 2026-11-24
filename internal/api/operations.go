@@ -69,6 +69,11 @@ type (
 		ID    string               `json:"id"`
 		After runner.TranscriptPos `json:"after"` // from an earlier answer's next
 	}
+	PushRequest struct {
+		Actor  string `json:"actor"`
+		Branch string `json:"branch,omitempty"` // "": the ticket's own branch
+		Force  bool   `json:"force,omitempty"`  // with a lease on what istari last saw
+	}
 	RunCompleteRequest struct {
 		Actor   string `json:"actor"`
 		Message string `json:"message,omitempty"`
@@ -117,6 +122,7 @@ func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
 func (r *ActorRequest) validate() error        { return needActor(r.Actor) }
 func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
 func (r *RunCompleteRequest) validate() error  { return needActor(r.Actor) }
+func (r *PushRequest) validate() error         { return needActor(r.Actor) }
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -275,7 +281,10 @@ func (s *Server) operations() map[string]operation {
 			_, err := s.runs.Complete(ctx, run.ID, r.Message)
 			return ok(err)
 		}),
-		"whoami": read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
+		// vcs.push pushes an agent's work to its ticket branch, and only
+		// there (spec sections 2.1 and 11): the implementer's run alone.
+		"vcs.push": write(okAgain, func(ctx context.Context, r PushRequest) (any, error) { return ok(s.push(ctx, r)) }),
+		"whoami":   read(func(ctx context.Context, _ Empty) (any, error) { return s.whoami(ctx) }),
 		// Ticket worktrees (spec section 7.2).
 		"workspace.list": read(func(ctx context.Context, _ Empty) (any, error) {
 			if s.spaces == nil {

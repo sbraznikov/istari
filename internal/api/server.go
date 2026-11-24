@@ -21,6 +21,7 @@ import (
 	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // Server serves the daemon API over HTTP + JSON:
@@ -43,6 +44,8 @@ type Server struct {
 	runs    *runner.Runs
 	runner  *runner.Runner
 	engine  *pipeline.Engine
+	vcs     *vcs.Client
+	watch   *vcs.Watcher
 	repos   map[string]bool // the configured repositories: only their tickets get worktrees
 	ops     map[string]operation
 	changed *notifier
@@ -72,6 +75,8 @@ type ServerOptions struct {
 	// Defaults are the installation's pipeline defaults; the repositories'
 	// pipeline files are read from the tracker when it has them.
 	Defaults config.Defaults
+	// VCS is the GitHub side: pushes, pull requests, checks and reviews.
+	VCS *vcs.Client
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -113,6 +118,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var files pipeline.Files
 	if f, ok := opts.Tracker.(pipeline.Files); ok {
 		files = f
+	}
+	if opts.VCS != nil {
+		srv.vcs = opts.VCS
+		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock)
 	}
 	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock})
 	srv.ops = srv.operations()
@@ -186,6 +195,26 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 		}
 	}
 	return out
+}
+
+// RunVCS polls the tracked pull requests every interval until ctx ends: their
+// checks and reviews become events. Without VCS it returns at once.
+func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
+	if s.watch == nil {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("istari: pull requests: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // Runner returns the runner, or nil when it is off; the daemon runs it.
@@ -360,7 +389,7 @@ func writeError(w http.ResponseWriter, err error) {
 			status = http.StatusNotFound
 		case runner.CodeTokenInvalid:
 			status = http.StatusUnauthorized
-		case runner.CodeTokenScope, CodeTokenForbidden:
+		case runner.CodeTokenScope, CodeTokenForbidden, vcs.CodePushRefused:
 			status = http.StatusForbidden
 		}
 		writeJSON(w, status, ErrorBody{Code: coreErr.Code, Message: coreErr.Message})
