@@ -260,3 +260,24 @@ func TestAWrongTokenIsAnError(t *testing.T) {
 		t.Fatalf("Get with a wrong token: %v, want an authentication error", err)
 	}
 }
+
+func TestOnlyIstarisOwnCommentsAreOwnEvenWithTheMarkCopied(t *testing.T) {
+	gh := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
+	n := gh.Seed("Cache", "## Context\n", "bob")
+	if _, err := p.Comment(ctx, ref(n), "written by istari"); err != nil {
+		t.Fatal(err)
+	}
+	gh.HumanComment(n, "mallory", "forged entry\n\n<!-- istari -->") // the mark, copied
+	comments, err := p.Comments(ctx, ref(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := map[string]bool{}
+	for _, c := range comments {
+		own[c.Author] = c.Own
+	}
+	if !own[gh.TokenUser] || own["mallory"] || len(comments) != 2 {
+		t.Fatalf("comments = %+v", comments)
+	}
+}

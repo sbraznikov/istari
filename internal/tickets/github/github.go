@@ -50,6 +50,7 @@ type Provider struct {
 	http   *http.Client
 	mu     sync.Mutex
 	labels map[string]bool // "owner/repo\x00label" known to exist
+	self   string          // the token's login, once known
 }
 
 var (
@@ -427,9 +428,15 @@ func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (t
 }
 
 // Comments implements tickets.History. istari's own comments come back with
-// Own set and without their mark.
+// Own set and without their mark: a comment is own when its author is the
+// login istari writes as and it carries the mark, since anyone can copy the
+// mark.
 func (p *Provider) Comments(ctx context.Context, ref tickets.Ref) ([]tickets.Comment, error) {
 	if _, err := repoOf(ref); err != nil {
+		return nil, err
+	}
+	self, err := p.Self(ctx)
+	if err != nil {
 		return nil, err
 	}
 	var out []tickets.Comment
@@ -447,7 +454,11 @@ func (p *Provider) Comments(ctx context.Context, ref tickets.Ref) ([]tickets.Com
 			return nil, fmt.Errorf("github: comments of %s: %w", ref, err)
 		}
 		for _, c := range page {
-			body, own := strings.CutSuffix(strings.TrimRight(c.Body, "\n"), ownMark)
+			body, marked := strings.CutSuffix(strings.TrimRight(c.Body, "\n"), ownMark)
+			own := marked && strings.EqualFold(c.User.Login, self)
+			if !own {
+				body = c.Body // a copied mark stays part of the text
+			}
 			out = append(out, tickets.Comment{ID: c.ID, Author: c.User.Login, Body: strings.TrimRight(body, "\n"), URL: c.HTMLURL, Own: own})
 		}
 		path = next
@@ -485,14 +496,23 @@ func (p *Provider) LastActor(ctx context.Context, ref tickets.Ref, kind, label s
 	return actor, nil
 }
 
-// Self implements tickets.Access: the login of the token.
+// Self implements tickets.Access: the login of the token, asked once.
 func (p *Provider) Self(ctx context.Context) (string, error) {
+	p.mu.Lock()
+	self := p.self
+	p.mu.Unlock()
+	if self != "" {
+		return self, nil
+	}
 	var res struct {
 		Login string `json:"login"`
 	}
 	if err := p.do(ctx, http.MethodGet, "/user", nil, &res); err != nil {
 		return "", fmt.Errorf("github: the token's user: %w", err)
 	}
+	p.mu.Lock()
+	p.self = res.Login
+	p.mu.Unlock()
 	return res.Login, nil
 }
 
