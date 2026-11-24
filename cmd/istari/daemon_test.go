@@ -434,3 +434,27 @@ func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
 		t.Fatalf("after a refused accept the ticket is %s, want new", tk.State)
 	}
 }
+
+func TestTheUnitCarriesThePathOfTheShellThatInstalledIt(t *testing.T) {
+	path := "/opt/my tools/bin:/usr/bin:/bin" // where gh and claude are found
+	for _, tc := range []struct{ kind, file, want string }{
+		{"launchd", "Library/LaunchAgents/dev.istari.daemon.plist", "<key>PATH</key>\n      <string>" + path + "</string>"},
+		{"systemd", ".config/systemd/user/istari.service", `Environment="PATH=` + path + `"`},
+	} {
+		home := t.TempDir()
+		cmd := exec.Command(binary, "daemon", "install", "--kind", tc.kind)
+		cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+path+string(os.PathListSeparator)+filepath.Dir(binary))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", tc.kind, err, out)
+		}
+		unit, _ := os.ReadFile(filepath.Join(home, tc.file))
+		want := strings.Replace(tc.want, path, path+string(os.PathListSeparator)+filepath.Dir(binary), 1)
+		if !strings.Contains(string(unit), want) {
+			t.Errorf("%s unit lacks %q:\n%s", tc.kind, want, unit)
+		}
+		if !strings.Contains(string(out), "PATH") {
+			t.Errorf("%s output does not say the PATH was written:\n%s", tc.kind, out)
+		}
+	}
+}
