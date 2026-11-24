@@ -8,10 +8,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -47,7 +50,36 @@ type Provider struct {
 	labels map[string]bool // "owner/repo\x00label" known to exist
 }
 
-var _ tickets.Provider = (*Provider)(nil)
+var (
+	_ tickets.Provider = (*Provider)(nil)
+	_ tickets.History  = (*Provider)(nil)
+	_ tickets.Access   = (*Provider)(nil)
+)
+
+// ownMark ends every comment istari writes, so that reading comments back
+// tells istari's own from a human's even when both use one GitHub account.
+const ownMark = "<!-- istari -->"
+
+// FromEnvironment returns the adapter configured as a local installation
+// runs it: the token of the GitHub CLI (`gh auth token`, maintainer decision
+// on #16) and GITHUB_API_URL, if set, as the API base (GitHub Enterprise).
+func FromEnvironment(ctx context.Context) (*Provider, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+		}
+		return nil, fmt.Errorf("github: no token from `gh auth token` (install the GitHub CLI and run `gh auth login`): %w", err)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return nil, errors.New("github: `gh auth token` printed no token; run `gh auth login`")
+	}
+	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+}
 
 // requestTimeout bounds one API request of the default client.
 const requestTimeout = 30 * time.Second
@@ -93,18 +125,26 @@ type issue struct {
 	} `json:"user"`
 	HTMLURL     string          `json:"html_url"`
 	PullRequest json.RawMessage `json:"pull_request"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	Comments    int             `json:"comments"`
 }
 
 func (i issue) ticket(repo string) tickets.Ticket {
 	t := tickets.Ticket{
 		Ref:   tickets.Ref{Provider: "gh", Repo: repo, Number: i.Number},
 		Title: i.Title, Body: i.Body, Author: i.User.Login, Closed: i.State == "closed", URL: i.HTMLURL,
+		Updated: i.UpdatedAt, Comments: i.Comments,
 		Labels: make([]string, 0, len(i.Labels)),
 	}
 	for _, l := range i.Labels {
 		t.Labels = append(t.Labels, l.Name)
 	}
 	t.State = stateOf(t.Labels)
+	for _, l := range t.Labels {
+		if state, ok := strings.CutPrefix(l, statePrefix); ok && !strings.HasPrefix(l, holdPrefix) {
+			t.StateLabels = append(t.StateLabels, core.TicketState(state))
+		}
+	}
 	return t
 }
 
@@ -302,10 +342,95 @@ func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (t
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 	}
-	if err := p.do(ctx, http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body}, &c); err != nil {
+	if err := p.do(ctx, http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body + "\n\n" + ownMark}, &c); err != nil {
 		return tickets.CommentRef{}, fmt.Errorf("github: comment on %s: %w", ref, err)
 	}
 	return tickets.CommentRef{ID: c.ID, URL: c.HTMLURL}, nil
+}
+
+// Comments implements tickets.History. istari's own comments come back with
+// Own set and without their mark.
+func (p *Provider) Comments(ctx context.Context, ref tickets.Ref) ([]tickets.Comment, error) {
+	if _, err := repoOf(ref); err != nil {
+		return nil, err
+	}
+	var out []tickets.Comment
+	for path := issuePath(ref, "/comments?per_page=100"); path != ""; {
+		var page []struct {
+			ID      int64  `json:"id"`
+			Body    string `json:"body"`
+			HTMLURL string `json:"html_url"`
+			User    struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		next, err := p.doPage(ctx, path, &page)
+		if err != nil {
+			return nil, fmt.Errorf("github: comments of %s: %w", ref, err)
+		}
+		for _, c := range page {
+			body, own := strings.CutSuffix(strings.TrimRight(c.Body, "\n"), ownMark)
+			out = append(out, tickets.Comment{ID: c.ID, Author: c.User.Login, Body: strings.TrimRight(body, "\n"), URL: c.HTMLURL, Own: own})
+		}
+		path = next
+	}
+	return out, nil
+}
+
+// LastActor implements tickets.History from the issue's events.
+func (p *Provider) LastActor(ctx context.Context, ref tickets.Ref, kind, label string) (string, error) {
+	if _, err := repoOf(ref); err != nil {
+		return "", err
+	}
+	actor := ""
+	for path := issuePath(ref, "/events?per_page=100"); path != ""; {
+		var page []struct {
+			Event string `json:"event"`
+			Actor struct {
+				Login string `json:"login"`
+			} `json:"actor"`
+			Label struct {
+				Name string `json:"name"`
+			} `json:"label"`
+		}
+		next, err := p.doPage(ctx, path, &page)
+		if err != nil {
+			return "", fmt.Errorf("github: events of %s: %w", ref, err)
+		}
+		for _, e := range page {
+			if e.Event == kind && (label == "" || e.Label.Name == label) {
+				actor = e.Actor.Login
+			}
+		}
+		path = next
+	}
+	return actor, nil
+}
+
+// CanWrite implements tickets.Access: admin, maintain and write may.
+func (p *Provider) CanWrite(ctx context.Context, repo, login string) (bool, error) {
+	if err := checkRepo(repo); err != nil {
+		return false, err
+	}
+	if login == "" {
+		return false, nil
+	}
+	var res struct {
+		Permission string `json:"permission"`
+	}
+	err := p.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(login)), nil, &res)
+	if errors.Is(err, tickets.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("github: permission of %s on %s: %w", login, repo, err)
+	}
+	// The permission field reports maintain as write.
+	switch res.Permission {
+	case "admin", "maintain", "write":
+		return true, nil
+	}
+	return false, nil
 }
 
 // Link implements tickets.Provider: a child ticket becomes a sub-issue; a pull

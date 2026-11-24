@@ -65,11 +65,12 @@ func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 }
 
 // startDaemonWithConfig starts `istari daemon` with a config file whose
-// data_dir is dataDir.
-func startDaemonWithConfig(t *testing.T, dataDir, config string) *daemon {
+// data_dir is dataDir; env are extra environment variables of the daemon.
+func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) *daemon {
 	t.Helper()
 	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &bytes.Buffer{}}
 	d.cmd = exec.Command(binary, "daemon", "--config", d.config)
+	d.cmd.Env = append(os.Environ(), env...)
 	d.cmd.Stderr = d.stderr
 	if err := d.cmd.Start(); err != nil {
 		t.Fatal(err)

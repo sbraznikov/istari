@@ -69,7 +69,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.Actor, "actor", defaultActor(), "who acts (default $ISTARI_ACTOR or human:<login>)")
 	root.AddCommand(newDaemonCommand(opts), newTaskCommand(opts), newTicketCommand(opts), newTailCommand(opts), newWaitCommand(opts), newScheduleCommand(opts))
 	root.AddCommand(newPauseCommands(opts)...)
-	root.AddCommand(newDoctorCommand(opts))
+	root.AddCommand(newDoctorCommand(opts), newSyncCommand(opts))
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{err}
 	})
