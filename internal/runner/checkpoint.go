@@ -108,7 +108,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		entry.Notes = append(entry.Notes, "no test change in this slice")
 	}
 
-	checks, verifyRed, err := c.checks(ctx, ws.Repo)
+	checks, verifyRed, err := c.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return journal.Entry{}, err
 	}
@@ -188,9 +188,9 @@ func (c *Checkpoints) previous(ctx context.Context, run Run, ref tickets.Ref, ws
 }
 
 // checks reads the check commands from the main branch: the ticket's branch
-// must not choose the checks that judge it.
-func (c *Checkpoints) checks(ctx context.Context, repo string) (map[string]string, bool, error) {
-	data, err := c.ws.MainFile(ctx, repo, pipeline.Path)
+// must not choose the checks that judge it, nor what its agent may run.
+func (w *Workspaces) checks(ctx context.Context, repo string) (map[string]string, bool, error) {
+	data, err := w.MainFile(ctx, repo, pipeline.Path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return map[string]string{}, false, nil
 	}
