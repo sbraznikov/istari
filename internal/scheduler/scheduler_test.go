@@ -89,8 +89,8 @@ func TestALeaseThatIsNotRenewedExpiresWithinOneTickAfterItsDeadline(t *testing.T
 	}
 }
 
-func acceptRequest(ref string) json.RawMessage {
-	return json.RawMessage(`{"actor":"human:alex","ref":"` + ref + `","trigger":"accept"}`)
+func cancelRequest(ref string) json.RawMessage {
+	return json.RawMessage(`{"actor":"human:alex","ref":"` + ref + `","trigger":"cancel"}`)
 }
 
 func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
@@ -101,7 +101,7 @@ func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
 	if _, err := d.srv.Tickets().Create(ctx, "human:alex", ref, "web"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now().Add(10*time.Minute), "ticket.fire", acceptRequest(ref)); err != nil {
+	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now().Add(10*time.Minute), "ticket.fire", cancelRequest(ref)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	c.Advance(5 * time.Minute)
@@ -120,8 +120,8 @@ func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if tk, _ := d.srv.Tickets().Get(ctx, ref); tk.State != core.TicketReady {
-		t.Fatalf("after its time the ticket is %s, want ready", tk.State)
+	if tk, _ := d.srv.Tickets().Get(ctx, ref); tk.State != core.TicketCanceled {
+		t.Fatalf("after its time the ticket is %s, want canceled", tk.State)
 	}
 	if n := d.count(t, store.Filter{TypePrefix: "timer.fired"}); n != 1 {
 		t.Fatalf("timer.fired events = %d, want 1", n)
@@ -165,7 +165,7 @@ func TestAnInterruptionBetweenTheActionAndItsRecordDoesNotRepeatTheAction(t *tes
 func TestARefusedActionFiresOnceAndRecordsTheRefusal(t *testing.T) {
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
-	timer, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.fire", acceptRequest("gh:acme/web#404"))
+	timer, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.fire", cancelRequest("gh:acme/web#404"))
 	if err != nil {
 		t.Fatal(err)
 	}

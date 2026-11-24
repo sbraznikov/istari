@@ -374,15 +374,15 @@ func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 	var now []struct{ Cursor string }
 	d.mustCLI(t, &now, "tail")
 	var timer struct{ ID, State string }
-	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"accept"}`)
+	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
 	if timer.ID == "" || timer.State != "pending" {
 		t.Fatalf("schedule = %+v", timer)
 	}
 	d.mustCLI(t, nil, "wait", "type=timer.fired", "--after", now[len(now)-1].Cursor, "--timeout", "10s")
 	var tk struct{ State string }
 	d.mustCLI(t, &tk, "ticket", "show", ref)
-	if tk.State != "ready" {
-		t.Fatalf("after the scheduled accept the ticket is %s", tk.State)
+	if tk.State != "canceled" {
+		t.Fatalf("after the scheduled cancel the ticket is %s", tk.State)
 	}
 	if _, stderr, code := d.cli(t, "schedule", "--in", "1s", "task.list"); code != 1 || !strings.Contains(stderr, "not a write operation") {
 		t.Fatalf("scheduling a read: exit %d %q", code, stderr)
