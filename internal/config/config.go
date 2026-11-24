@@ -40,6 +40,9 @@ type Defaults struct {
 	Zones           string             `toml:"zones"`
 	Merge           Merge              `toml:"merge"`
 	BudgetUSD       map[string]float64 `toml:"budget_usd"`
+	// MaxConcurrentRunsByRole limits claimed tasks at once per role; a role
+	// that is not listed has no limit of its own.
+	MaxConcurrentRunsByRole map[string]int `toml:"max_concurrent_runs_by_role"`
 }
 
 // Merge sets how pull requests are merged.
@@ -74,6 +77,9 @@ type Project struct {
 	Tickets Tickets       `toml:"tickets"`
 	Slack   ProjectSlack  `toml:"slack"`
 	Repos   []ProjectRepo `toml:"repos"`
+	// MaxConcurrentRuns limits claimed tasks at once in this project; 0 (the
+	// key absent) means no limit of its own.
+	MaxConcurrentRuns int `toml:"max_concurrent_runs"`
 }
 
 // Tickets selects the ticket system of a project.
@@ -153,6 +159,9 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	if err := validateProjectLimits(path); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	return &cfg, nil
 }
 
@@ -197,6 +206,11 @@ func (c *Config) validate() error {
 			fail(key, "must be positive")
 		}
 	}
+	for _, role := range slices.Sorted(maps.Keys(c.Defaults.MaxConcurrentRunsByRole)) {
+		if c.Defaults.MaxConcurrentRunsByRole[role] < 1 {
+			fail("defaults.max_concurrent_runs_by_role."+role, "must be positive, got %d", c.Defaults.MaxConcurrentRunsByRole[role])
+		}
+	}
 	if _, err := time.Parse("15:04", c.Report.At); err != nil {
 		fail("report.at", "%q is not a time of day HH:MM", c.Report.At)
 	}
@@ -211,6 +225,27 @@ func (c *Config) validate() error {
 			fail(key, "%q is used by another project", p.Name)
 		}
 		names[p.Name] = true
+	}
+	return errors.Join(errs...)
+}
+
+// validateProjectLimits rejects a project max_concurrent_runs that is set but
+// not positive. Decoded, an absent key and 0 look the same, so the file itself
+// tells them apart.
+func validateProjectLimits(path string) error {
+	var raw struct {
+		Project []map[string]any `toml:"project"`
+	}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return err
+	}
+	var errs []error
+	for i, p := range raw.Project {
+		if v, set := p["max_concurrent_runs"]; set {
+			if n, ok := v.(int64); !ok || n < 1 {
+				errs = append(errs, fmt.Errorf("project[%d].max_concurrent_runs: must be positive, got %v", i, v))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

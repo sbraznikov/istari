@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -422,5 +424,46 @@ func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a client key timer:… = %s, want 400", resp.Status)
+	}
+}
+
+func TestProjectAndRoleLimitsFromTheConfig(t *testing.T) {
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	body := fmt.Sprintf(`[daemon]
+data_dir = %q
+
+[defaults.max_concurrent_runs_by_role]
+reviewer = 1
+
+[[project]]
+name = "web"
+max_concurrent_runs = 1
+
+[[project]]
+name = "api"
+`, dataDir)
+	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemonWithConfig(t, dataDir, config)
+	for _, task := range []struct{ id, project, role string }{
+		{"web_1", "web", "implementer"}, {"web_2", "web", "implementer"},
+		{"rev_1", "api", "reviewer"}, {"rev_2", "api", "reviewer"}, {"api_1", "api", "implementer"},
+	} {
+		d.call(t, "task.create", map[string]any{"actor": "system", "id": task.id, "ticket": "gh:acme/" + task.project + "#1", "project": task.project, "role": task.role}, nil)
+	}
+	for _, step := range []struct {
+		id      string
+		refused bool
+	}{
+		{"web_1", false}, {"web_2", true}, // project web: 1
+		{"rev_1", false}, {"rev_2", true}, // role reviewer: 1
+		{"api_1", false}, // another project and role
+	} {
+		_, stderr, code := d.cli(t, "task", "claim", step.id, "--actor", "agent:a")
+		if step.refused != (code == 1 && strings.Contains(stderr, "limit_reached")) || (!step.refused && code != 0) {
+			t.Fatalf("claim %s: exit %d %q, refused=%v expected", step.id, code, stderr, step.refused)
+		}
 	}
 }

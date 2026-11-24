@@ -61,7 +61,14 @@ func socketClient(socket string) *http.Client {
 // daemonKeys are extra lines of the [daemon] table of its config.
 func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 	t.Helper()
-	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: writeDaemonConfig(t, dataDir, daemonKeys...), stderr: &bytes.Buffer{}}
+	return startDaemonWithConfig(t, dataDir, writeDaemonConfig(t, dataDir, daemonKeys...))
+}
+
+// startDaemonWithConfig starts `istari daemon` with a config file whose
+// data_dir is dataDir.
+func startDaemonWithConfig(t *testing.T, dataDir, config string) *daemon {
+	t.Helper()
+	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &bytes.Buffer{}}
 	d.cmd = exec.Command(binary, "daemon", "--config", d.config)
 	d.cmd.Stderr = d.stderr
 	if err := d.cmd.Start(); err != nil {
