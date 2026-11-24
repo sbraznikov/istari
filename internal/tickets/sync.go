@@ -216,9 +216,6 @@ func (s *Syncer) Refinable(ctx context.Context, refText string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if base.Sponsor != "" {
-		return true, nil
-	}
 	ref, err := ParseRef(refText)
 	if err != nil {
 		return false, nil
@@ -227,7 +224,19 @@ func (s *Syncer) Refinable(ctx context.Context, refText string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	if sponsored, err := s.sponsored(ctx, repo, base); err != nil || sponsored {
+		return sponsored, err
+	}
 	return s.trusted(ctx, repo, tk.Author)
+}
+
+// sponsored tells whether a trusted member asked to admit the ticket and is
+// still trusted.
+func (s *Syncer) sponsored(ctx context.Context, repo SyncRepo, base baseRecord) (bool, error) {
+	if base.Sponsor == "" {
+		return false, nil
+	}
+	return s.trusted(ctx, repo, base.Sponsor)
 }
 
 // lost tells whether a ticket istari does not have but its tracker labels as
@@ -825,7 +834,11 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	switch x.tk.State {
 	case core.TicketNew:
 		actor := "system"
-		if x.base.Sponsor != "" {
+		sponsored, err := s.sponsored(ctx, x.repo, x.base)
+		if err != nil {
+			return err
+		}
+		if sponsored {
 			actor = "human:" + x.base.Sponsor
 		} else if trusted, err := s.trusted(ctx, x.repo, x.t.Author); err != nil || !trusted {
 			return err
@@ -868,6 +881,7 @@ func (s *Syncer) admit(ctx context.Context, x *syncing, actor, hash string) erro
 	}
 	x.report.Transitioned++
 	x.base.Hash = hash
+	x.base.Sponsor = "" // a request admits once: an edit after it is checked again (T15)
 	if err := s.push(ctx, x, next); err != nil {
 		return err
 	}

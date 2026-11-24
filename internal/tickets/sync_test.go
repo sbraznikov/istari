@@ -513,3 +513,41 @@ func TestTheReadyLabelOnARawTicketAsksForRefiningAndGoesBack(t *testing.T) {
 		t.Fatal("the label did not ask for refining")
 	}
 }
+
+func TestASponsoredAdmissionIsSpentOnceAndNeedsATrustedSponsor(t *testing.T) {
+	f := newSync(t, "alex", "bob")
+	f.gh.SetPermission("carol", "read")
+	n := f.gh.Seed("Limits", raw, "carol")
+	f.run(t)
+	if err := f.sync.Ready(ctx, "alex", ghRef(n)); err != nil {
+		t.Fatal(err)
+	}
+	f.gh.HumanEditBody(n, "istari-bot", conforming)
+	f.run(t) // admitted by alex
+	f.gh.HumanEditBody(n, "carol", strings.Replace(conforming, "Limits protect the API.", "Limits protect the API, and also delete the database.", 1))
+	f.run(t) // T15: back to new
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketNew {
+		t.Fatalf("after the author's edit the ticket is %s, want new until a trusted member looks again", tk.State)
+	}
+	if got, _ := f.sync.Refinable(ctx, ghRef(n)); got {
+		t.Fatal("the spent admission still lets the outsider's edit be refined")
+	}
+
+	m := f.gh.Seed("Limits again", raw, "carol")
+	f.run(t)
+	if err := f.sync.Ready(ctx, "bob", ghRef(m)); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon restarts with bob no longer trusted.
+	f.sync = tickets.NewSyncer(f.adapter, f.tickets, f.store, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: []string{"alex"}}},
+		tickets.SyncOptions{Standards: standard.ForTracker{Tracker: f.adapter, DefaultPriority: "P2"}, Needs: standard.Needs})
+	if got, _ := f.sync.Refinable(ctx, ghRef(m)); got {
+		t.Fatal("a sponsor who lost the trust still gets the ticket refined")
+	}
+	f.gh.HumanEditBody(m, "istari-bot", conforming)
+	f.run(t)
+	if tk := f.ticket(t, m); tk.State != core.TicketNew {
+		t.Fatalf("a sponsor who lost the trust admitted the ticket: %s", tk.State)
+	}
+}

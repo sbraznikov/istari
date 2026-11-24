@@ -161,6 +161,7 @@ func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	gh := githubtest.New(t)
 	n := gh.Seed("Limits", "We should add rate limits.\n", "carol") // carol may only read
+	ours := gh.Seed("Quotas", "We should add quotas.\n", "alex")    // alex can write: trusted
 	dataDir := newDataDir(t)
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
@@ -170,7 +171,7 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
 	d := startDaemonWithConfig(t, dataDir, config, env...)
 	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
-	refines := func() int {
+	refinesOf := func(ref string) int {
 		var tasks []struct{ Ticket, Role string }
 		d.mustCLI(t, &tasks, "task", "list")
 		c := 0
@@ -181,8 +182,14 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 		}
 		return c
 	}
+	refines := func() int { return refinesOf(ref) }
 	d.mustCLI(t, nil, "sync")
-	time.Sleep(500 * time.Millisecond) // the pipeline reconciles on the change
+	// The trusted author's raw ticket is refined: then the pipeline has run.
+	for deadline := time.Now().Add(10 * time.Second); refinesOf(fmt.Sprintf("gh:%s#%d", githubtest.Repo, ours)) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a trusted author's raw ticket got no refine task")
+		}
+	}
 	if c := refines(); c != 0 {
 		t.Fatalf("an outsider's raw ticket got %d refine tasks", c)
 	}
