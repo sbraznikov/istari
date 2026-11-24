@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -224,5 +223,3 @@ func TestRepoAddRunsFromThePrimaryRepository(t *testing.T) {
 		t.Fatalf("repo remove in another case: exit %d %q", code, stdout)
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }

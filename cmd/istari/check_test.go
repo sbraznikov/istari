@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -42,6 +43,9 @@ Limits protect the API.
 func TestTicketCheckPrintsDeviationsAndExitsByThem(t *testing.T) {
 	repo := gitRepo(t, "git@github.com:acme/web.git", map[string]string{"go.mod": "module x\n"})
 	config := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(config, nil, 0o600); err != nil { // an installation with the defaults
+		t.Fatal(err)
+	}
 	good := filepath.Join(t.TempDir(), "good.md")
 	os.WriteFile(good, []byte(conforming), 0o644)
 	bad := filepath.Join(t.TempDir(), "bad.md")
@@ -72,7 +76,7 @@ func TestTicketCheckOfATrackerTicketWritesNothing(t *testing.T) {
 	d.mustCLI(t, &before, "tail")
 	issueBefore := gh.Issue(n)
 
-	cmd := []string{"ticket", "check", "#" + itoa(n)}
+	cmd := []string{"ticket", "check", "#" + strconv.Itoa(n)}
 	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
 	out, stderr, code := istariEnv(t, repo, d.config, env, cmd...)
 	if code != 0 {

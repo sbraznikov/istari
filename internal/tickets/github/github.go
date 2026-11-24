@@ -135,11 +135,13 @@ func (i issue) ticket(repo string) tickets.Ticket {
 		Ref:   tickets.Ref{Provider: "gh", Repo: repo, Number: i.Number},
 		Title: i.Title, Body: i.Body, Author: i.User.Login, Closed: i.State == "closed", URL: i.HTMLURL,
 		Updated: i.UpdatedAt, Comments: i.Comments,
-		ClosedAs: map[bool]string{true: i.StateReason}[i.State == "closed"],
-		Labels:   make([]string, 0, len(i.Labels)),
+		Labels: make([]string, 0, len(i.Labels)),
 	}
 	for _, l := range i.Labels {
 		t.Labels = append(t.Labels, l.Name)
+	}
+	if t.Closed {
+		t.ClosedAs = i.StateReason
 	}
 	t.State = stateOf(t.Labels)
 	for _, l := range t.Labels {

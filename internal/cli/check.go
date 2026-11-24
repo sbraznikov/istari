@@ -32,17 +32,14 @@ func newTicketCheckCommand(opts *Options) *cobra.Command {
 				return err
 			}
 			checker := standard.Checker{Standard: standard.Default()}
-			if root, err := project.Root(cwd); err == nil {
-				checker.Root = root
-				checker.Repo, _ = project.Remote(root)
-				if path := filepath.Join(root, ".istari", "ticket-standard.toml"); fileExists(path) {
-					if checker.Standard, err = standard.Load(path); err != nil {
-						return err
-					}
-				}
+			cfg, err := loadConfig(opts.Config)
+			if err != nil {
+				return err
 			}
-			if cfg, err := loadConfig(opts.Config); err == nil {
-				checker.DefaultPriority = cfg.Defaults.Priority
+			checker.DefaultPriority = cfg.Defaults.Priority
+			root, _ := project.Root(cwd)
+			if root != "" {
+				checker.Repo, _ = project.Remote(root)
 			}
 			var notes []string
 			tracker, trackerErr := github.FromEnvironment(cmd.Context())
@@ -55,6 +52,19 @@ func newTicketCheckCommand(opts *Options) *cobra.Command {
 			draft, err := readDraft(cmd, args[0], checker.Repo, tracker, trackerErr)
 			if err != nil {
 				return err
+			}
+			// Paths and the repository's own standard come from a checkout of
+			// the ticket's repository; another repository's ticket gets the
+			// default standard and no path check.
+			if root != "" && (draft.Ref == nil || strings.EqualFold(draft.Ref.Repo, checker.Repo)) {
+				checker.Root = root
+				if path := filepath.Join(root, ".istari", "ticket-standard.toml"); fileExists(path) {
+					if checker.Standard, err = standard.Load(path); err != nil {
+						return err
+					}
+				}
+			} else if draft.Ref != nil {
+				notes = append(notes, fmt.Sprintf("the default standard applies: there is no checkout of %s here", draft.Ref.Repo))
 			}
 			res, err := checker.Check(cmd.Context(), draft)
 			if err != nil {
@@ -118,7 +128,7 @@ func readDraft(cmd *cobra.Command, arg, repo string, tracker tickets.Provider, t
 	body := string(data)
 	title := ""
 	if first, rest, ok := strings.Cut(body, "\n"); ok && strings.HasPrefix(first, "# ") {
-		title, body = strings.TrimPrefix(first, "# "), rest
+		title, body = strings.TrimSpace(strings.TrimPrefix(first, "# ")), rest
 	}
 	return standard.Draft{Title: title, Body: body}, nil
 }

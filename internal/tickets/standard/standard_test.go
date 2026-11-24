@@ -58,9 +58,13 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	gh := githubtest.New(t)
 	root := t.TempDir()
-	for _, f := range []string{"internal/store/store.go", "docs/design.md", "go.mod"} {
-		os.MkdirAll(filepath.Join(root, filepath.Dir(f)), 0o755)
-		os.WriteFile(filepath.Join(root, f), []byte("x"), 0o644)
+	for _, f := range []string{"internal/store/store.go", "docs/design.md", "go.mod", "Makefile", ".gitignore"} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &fixture{gh: gh, checker: standard.Checker{
 		Standard:        standard.Default(),
@@ -184,4 +188,61 @@ func TestTheStandardComesFromTheRepository(t *testing.T) {
 	if _, err := standard.Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
 		t.Fatal("Load of a missing file succeeded")
 	}
+}
+
+func TestOnlyFilePathsAreCheckedAsPaths(t *testing.T) {
+	f := newFixture(t)
+	notPaths := "`standard.Default`, `cfg.Defaults.Priority`, `os.Stat`, `api.github.com`, `github.com/acme/web`, " +
+		"`main...HEAD`, `acme/other`, `v1.2.3`, `~/.config/istari/config.toml`, `../..`, `component#57`"
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"Context": "Mentions " + notPaths + "."})})
+	if len(res.Deviations) != 0 {
+		t.Fatalf("deviations for things that are not paths: %q", rules(res))
+	}
+	res = f.check(t, standard.Draft{Body: body(map[string]string{"Context": "Edit `Makefile`, `.gitignore`, `go.mod:12`, `README` and `internal/gone/`."})})
+	assertDeviation(t, res, "path", "README")
+	assertDeviation(t, res, "path", "internal/gone")
+	if len(res.Deviations) != 2 {
+		t.Fatalf("deviations = %q, want README and internal/gone only", rules(res))
+	}
+}
+
+func TestCodeFencesAndRulesInsideSectionsDoNotBreakParsing(t *testing.T) {
+	f := newFixture(t)
+	ctxText := "Example:\n\n```markdown\n## Out of scope\n\n`not/a/real/path.go`\n- Needs: #404\n```\n\n---\n\nMore context after a rule."
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"Context": ctxText})})
+	if len(res.Deviations) != 0 {
+		t.Fatalf("deviations = %q, want none: the fence and the rule are content", rules(res))
+	}
+}
+
+func TestLabelsAndTablesAreReadIgnoringCase(t *testing.T) {
+	f := newFixture(t)
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| Feature | m | p1 | `acme/web` | |"}), Labels: []string{"Size:M", "Type:feature"}})
+	if len(res.Deviations) != 0 || res.Size != "M" || res.Type != "feature" || res.Priority != "P1" {
+		t.Fatalf("result = %+v, deviations %q", res, rules(res))
+	}
+}
+
+func TestCrossRepositoryShorthandsAreResolved(t *testing.T) {
+	f := newFixture(t)
+	f.gh.Seed("a", body(nil), "alex")
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"needs": "#1, component#57, acme/other#3"})})
+	want := []string{"gh:acme/web#1", "gh:acme/component#57", "gh:acme/other#3"}
+	if strings.Join(res.Needs, " ") != strings.Join(want, " ") {
+		t.Fatalf("needs = %v, want %v", res.Needs, want)
+	}
+}
+
+func TestAShorthandWithoutAKnownRepositoryIsReported(t *testing.T) {
+	f := newFixture(t)
+	f.checker.Repo = ""
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"needs": "#5"})})
+	assertDeviation(t, res, "dependency", "#5")
+}
+
+func TestADefaultPriorityOutsideTheStandardIsADeviation(t *testing.T) {
+	f := newFixture(t)
+	f.checker.Standard.Priorities = []string{"P0", "P1"}
+	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M |  | `acme/web` | |"})})
+	assertDeviation(t, res, "priority", "P2")
 }

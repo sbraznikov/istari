@@ -8,10 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -101,9 +99,9 @@ func (c Checker) Check(ctx context.Context, d Draft) (Result, error) {
 	fail := func(rule, format string, args ...any) {
 		res.Deviations = append(res.Deviations, Deviation{Rule: rule, Message: fmt.Sprintf(format, args...)})
 	}
-	sections := parseSections(d.Body)
+	b := parse(d.Body)
 	for _, name := range c.Standard.Sections {
-		text, ok := sections[name]
+		text, ok := b.sections[name]
 		switch {
 		case !ok:
 			fail("section", "the section %q is missing", name)
@@ -112,72 +110,72 @@ func (c Checker) Check(ctx context.Context, d Draft) (Result, error) {
 		}
 	}
 
-	meta := parseMeta(d.Body)
-	pick := func(field, labelPrefix string, allowed []string) string {
-		label := labelValue(d.Labels, labelPrefix)
-		table := meta[field]
-		value := label
+	// pick reads a field from its label (the tracker's truth) or the table,
+	// ignoring case, and returns the standard's spelling of it.
+	pick := func(field string, allowed []string) string {
+		rule := strings.ToLower(field)
+		label := labelValue(d.Labels, rule+":")
+		table := b.meta[rule]
 		if label != "" && table != "" && !strings.EqualFold(label, table) {
-			fail(strings.ToLower(field), "the label %s%s and the table's %s %q disagree", labelPrefix, label, field, table)
+			fail(rule, "the label %s:%s and the table's %s %q disagree", rule, label, field, table)
 		}
+		value := label
 		if value == "" {
 			value = table
 		}
-		if value != "" && !slices.Contains(allowed, value) {
-			fail(strings.ToLower(field), "%s %q is not one of %s", strings.ToLower(field), value, strings.Join(allowed, ", "))
+		if value == "" {
+			return ""
 		}
+		if i := slices.IndexFunc(allowed, func(a string) bool { return strings.EqualFold(a, value) }); i >= 0 {
+			return allowed[i]
+		}
+		fail(rule, "%s %q is not one of %s", rule, value, strings.Join(allowed, ", "))
 		return value
 	}
-	res.Type = pick("Type", "type:", c.Standard.Types)
-	res.Size = pick("Size", "size:", c.Standard.Sizes)
-	res.Priority = pick("Priority", "priority:", c.Standard.Priorities)
+	res.Type = pick("Type", c.Standard.Types)
+	res.Size = pick("Size", c.Standard.Sizes)
+	res.Priority = pick("Priority", c.Standard.Priorities)
 	if res.Type == "" {
 		fail("type", "the ticket has no type (a type: label or the table's Type)")
 	}
 	if res.Size == "" {
 		fail("size", "the ticket has no size (a size: label or the table's Size)")
 	}
-	if res.Priority == "" && c.DefaultPriority != "" {
-		res.Priority = c.DefaultPriority
-		res.Notes = append(res.Notes, fmt.Sprintf("priority: none given, so the default %s applies", c.DefaultPriority))
+	if res.Priority == "" {
+		switch {
+		case c.DefaultPriority == "":
+			fail("priority", "the ticket has no priority and no default is configured")
+		case !slices.Contains(c.Standard.Priorities, c.DefaultPriority):
+			fail("priority", "the ticket has no priority, and the default %s is not one of %s", c.DefaultPriority, strings.Join(c.Standard.Priorities, ", "))
+		default:
+			res.Priority = c.DefaultPriority
+			res.Notes = append(res.Notes, fmt.Sprintf("priority: none given, so the default %s applies", c.DefaultPriority))
+		}
 	}
 
 	repo := c.Repo
 	if d.Ref != nil {
 		repo = d.Ref.Repo
 	}
-	res.Repository = meta["Repository"]
+	res.Repository = b.meta["repository"]
 	if c.Standard.Repository {
 		switch {
 		case res.Repository == "":
 			fail("repository", "the repository is missing (the table's Repository column)")
-		case repo != "" && !strings.EqualFold(res.Repository, repo):
+		case repo == "":
+			res.Notes = append(res.Notes, "repository: not compared, the current directory is no repository with an origin")
+		case !strings.EqualFold(res.Repository, repo):
 			fail("repository", "the ticket names %s but belongs to %s", res.Repository, repo)
 		}
 	}
 
-	if err := c.checkDependencies(ctx, d, sections, repo, &res, fail); err != nil {
+	if err := c.checkDependencies(ctx, d, b, repo, &res, fail); err != nil {
 		return Result{}, err
 	}
-	if c.Root != "" {
-		// Paths in the sections' text; the metadata table names the
-		// repository, which is not a path.
-		var text strings.Builder
-		names := slices.Sorted(maps.Keys(sections))
-		slices.SortStableFunc(names, func(a, b string) int {
-			ia, ib := slices.Index(c.Standard.Sections, a), slices.Index(c.Standard.Sections, b)
-			if ia < 0 {
-				ia = len(c.Standard.Sections)
-			}
-			if ib < 0 {
-				ib = len(c.Standard.Sections)
-			}
-			return ia - ib
-		})
-		for _, name := range names {
-			text.WriteString(sections[name])
-		}
-		for _, p := range paths(text.String()) {
+	if c.Root == "" {
+		res.Notes = append(res.Notes, "paths: not checked, there is no checkout of the ticket's repository here")
+	} else {
+		for _, p := range paths(b.prose, c.Root) {
 			if _, err := os.Stat(filepath.Join(c.Root, filepath.FromSlash(p))); err != nil {
 				fail("path", "`%s` does not exist in the repository (mark a file the ticket creates with (new))", p)
 			}
@@ -186,52 +184,40 @@ func (c Checker) Check(ctx context.Context, d Draft) (Result, error) {
 	return res, nil
 }
 
-var (
-	refRe    = regexp.MustCompile(`gh:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#\d+|#\d+`)
-	headerRe = regexp.MustCompile(`^##\s+(.+?)\s*#*\s*$`)
-)
-
-// needsOf returns the refs on the dependencies line of a body.
-func (c Checker) needsOf(body, repo string) []tickets.Ref {
-	prefix := "- " + c.Standard.Dependencies + ":"
-	var out []tickets.Ref
-	for _, line := range strings.Split(body, "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
-		if !ok {
-			continue
-		}
-		for _, m := range refRe.FindAllString(rest, -1) {
-			if strings.HasPrefix(m, "#") {
-				m = "gh:" + repo + m
-			}
-			if ref, err := tickets.ParseRef(m); err == nil {
-				out = append(out, ref)
-			}
-		}
-	}
-	return out
-}
+// maxGraph bounds how many tickets the cycle search reads.
+const maxGraph = 500
 
 // checkDependencies checks each dependency exists and is not canceled, and
 // that following dependencies never leads back: a cycle is listed.
-func (c Checker) checkDependencies(ctx context.Context, d Draft, sections map[string]string, repo string, res *Result, fail func(string, string, ...any)) error {
+func (c Checker) checkDependencies(ctx context.Context, d Draft, b body, repo string, res *Result, fail func(string, string, ...any)) error {
 	if c.Standard.Dependencies == "" {
 		return nil
 	}
-	needs := c.needsOf(sections["Dependencies"], repo)
-	for _, n := range needs {
-		res.Needs = append(res.Needs, n.String())
+	var needs []tickets.Ref
+	for _, r := range needsRefs(b.prose, c.Standard.Dependencies, repo) {
+		if r.full == "" {
+			fail("dependency", "%s cannot be resolved: the ticket's repository is unknown", r.written)
+			continue
+		}
+		ref, err := tickets.ParseRef(r.full)
+		if err != nil {
+			fail("dependency", "%s is not a ticket reference", r.written)
+			continue
+		}
+		needs = append(needs, ref)
+		res.Needs = append(res.Needs, ref.String())
 	}
 	if c.Tracker == nil {
 		return nil
 	}
+	key := func(r tickets.Ref) string { return strings.ToLower(r.String()) }
 	self := "this ticket"
 	if d.Ref != nil {
-		self = d.Ref.String()
+		self = key(*d.Ref)
 	}
 	cache := map[string]tickets.Ticket{}
 	get := func(ref tickets.Ref) (tickets.Ticket, bool, error) {
-		if t, ok := cache[ref.String()]; ok {
+		if t, ok := cache[key(ref)]; ok {
 			return t, true, nil
 		}
 		t, err := c.Tracker.Get(ctx, ref)
@@ -241,7 +227,7 @@ func (c Checker) checkDependencies(ctx context.Context, d Draft, sections map[st
 		if err != nil {
 			return tickets.Ticket{}, false, err
 		}
-		cache[ref.String()] = t
+		cache[key(ref)] = t
 		return t, true, nil
 	}
 	for _, n := range needs {
@@ -250,37 +236,49 @@ func (c Checker) checkDependencies(ctx context.Context, d Draft, sections map[st
 			return err
 		}
 		short := n.String()
-		if n.Repo == repo {
+		if strings.EqualFold(n.Repo, repo) {
 			short = fmt.Sprintf("#%d", n.Number)
 		}
 		switch {
 		case !found:
 			fail("dependency", "%s does not exist", short)
-		case t.State.State == core.TicketCanceled || t.ClosedAs == "not_planned":
+		case t.State.State == core.TicketCanceled || t.ClosedAs == "not_planned" || t.ClosedAs == "duplicate":
 			fail("dependency", "%s is canceled", short)
 		}
 	}
 	// Depth-first over the dependency graph from this ticket.
+	names := map[string]string{self: self}
+	if d.Ref != nil {
+		names[self] = d.Ref.String()
+	}
 	var path []string
 	onPath := map[string]bool{}
 	done := map[string]bool{}
 	var cycle []string
+	truncated := false
 	var visit func(node string, edges []tickets.Ref) error
 	visit = func(node string, edges []tickets.Ref) error {
 		path = append(path, node)
 		onPath[node] = true
 		defer func() { path = path[:len(path)-1]; onPath[node] = false; done[node] = true }()
 		for _, e := range edges {
-			key := e.String()
-			if key == self || onPath[key] {
-				start := slices.Index(path, key)
-				if key == self {
-					start = 0
-				}
-				cycle = append(slices.Clone(path[start:]), key)
+			k := key(e)
+			names[k] = e.String()
+			if cycle != nil {
 				return nil
 			}
-			if done[key] || cycle != nil || len(done) > 500 {
+			if onPath[k] {
+				for _, n := range path[slices.Index(path, k):] {
+					cycle = append(cycle, names[n])
+				}
+				cycle = append(cycle, names[k])
+				return nil
+			}
+			if done[k] {
+				continue
+			}
+			if len(done) >= maxGraph {
+				truncated = true
 				continue
 			}
 			t, found, err := get(e)
@@ -290,7 +288,7 @@ func (c Checker) checkDependencies(ctx context.Context, d Draft, sections map[st
 			if !found {
 				continue
 			}
-			if err := visit(key, c.needsOf(parseSections(t.Body)["Dependencies"], e.Repo)); err != nil {
+			if err := visit(k, refsOf(needsRefs(parse(t.Body).prose, c.Standard.Dependencies, e.Repo))); err != nil {
 				return err
 			}
 		}
@@ -302,104 +300,27 @@ func (c Checker) checkDependencies(ctx context.Context, d Draft, sections map[st
 	if cycle != nil {
 		fail("cycle", "the dependencies form a cycle: %s", strings.Join(cycle, " → "))
 	}
+	if truncated {
+		res.Notes = append(res.Notes, fmt.Sprintf("cycle: the search stopped after %d tickets; a cycle beyond them would not be found", maxGraph))
+	}
 	return nil
 }
 
-// parseSections maps each "## Name" heading to its text, up to the next
-// heading or a "---" rule.
-func parseSections(body string) map[string]string {
-	sections := map[string]string{}
-	current := ""
-	var text strings.Builder
-	flush := func() {
-		if current != "" {
-			sections[current] = text.String()
-		}
-		text.Reset()
-	}
-	for _, line := range strings.Split(body, "\n") {
-		if m := headerRe.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
-			flush()
-			current = m[1]
-			continue
-		}
-		if strings.TrimSpace(line) == "---" {
-			flush()
-			current = ""
-			continue
-		}
-		if current != "" {
-			text.WriteString(line + "\n")
+func refsOf(rs []ref) []tickets.Ref {
+	var out []tickets.Ref
+	for _, r := range rs {
+		if ref, err := tickets.ParseRef(r.full); err == nil {
+			out = append(out, ref)
 		}
 	}
-	flush()
-	return sections
-}
-
-// parseMeta reads the metadata table: a header row naming Type, Size,
-// Priority and Repository, a separator, and one row of values.
-func parseMeta(body string) map[string]string {
-	lines := strings.Split(body, "\n")
-	for i := 0; i+2 < len(lines); i++ {
-		header := cells(lines[i])
-		if !slices.Contains(header, "Type") || !slices.Contains(header, "Size") {
-			continue
-		}
-		values := cells(lines[i+2])
-		meta := map[string]string{}
-		for j, h := range header {
-			if j < len(values) {
-				meta[h] = strings.Trim(values[j], "` ")
-			}
-		}
-		return meta
-	}
-	return map[string]string{}
-}
-
-func cells(line string) []string {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "|") {
-		return nil
-	}
-	parts := strings.Split(strings.Trim(line, "|"), "|")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
+	return out
 }
 
 func labelValue(labels []string, prefix string) string {
 	for _, l := range labels {
-		if v, ok := strings.CutPrefix(l, prefix); ok {
-			return v
+		if len(l) > len(prefix) && strings.EqualFold(l[:len(prefix)], prefix) {
+			return l[len(prefix):]
 		}
 	}
 	return ""
-}
-
-var (
-	codeRe = regexp.MustCompile("`([^`\n]+)`(\\s*\\(new\\))?")
-	pathRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/?$`)
-	extRe  = regexp.MustCompile(`\.[A-Za-z][A-Za-z0-9]*$`)
-)
-
-// paths returns the backticked file paths of a body that the ticket does not
-// mark (new). A path has a slash or a file extension; commands, flags, refs,
-// labels and globs are not paths.
-func paths(body string) []string {
-	var out []string
-	for _, m := range codeRe.FindAllStringSubmatch(body, -1) {
-		p := m[1]
-		if m[2] != "" || !pathRe.MatchString(p) || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ".") && !strings.Contains(p, "/") {
-			continue
-		}
-		if !strings.Contains(p, "/") && !extRe.MatchString(p) {
-			continue
-		}
-		if !slices.Contains(out, p) {
-			out = append(out, p)
-		}
-	}
-	return out
 }
