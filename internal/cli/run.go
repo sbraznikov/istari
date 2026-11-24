@@ -10,6 +10,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/runner"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 var runHeader = []string{"RUN", "STATE", "PROFILE", "TICKET", "TASK", "STARTED", "REASON"}
@@ -139,7 +140,26 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, res, []string{"OK"}, [][]string{{"the task completes when the run ends"}})
 	})
-	return []*cobra.Command{whoami, complete}
+	checkpoint := writeCommand(opts, &cobra.Command{
+		Use:   "checkpoint \"<done>; <next>\"",
+		Short: "For the implementer: commit, run the checks, push and record the step in the ticket",
+		Args:  Args(cobra.ExactArgs(1)),
+	}, func(cmd *cobra.Command, args []string, key string) error {
+		var cp journal.CheckpointEntry
+		if err := opts.call(cmd, "checkpoint", key, api.CheckpointRequest{Actor: opts.Actor, Message: args[0]}, &cp); err != nil {
+			return err
+		}
+		state := "green"
+		if cp.Red {
+			state = "red"
+		}
+		rows := [][]string{{"commit", cp.Commit}, {"checks", state}, {"files", strings.Join(cp.Files, " ")}}
+		for _, n := range cp.Notes {
+			rows = append(rows, []string{"note", n})
+		}
+		return render(cmd.OutOrStdout(), opts, cp, []string{"WHAT", "VALUE"}, rows)
+	})
+	return []*cobra.Command{whoami, complete, checkpoint}
 }
 
 func budgetText(w api.Whoami) string {

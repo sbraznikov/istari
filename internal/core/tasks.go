@@ -238,9 +238,13 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 		if err != nil {
 			return err
 		}
+		onHold, err := t.heldTickets(ctx)
+		if err != nil {
+			return err
+		}
 		var ready []Task
 		for _, task := range all {
-			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) {
+			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) && !onHold[task.Ticket] {
 				ready = append(ready, task)
 			}
 		}
@@ -273,6 +277,26 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 		return held
 	})
 	return lease, err
+}
+
+// heldTickets returns the tickets on hold: their tasks are not handed out
+// (spec section 7.2: a run starts only when there is no hold on the ticket).
+func (t *Tasks) heldTickets(ctx context.Context) (map[string]bool, error) {
+	recs, err := t.store.List(ctx, ticketKind)
+	if err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for _, rec := range recs {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return nil, err
+		}
+		if ticket.Hold != "" {
+			held[ticket.Ref] = true
+		}
+	}
+	return held, nil
 }
 
 // priorities returns the priority a task is handed out at: its ticket's, or

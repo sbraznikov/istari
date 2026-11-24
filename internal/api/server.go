@@ -21,6 +21,7 @@ import (
 	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -46,6 +47,7 @@ type Server struct {
 	engine  *pipeline.Engine
 	vcs     *vcs.Client
 	watch   *vcs.Watcher
+	saves   *runner.Checkpoints
 	repos   map[string]bool // the configured repositories: only their tickets get worktrees
 	ops     map[string]operation
 	changed *notifier
@@ -108,9 +110,20 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		ws := opts.Workspaces
 		ws.Clock = opts.Clock
 		srv.spaces = runner.NewWorkspaces(ns, ws)
+		// The journal writes to the tracker when it can, else to istari's log.
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		var tokens vcs.Tokens
+		if opts.VCS != nil {
+			tokens = opts.VCS.Tokens()
+		}
+		srv.saves = runner.NewCheckpoints(srv.spaces, journal.New(jt, ns, opts.Clock), tokens)
 		if len(opts.Runner.Slots) > 0 {
 			ro := opts.Runner
 			ro.Clock = opts.Clock
+			ro.Checkpoints = srv.saves
 			srv.runner = runner.New(ns, srv.tasks, srv.tickets, srv.spaces, ro)
 		}
 	}

@@ -141,3 +141,19 @@ func TestClaimReadyInTakesOnlyTasksOfTheNamedProjects(t *testing.T) {
 		t.Fatalf("ClaimReadyIn = %+v, %v; want t_api", lease, err)
 	}
 }
+
+func TestATaskOfAHeldTicketIsNotHandedOut(t *testing.T) {
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.ticketAt(t, tickets, 1, "P0")
+	f.ticketAt(t, tickets, 2, "P3")
+	if _, err := tickets.SetHold(ctx, "human:alex", "gh:acme/web#1", "paused"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.claimOrder(t, 1); got[0] != "t_2" {
+		t.Fatalf("claimed %v, want t_2: the P0 ticket is paused", got)
+	}
+	if _, err := f.tasks.ClaimReady(ctx, "agent:a", "implementer"); err == nil {
+		t.Fatal("a task of the paused ticket was handed out")
+	}
+}

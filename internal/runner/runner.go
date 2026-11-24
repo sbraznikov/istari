@@ -53,6 +53,9 @@ type RunnerOptions struct {
 	Tickets interface {
 		Get(ctx context.Context, ref tickets.Ref) (tickets.Ticket, error)
 	}
+	// Checkpoints, when set, saves the work of a run stopped on its timeout,
+	// its budget or by a human (spec section 7.2, step 6).
+	Checkpoints *Checkpoints
 	// Skill is the agent skill installed into every workspace as
 	// .istari/skill.md when the repository has none (spec section 7.4);
 	// "": istari's own.
@@ -152,6 +155,7 @@ type ending struct {
 	reason   string
 	outcome  func(context.Context, core.Lease) error // what happens to the task; nil: decide by the exit
 	released bool
+	save     bool // checkpoint the work before the task ends
 }
 
 // execute runs one claimed task to its end.
@@ -276,6 +280,12 @@ loop:
 		case res = <-waited:
 			break loop
 		case <-renew.C:
+			if held, err := r.tickets.Get(bg, task.Ticket); err == nil && held.Hold != "" {
+				// The ticket was put on hold (paused): the run stops, its work
+				// is saved, and the task waits until the hold is lifted.
+				stopWith(ending{reason: "the ticket is on hold (" + held.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
+				continue
+			}
 			l, err := r.tasks.Renew(bg, lease)
 			var e *core.Error
 			switch {
@@ -290,13 +300,13 @@ loop:
 			}
 		case <-timeout.C:
 			reason := fmt.Sprintf("timeout after %s", r.opts.Timeout)
-			stopWith(ending{reason: reason, outcome: r.failWith(reason)})
+			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-over:
 			reason := fmt.Sprintf("the run budget of $%.2f is spent", r.opts.BudgetUSD)
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, "budget_exceeded") }})
+			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, "budget_exceeded") }, save: true})
 		case who := <-stop:
 			reason := "stopped by " + who
-			stopWith(ending{reason: reason, outcome: r.failWith(reason)})
+			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-done:
 			done = nil // once: then wait for the process
 			stopWith(ending{reason: "the runner stopped", outcome: r.tasks.Release, released: true})
@@ -304,6 +314,12 @@ loop:
 	}
 	<-streamed
 
+	if end != nil && end.save && r.opts.Checkpoints != nil && slot.Role == "implementer" {
+		// Unfinished work is pushed as is: only what came after this is lost.
+		if _, err := r.opts.Checkpoints.Make(bg, run, end.reason+"; continue from here"); err != nil {
+			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
+		}
+	}
 	reason, outcome, completed := r.outcome(bg, run.ID, res)
 	if end != nil && !(end.released && completed) {
 		// A runner that stops while the agent finishes its work keeps the
