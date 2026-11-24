@@ -8,6 +8,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/project"
 )
 
@@ -43,6 +44,31 @@ func TestScaffoldWritesValidTOMLAndKeepsExistingFiles(t *testing.T) {
 		var standard map[string]any
 		if _, err := toml.DecodeFile(filepath.Join(root, ".istari", "ticket-standard.toml"), &standard); err != nil {
 			t.Fatalf("ticket-standard.toml: %v", err)
+		}
+	}
+}
+
+func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
+	for _, lang := range []map[string]string{{"go.mod": "module x\n"}, {}} {
+		root := tree(t, lang)
+		if _, err := project.Scaffold(root); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(root, ".istari", "pipeline.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := pipeline.Parse(data)
+		if err == nil {
+			err = p.Validate()
+		}
+		if err != nil {
+			t.Fatalf("pipeline.toml (%v) does not load: %v", lang, err)
+		}
+		for _, task := range p.Expand(pipeline.Settings{}) {
+			if task.Stage == "review" && !slices.Contains(task.Needs, "verify") {
+				t.Fatalf("review needs %v, want verify among them", task.Needs)
+			}
 		}
 	}
 }
