@@ -16,6 +16,7 @@ const (
 	CodeInvalidTransition = "invalid_transition"
 	CodeGuardFailed       = "guard_failed"
 	CodeTicketHeld        = "ticket_held"
+	CodeHumanOnly         = "human_only"
 
 	CodePaused       = "paused"
 	CodeLimitReached = "limit_reached"

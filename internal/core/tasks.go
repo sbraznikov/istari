@@ -87,6 +87,9 @@ type TaskOptions struct {
 	Lease       time.Duration
 	MaxAttempts int
 	Limits      Limits
+	// DefaultPriority is the priority of a ticket without one; empty means
+	// DefaultPriority (P2).
+	DefaultPriority string
 }
 
 // Tasks runs the task state machine on top of a store. All writes go through
@@ -109,6 +112,9 @@ func NewTasks(s store.Store, opts TaskOptions) *Tasks {
 	}
 	if opts.MaxAttempts <= 0 {
 		opts.MaxAttempts = DefaultMaxAttempts
+	}
+	if opts.DefaultPriority == "" {
+		opts.DefaultPriority = DefaultPriority
 	}
 	return &Tasks{store: s, opts: opts}
 }
@@ -215,9 +221,9 @@ func (t *Tasks) Claim(ctx context.Context, actor, id string) (Lease, error) {
 	return lease, err
 }
 
-// ClaimReady claims the oldest ready task of the role, or of any role when
-// role is empty. It fails with no_ready_task when there is none. Priority
-// ordering comes later (spec 4.9).
+// ClaimReady claims a ready task of the role, or of any role when role is
+// empty: the one whose ticket has the highest priority, the oldest on a tie
+// (spec 4.9). It fails with no_ready_task when there is none.
 func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, error) {
 	var lease Lease
 	err := retry(func() error {
@@ -234,7 +240,16 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 		if len(ready) == 0 {
 			return errorf(CodeNoReadyTask, "no ready task for role %s", role)
 		}
-		slices.SortStableFunc(ready, func(a, b Task) int { return a.CreatedAt.Compare(b.CreatedAt) })
+		priority, err := t.priorities(ctx, all)
+		if err != nil {
+			return err
+		}
+		slices.SortStableFunc(ready, func(a, b Task) int {
+			if c := strings.Compare(priority(a), priority(b)); c != 0 {
+				return c
+			}
+			return a.CreatedAt.Compare(b.CreatedAt)
+		})
 		// A task that a pause or a full limit keeps back is skipped for the
 		// next one. A conflict re-reads the list: another worker was faster.
 		var held error
@@ -251,6 +266,50 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 		return held
 	})
 	return lease, err
+}
+
+// priorities returns the priority a task is handed out at: its ticket's, or
+// higher when an unfinished task of a more urgent ticket needs it, directly or
+// through other tasks (spec 4.9), so urgent work does not wait behind it.
+func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, error) {
+	recs, err := t.store.List(ctx, ticketKind)
+	if err != nil {
+		return nil, err
+	}
+	byTicket := map[string]string{}
+	for _, rec := range recs {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return nil, err
+		}
+		byTicket[ticket.Ref] = ticket.Priority
+	}
+	neededBy := map[string][]Task{}
+	for _, task := range all {
+		if task.State == TaskCompleted || task.State == TaskFailed || task.State == TaskCanceled {
+			continue
+		}
+		for _, id := range task.Needs {
+			neededBy[id] = append(neededBy[id], task)
+		}
+	}
+	memo := map[string]string{}
+	var priority func(Task) string
+	priority = func(task Task) string {
+		if p, ok := memo[task.ID]; ok {
+			return p
+		}
+		p := byTicket[task.Ticket]
+		if p == "" {
+			p = t.opts.DefaultPriority
+		}
+		for _, other := range neededBy[task.ID] {
+			p = min(p, priority(other)) // needs form no cycles: a task needs only existing tasks
+		}
+		memo[task.ID] = p
+		return p
+	}
+	return priority, nil
 }
 
 // claim claims a task read at task.version. A store conflict is returned as

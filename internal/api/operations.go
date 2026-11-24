@@ -68,6 +68,11 @@ type (
 		Actor string `json:"actor"`
 		Ref   string `json:"ref"`
 	}
+	TicketPriorityRequest struct {
+		Actor    string `json:"actor"`
+		Ref      string `json:"ref"`
+		Priority string `json:"priority"`
+	}
 	Empty struct{}
 )
 
@@ -173,6 +178,14 @@ func (s *Server) operations() map[string]operation {
 		}),
 		"ticket.hold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.SetHold(ctx, r.Actor, r.Ref, r.Reason)
+		}),
+		// ticket.priority sets a ticket's priority (spec 4.9): humans only.
+		// A synced ticket's label is written at once.
+		"ticket.priority": write(ticketAgain, func(ctx context.Context, r TicketPriorityRequest) (any, error) {
+			if s.syncer != nil {
+				return s.syncer.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
+			}
+			return k.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
 		}),
 		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
 		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {

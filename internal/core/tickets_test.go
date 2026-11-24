@@ -318,6 +318,8 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 	for _, step := range []func() (core.Ticket, error){
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "accept") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "start") },
+		func() (core.Ticket, error) { return tickets.SetPriority(ctx, "human:alex", ref, "P0") },
+		func() (core.Ticket, error) { return tickets.SetSize(ctx, "agent:planner-1", ref, "M") },
 		func() (core.Ticket, error) { return tickets.SetHold(ctx, "system", ref, "waiting_zone") },
 		func() (core.Ticket, error) { return tickets.ClearHold(ctx, "system", ref, "") },
 		func() (core.Ticket, error) { return tickets.Fire(ctx, "system", ref, "plan_accepted") },
@@ -332,8 +334,8 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReplayTicket: %v", err)
 		}
-		if replayed.State != projected.State || replayed.Hold != projected.Hold {
-			t.Fatalf("after step to %s/%q the replay gives %s/%q", projected.State, projected.Hold, replayed.State, replayed.Hold)
+		if replayed.State != projected.State || replayed.Hold != projected.Hold || replayed.Priority != projected.Priority || replayed.Size != projected.Size {
+			t.Fatalf("after step to %s/%q/%q the replay gives %s/%q/%q", projected.State, projected.Hold, projected.Priority, replayed.State, replayed.Hold, replayed.Priority)
 		}
 	}
 	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
@@ -341,8 +343,8 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplayTicket: %v", err)
 	}
-	if replayed.Ref != ref || replayed.Project != "web" || replayed.State != core.TicketInProgress || replayed.Hold != "needs_input" {
-		t.Fatalf("replayed = %+v, want %s in_progress held needs_input", replayed, ref)
+	if replayed.Ref != ref || replayed.Project != "web" || replayed.State != core.TicketInProgress || replayed.Hold != "needs_input" || replayed.Priority != "P0" || replayed.Size != "M" {
+		t.Fatalf("replayed = %+v, want %s in_progress held needs_input at P0", replayed, ref)
 	}
 	if projected, _ := tickets.Get(ctx, ref); projected.State != replayed.State || projected.Hold != replayed.Hold {
 		t.Fatalf("projection %s/%s differs from replay %s/%s", projected.State, projected.Hold, replayed.State, replayed.Hold)

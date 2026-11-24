@@ -49,7 +49,9 @@ type Server struct {
 type ServerOptions struct {
 	Clock  func() time.Time
 	Limits core.Limits
-	Tick   time.Duration // scheduler tick; 0 means scheduler.DefaultTick
+	// Priority is the default ticket priority; "" means core.DefaultPriority.
+	Priority string
+	Tick     time.Duration // scheduler tick; 0 means scheduler.DefaultTick
 	// Tracker and Repos turn on the ticket sync; without a tracker there is none.
 	Tracker tickets.SyncProvider
 	Repos   []tickets.SyncRepo
@@ -67,7 +69,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	ns := notifyingStore{Store: s, n: n}
 	srv := &Server{
 		store:   ns,
-		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits}),
+		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits, DefaultPriority: opts.Priority}),
 		tickets: core.NewTickets(ns, core.TicketOptions{Clock: opts.Clock}),
 		changed: n,
 		clock:   opts.Clock,

@@ -32,6 +32,8 @@ const DefaultBaseURL = "https://api.github.com"
 const (
 	statePrefix = "istari:"
 	holdPrefix  = "istari:hold:"
+	// priorityPrefix labels a ticket's priority (spec 4.9), e.g. priority:P1.
+	priorityPrefix = "priority:"
 )
 
 // Options configures the adapter.
@@ -302,8 +304,8 @@ func checkState(s tickets.State) error {
 }
 
 // SetState implements tickets.Provider. It replaces istari's labels with
-// exactly one state label and at most one hold label, keeps every other
-// label, and closes the issue for done (completed) and canceled (not
+// exactly one state label, at most one hold label and at most one priority
+// label, keeps every other label, and closes the issue for done (completed) and canceled (not
 // planned) or reopens it for any other state.
 func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.State) error {
 	if err := checkState(s); err != nil {
@@ -314,9 +316,13 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 		return err
 	}
 	labels := slices.DeleteFunc(slices.Clone(current.Labels), func(l string) bool { return strings.HasPrefix(l, statePrefix) })
+	labels = slices.DeleteFunc(labels, func(l string) bool { return strings.HasPrefix(l, priorityPrefix) })
 	labels = append(labels, statePrefix+string(s.State))
 	if s.Hold != "" {
 		labels = append(labels, holdPrefix+s.Hold)
+	}
+	if s.Priority != "" {
+		labels = append(labels, priorityPrefix+s.Priority)
 	}
 	if err := p.ensureLabels(ctx, ref.Repo, labels); err != nil {
 		return err

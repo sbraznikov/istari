@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,5 +112,38 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	}
 	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
 		t.Fatalf("issue labels = %v, want [istari:ready]", labels)
+	}
+}
+
+func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
+	gh := githubtest.New(t)
+	n := gh.Seed("Add rate limits", "", "bob", "bug")
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := startDaemonWithConfig(t, dataDir, config, env...)
+	d.mustCLI(t, nil, "sync")
+	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
+
+	if _, stderr, code := d.cli(t, "ticket", "priority", ref, "P0", "--actor", "agent:implementer-1"); code != 1 || !strings.Contains(stderr, "human_only") {
+		t.Fatalf("ticket priority as an agent: exit %d %q", code, stderr)
+	}
+	var tk struct{ Priority string }
+	d.mustCLI(t, &tk, "ticket", "priority", ref, "P0", "--actor", "human:alex")
+	if tk.Priority != "P0" {
+		t.Fatalf("ticket priority answered %+v, want P0", tk)
+	}
+	labels := gh.Issue(n).Labels
+	if !slices.Contains(labels, "priority:P0") || !slices.Contains(labels, "bug") {
+		t.Fatalf("issue labels = %v, want priority:P0 written at once, bug kept", labels)
+	}
+	var events []struct{ Type, Actor string }
+	d.mustCLI(t, &events, "tail", "--type", "ticket.prioritized")
+	if len(events) != 1 || events[0].Actor != "human:alex" {
+		t.Fatalf("ticket.prioritized events = %+v, want one by human:alex", events)
 	}
 }
