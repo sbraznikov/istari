@@ -77,9 +77,9 @@ type Project struct {
 	Tickets Tickets       `toml:"tickets"`
 	Slack   ProjectSlack  `toml:"slack"`
 	Repos   []ProjectRepo `toml:"repos"`
-	// MaxConcurrentRuns limits claimed tasks at once in this project; 0 (the
-	// key absent) means no limit of its own.
-	MaxConcurrentRuns int `toml:"max_concurrent_runs"`
+	// MaxConcurrentRuns limits claimed tasks at once in this project; nil
+	// (the key absent) means no limit of its own.
+	MaxConcurrentRuns *int `toml:"max_concurrent_runs"`
 }
 
 // Tickets selects the ticket system of a project.
@@ -159,9 +159,7 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	if err := validateProjectLimits(path); err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
-	}
+
 	return &cfg, nil
 }
 
@@ -225,26 +223,8 @@ func (c *Config) validate() error {
 			fail(key, "%q is used by another project", p.Name)
 		}
 		names[p.Name] = true
-	}
-	return errors.Join(errs...)
-}
-
-// validateProjectLimits rejects a project max_concurrent_runs that is set but
-// not positive. Decoded, an absent key and 0 look the same, so the file itself
-// tells them apart.
-func validateProjectLimits(path string) error {
-	var raw struct {
-		Project []map[string]any `toml:"project"`
-	}
-	if _, err := toml.DecodeFile(path, &raw); err != nil {
-		return err
-	}
-	var errs []error
-	for i, p := range raw.Project {
-		if v, set := p["max_concurrent_runs"]; set {
-			if n, ok := v.(int64); !ok || n < 1 {
-				errs = append(errs, fmt.Errorf("project[%d].max_concurrent_runs: must be positive, got %v", i, v))
-			}
+		if p.MaxConcurrentRuns != nil && *p.MaxConcurrentRuns < 1 {
+			fail(fmt.Sprintf("project[%d].max_concurrent_runs", i), "must be positive, got %d", *p.MaxConcurrentRuns)
 		}
 	}
 	return errors.Join(errs...)

@@ -462,8 +462,11 @@ name = "api"
 		{"api_1", false}, // another project and role
 	} {
 		_, stderr, code := d.cli(t, "task", "claim", step.id, "--actor", "agent:a")
-		if step.refused != (code == 1 && strings.Contains(stderr, "limit_reached")) || (!step.refused && code != 0) {
-			t.Fatalf("claim %s: exit %d %q, refused=%v expected", step.id, code, stderr, step.refused)
+		switch {
+		case step.refused && (code != 1 || !strings.Contains(stderr, "limit_reached")):
+			t.Fatalf("claim %s: exit %d %q, want limit_reached", step.id, code, stderr)
+		case !step.refused && code != 0:
+			t.Fatalf("claim %s: exit %d %q, want success", step.id, code, stderr)
 		}
 	}
 }

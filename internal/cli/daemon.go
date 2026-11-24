@@ -177,8 +177,8 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 func limitsOf(cfg *config.Config) core.Limits {
 	l := core.Limits{Total: cfg.Daemon.MaxConcurrentRuns, PerProject: map[string]int{}, PerRole: cfg.Defaults.MaxConcurrentRunsByRole}
 	for _, p := range cfg.Projects {
-		if p.MaxConcurrentRuns > 0 {
-			l.PerProject[p.Name] = p.MaxConcurrentRuns
+		if p.MaxConcurrentRuns != nil {
+			l.PerProject[p.Name] = *p.MaxConcurrentRuns
 		}
 	}
 	return l

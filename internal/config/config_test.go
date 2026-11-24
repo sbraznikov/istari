@@ -39,11 +39,11 @@ func TestSpecExampleLoads(t *testing.T) {
 	if got := cfg.Projects[0].Tickets.Provider; got != "github" {
 		t.Errorf("web tickets.provider = %q, want github", got)
 	}
-	if got := cfg.Projects[0].MaxConcurrentRuns; got != 2 {
-		t.Errorf("web max_concurrent_runs = %d, want 2", got)
+	if got := cfg.Projects[0].MaxConcurrentRuns; got == nil || *got != 2 {
+		t.Errorf("web max_concurrent_runs = %v, want 2", got)
 	}
-	if got := cfg.Projects[1].MaxConcurrentRuns; got != 0 {
-		t.Errorf("billing max_concurrent_runs = %d, want 0 (no own limit)", got)
+	if got := cfg.Projects[1].MaxConcurrentRuns; got != nil {
+		t.Errorf("billing max_concurrent_runs = %d, want none (no own limit)", *got)
 	}
 	if got := cfg.Defaults.MaxConcurrentRunsByRole["reviewer"]; got != 2 {
 		t.Errorf("defaults.max_concurrent_runs_by_role.reviewer = %d, want 2", got)
