@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 )
@@ -49,6 +51,17 @@ type (
 		Ref    string `json:"ref"`
 		Reason string `json:"reason"` // hold: the reason; unhold: only a hold of this reason ("" = any)
 	}
+	DispatchRequest struct {
+		Actor   string `json:"actor"`
+		Project string `json:"project,omitempty"` // empty: all projects
+	}
+	TimerScheduleRequest struct {
+		Actor   string          `json:"actor"`
+		In      string          `json:"in,omitempty"` // a Go duration from the daemon's now, or
+		At      time.Time       `json:"at,omitzero"`  // a moment
+		Op      string          `json:"op"`
+		Request json.RawMessage `json:"request"`
+	}
 	Empty struct{}
 )
 
@@ -68,6 +81,18 @@ func (r *LeaseRequest) validate() error        { return needActor(r.Lease.Owner)
 func (r *TicketCreateRequest) validate() error { return needActor(r.Actor) }
 func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
+func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
+func (r *TimerScheduleRequest) validate() error {
+	if r.In != "" {
+		d, err := time.ParseDuration(r.In)
+		if err != nil || d <= 0 || !r.At.IsZero() {
+			return errors.New("in must be a positive duration, and at must then be empty")
+		}
+	} else if r.At.IsZero() {
+		return errors.New("the request names no time: in or at")
+	}
+	return needActor(r.Actor)
+}
 
 // OK is the response of operations that return nothing else.
 type OK struct {
@@ -89,6 +114,18 @@ func (s *Server) operations() map[string]operation {
 	taskAgain := func(ctx context.Context, r requestRecord) (any, error) { return t.Get(ctx, r.Task) }
 	leaseAgain := func(ctx context.Context, r requestRecord) (any, error) { return t.LeaseOf(ctx, r.Task, r.Actor) }
 	ticketAgain := func(ctx context.Context, r requestRecord) (any, error) { return k.Get(ctx, r.Ticket) }
+	timerAgain := func(ctx context.Context, r requestRecord) (any, error) {
+		timers, err := s.sched.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, timer := range timers {
+			if timer.ID == r.Timer {
+				return timer, nil
+			}
+		}
+		return nil, &core.Error{Code: core.CodeNotFound, Message: "timer " + r.Timer + " does not exist"}
+	}
 
 	return map[string]operation{
 		"task.list": read(func(ctx context.Context, _ Empty) (any, error) { return t.List(ctx) }),
@@ -122,6 +159,20 @@ func (s *Server) operations() map[string]operation {
 		"ticket.hold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.SetHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),
+		"dispatch.pause": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) { return ok(t.Pause(ctx, r.Actor, r.Project)) }),
+		"dispatch.resume": write(okAgain, func(ctx context.Context, r DispatchRequest) (any, error) {
+			return ok(t.Resume(ctx, r.Actor, r.Project))
+		}),
+		"timer.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.sched.List(ctx) }),
+		"timer.schedule": write(timerAgain, func(ctx context.Context, r TimerScheduleRequest) (any, error) {
+			at := r.At
+			if r.In != "" {
+				d, _ := time.ParseDuration(r.In) // validated
+				at = s.clock().Add(d)
+			}
+			return s.sched.Schedule(ctx, r.Actor, at, r.Op, r.Request)
+		}),
+
 		"ticket.unhold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.ClearHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),

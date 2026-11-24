@@ -67,7 +67,8 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print JSON instead of a table")
 	root.PersistentFlags().StringVar(&opts.Config, "config", "", "config file (default ~/.config/istari/config.toml)")
 	root.PersistentFlags().StringVar(&opts.Actor, "actor", defaultActor(), "who acts (default $ISTARI_ACTOR or human:<login>)")
-	root.AddCommand(newDaemonCommand(opts), newTaskCommand(opts), newTicketCommand(opts), newTailCommand(opts), newWaitCommand(opts))
+	root.AddCommand(newDaemonCommand(opts), newTaskCommand(opts), newTicketCommand(opts), newTailCommand(opts), newWaitCommand(opts), newScheduleCommand(opts))
+	root.AddCommand(newPauseCommands(opts)...)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{err}
 	})

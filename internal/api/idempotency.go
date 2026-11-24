@@ -10,12 +10,16 @@ import (
 	"sync"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/scheduler"
 	"github.com/sbraznikov/istari/internal/store"
 )
 
 // IdempotencyHeader carries the idempotency key of a write (spec section 9:
 // --idempotency-key on writing commands).
 const IdempotencyHeader = "Idempotency-Key"
+
+// timerKeyPrefix is reserved for the scheduler's own keys.
+const timerKeyPrefix = scheduler.KeyPrefix
 
 // CodeIdempotencyMismatch refuses a key that was used for another request.
 const CodeIdempotencyMismatch = "idempotency_mismatch"
@@ -32,6 +36,7 @@ type requestRecord struct {
 	Actor  string `json:"actor"`
 	Task   string `json:"task,omitempty"`
 	Ticket string `json:"ticket,omitempty"`
+	Timer  string `json:"timer,omitempty"`
 }
 
 type requestKeyCtx struct{}
@@ -111,6 +116,12 @@ func recordRequest(ctx context.Context, e store.Event) []store.Change {
 	if !ok {
 		return nil
 	}
-	data, _ := json.Marshal(requestRecord{Op: k.op, Body: k.body, Actor: e.Actor, Task: e.Task, Ticket: e.Ticket})
+	rec := requestRecord{Op: k.op, Body: k.body, Actor: e.Actor, Task: e.Task, Ticket: e.Ticket}
+	if e.Type == scheduler.EventTimerScheduled {
+		var p struct{ Timer string }
+		json.Unmarshal(e.Payload, &p)
+		rec.Timer = p.Timer
+	}
+	data, _ := json.Marshal(rec)
 	return []store.Change{{Kind: requestKind, ID: k.key, Data: data}}
 }

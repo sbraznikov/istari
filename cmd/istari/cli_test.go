@@ -3,6 +3,7 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -287,7 +288,7 @@ func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 }
 
 func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") // the shells never complete
 	const n = 40
 	for i := range n {
 		d.createTask(t, fmt.Sprintf("t_%02d", i), "implementer")
@@ -333,5 +334,93 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 	}
 	if len(owners) < 2 {
 		t.Logf("one shell claimed everything (%v); the test still holds but proves less", owners)
+	}
+}
+
+func TestPauseAndResumeTheHandOut(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	d.createTask(t, "t_1", "implementer")
+	d.createTask(t, "t_2", "implementer")
+	var running lease
+	d.mustCLI(t, &running, "task", "claim", "t_1", "--actor", "agent:a")
+	d.mustCLI(t, nil, "pause", "--all")
+	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:b"); code != 1 || !strings.Contains(stderr, "paused") {
+		t.Fatalf("claim while paused: exit %d %q", code, stderr)
+	}
+	d.mustCLI(t, nil, "task", "renew", "t_1", "--actor", running.Owner, "--token", running.Token) // running work goes on
+	d.mustCLI(t, nil, "resume", "--all")
+	d.mustCLI(t, nil, "task", "claim", "--ready", "--actor", "agent:b")
+	if _, _, code := d.cli(t, "pause"); code != 2 {
+		t.Fatalf("pause without a scope: exit %d, want 2", code)
+	}
+}
+
+func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1")
+	d.createTask(t, "t_1", "implementer")
+	d.createTask(t, "t_2", "implementer")
+	d.mustCLI(t, nil, "task", "claim", "t_1", "--actor", "agent:a")
+	if _, stderr, code := d.cli(t, "task", "claim", "t_2", "--actor", "agent:b"); code != 1 || !strings.Contains(stderr, "limit_reached") {
+		t.Fatalf("second claim with max_concurrent_runs = 1: exit %d %q", code, stderr)
+	}
+}
+
+func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	ref := "gh:acme/web#1"
+	createTicket(t, d, ref)
+	var now []struct{ Cursor string }
+	d.mustCLI(t, &now, "tail")
+	var timer struct{ ID, State string }
+	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"accept"}`)
+	if timer.ID == "" || timer.State != "pending" {
+		t.Fatalf("schedule = %+v", timer)
+	}
+	d.mustCLI(t, nil, "wait", "type=timer.fired", "--after", now[len(now)-1].Cursor, "--timeout", "10s")
+	var tk struct{ State string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.State != "ready" {
+		t.Fatalf("after the scheduled accept the ticket is %s", tk.State)
+	}
+	if _, stderr, code := d.cli(t, "schedule", "--in", "1s", "task.list"); code != 1 || !strings.Contains(stderr, "not a write operation") {
+		t.Fatalf("scheduling a read: exit %d %q", code, stderr)
+	}
+}
+
+func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	d.call(t, "task.create", map[string]any{"actor": "system", "id": "a_web", "ticket": "gh:acme/web#1", "project": "web", "role": "implementer"}, nil)
+	d.call(t, "task.create", map[string]any{"actor": "system", "id": "b_api", "ticket": "gh:acme/api#1", "project": "api", "role": "implementer"}, nil)
+	d.mustCLI(t, nil, "pause", "--project", "web")
+	var l lease
+	d.mustCLI(t, &l, "task", "claim", "--ready", "--actor", "agent:a")
+	if l.Task != "b_api" {
+		t.Fatalf("claim --ready with web paused took %s, want b_api", l.Task)
+	}
+}
+
+func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	var first, second struct{ ID, State string }
+	d.mustCLI(t, &first, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
+	d.mustCLI(t, &second, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
+	if first.ID == "" || second != first {
+		t.Fatalf("repeated schedule = %+v, want %+v", second, first)
+	}
+	if _, stderr, code := d.cli(t, "schedule", "--in", "1h", "ticket.fire", `{"ref":"x","colour":"red"}`); code != 1 || !strings.Contains(stderr, "colour") {
+		t.Fatalf("a malformed scheduled request: exit %d %q, want a refusal naming the field", code, stderr)
+	}
+	// Keys of the form timer:<id> belong to the scheduler.
+	resp, err := d.client.Do(func() *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, "http://istari/v1/ticket.create", strings.NewReader(`{"actor":"human:alex","ref":"gh:acme/web#6"}`))
+		r.Header.Set("Idempotency-Key", "timer:tm_1")
+		return r
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a client key timer:… = %s, want 400", resp.Status)
 	}
 }

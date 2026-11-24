@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
 )
 
@@ -27,11 +28,18 @@ var ErrAlreadyRunning = errors.New("another istari daemon is already running on 
 // shutdownTimeout bounds how long in-flight requests may take after SIGTERM.
 const shutdownTimeout = 30 * time.Second
 
+// DaemonOptions configures RunDaemon.
+type DaemonOptions struct {
+	DataDir string
+	Limits  core.Limits
+}
+
 // RunDaemon owns the data directory until ctx is canceled: it takes an
 // exclusive lock, opens the store, serves the API on a unix socket with mode
-// 0600, and on cancellation stops accepting, ends the event streams and waits
-// for in-flight requests before returning.
-func RunDaemon(ctx context.Context, dataDir string) error {
+// 0600 and runs the scheduler. On cancellation it stops accepting, ends the
+// event streams, stops the scheduler and waits for in-flight requests.
+func RunDaemon(ctx context.Context, opts DaemonOptions) error {
+	dataDir := opts.DataDir
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
@@ -55,7 +63,11 @@ func RunDaemon(ctx context.Context, dataDir string) error {
 	}
 	defer os.Remove(socket)
 
-	srv := NewServer(st, time.Now)
+	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits})
+	schedCtx, stopScheduler := context.WithCancel(context.Background())
+	scheduled := make(chan struct{})
+	go func() { defer close(scheduled); srv.Scheduler().Run(schedCtx) }()
+	defer func() { stopScheduler(); <-scheduled }()
 	httpSrv := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	httpSrv.RegisterOnShutdown(srv.Close)
 	served := make(chan error, 1)

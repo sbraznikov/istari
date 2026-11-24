@@ -86,6 +86,7 @@ type TaskOptions struct {
 	Clock       func() time.Time
 	Lease       time.Duration
 	MaxAttempts int
+	Limits      Limits
 }
 
 // Tasks runs the task state machine on top of a store. All writes go through
@@ -234,9 +235,20 @@ func (t *Tasks) ClaimReady(ctx context.Context, actor, role string) (Lease, erro
 			return errorf(CodeNoReadyTask, "no ready task for role %s", role)
 		}
 		slices.SortStableFunc(ready, func(a, b Task) int { return a.CreatedAt.Compare(b.CreatedAt) })
-		// Another worker may take the first one; a conflict re-reads the list.
-		lease, err = t.claim(ctx, actor, ready[0])
-		return err
+		// A task that a pause or a full limit keeps back is skipped for the
+		// next one. A conflict re-reads the list: another worker was faster.
+		var held error
+		for _, task := range ready {
+			lease, err = t.claim(ctx, actor, task)
+			if isCode(err, CodePaused) || isCode(err, CodeLimitReached) {
+				if held == nil {
+					held = err
+				}
+				continue
+			}
+			return err
+		}
+		return held
 	})
 	return lease, err
 }
@@ -252,11 +264,15 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 	default:
 		return Lease{}, errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
 	}
+	admitted, err := t.admit(ctx, task)
+	if err != nil {
+		return Lease{}, err
+	}
 	task.State = TaskClaimed
 	task.Owner = actor
 	task.token = randomHex(16)
 	task.LeaseUntil = t.opts.Clock().Add(t.opts.Lease)
-	if err := t.commit(ctx, actor, "task.claimed", task, map[string]any{"lease_until": task.LeaseUntil}); err != nil {
+	if err := t.commit(ctx, actor, "task.claimed", task, map[string]any{"lease_until": task.LeaseUntil}, admitted); err != nil {
 		return Lease{}, err
 	}
 	return Lease{Task: task.ID, Owner: actor, Token: task.token, Until: task.LeaseUntil}, nil

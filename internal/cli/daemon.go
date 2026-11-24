@@ -16,6 +16,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/config"
+	"github.com/sbraznikov/istari/internal/core"
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
@@ -34,7 +35,10 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
-			return api.RunDaemon(ctx, dataDir)
+			return api.RunDaemon(ctx, api.DaemonOptions{
+				DataDir: dataDir,
+				Limits:  core.Limits{Total: cfg.Daemon.MaxConcurrentRuns},
+			})
 		},
 	}
 	cmd.AddCommand(newDaemonInstallCommand(opts))
