@@ -312,13 +312,14 @@ You should see:
 
 ```
 CHECK                           STATUS  DETAIL
+daemon socket                   ok      /Users/you/.local/share/istari/istari.sock
 tracker github                  ok      -
-vcs github                      ok      no [github_app]: pushes and pull requests are made as the gh CLI's user, whose credentials an agent running as you can reach
+vcs github                      ok      no [github_app]: pushes and pull requests are made as the gh CLI's user
 harness claude-code             ok      -
 pipeline .istari/pipeline.toml  ok      -
 ```
 
-With the daemon running (step 9) a `workspaces` row is added. The `vcs github` detail is the warning about running without a GitHub App. A failing check reads like this and exits 1:
+Without `gh` and without `[github_app]`, `vcs github` fails too. With the daemon running (step 9) a `workspaces` row is added. The `vcs github` detail is the warning about running without a GitHub App. A failing check reads like this and exits 1:
 
 ```
 tracker github                  FAIL    github: no token from `gh auth token` (install the GitHub CLI and run `gh auth login`): exec: "gh": executable file not found in $PATH
