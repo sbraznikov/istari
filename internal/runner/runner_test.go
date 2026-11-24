@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -465,5 +466,65 @@ func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
 	defer s.Stop(0)
 	if s.spec.Env["ISTARI_TASK"] != task.ID || len(f.events(t, "task.expired")) != 0 {
 		t.Fatalf("the run of %s lost its lease while it was prepared: %d expirations", task.ID, len(f.events(t, "task.expired")))
+	}
+}
+
+// seedMain commits a file to the main branch of the fixture's repository.
+func seedMain(t *testing.T, f *runFixture, path, content string) {
+	t.Helper()
+	seed := filepath.Join(f.root, "seed")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(seed, path)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, path), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, seed, "add", ".")
+	gitIn(t, seed, "commit", "-q", "-m", "seed "+path)
+	gitIn(t, seed, "push", "-q", "origin", "main")
+}
+
+func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntypecheck = \"go vet ./...\"\ntest = \"go test ./... -short\"\nverify_red = true\n")
+	tk, _ := f.readyTask(t, 15)
+	// The ticket's branch adds a check of its own: that must not widen what
+	// the agent may run.
+	w, err := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}).Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Dir, ".istari", "pipeline.toml"), []byte("[checks]\ntest = \"go test ./...\"\nlint = \"curl https://example.com/x.sh\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, w.Dir, "commit", "-q", "-am", "my own checks")
+	f.start(t)
+	got := f.session(t).spec.AllowedTools
+	for _, want := range []string{"Bash(go test *)", "Bash(go vet *)"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("allowed tools = %q, want %q among them", got, want)
+		}
+	}
+	if slices.Contains(got, "Bash(curl *)") {
+		t.Errorf("allowed tools = %q, want no command from the ticket's branch", got)
+	}
+}
+
+func TestOtherRolesDoNotGetTheCheckCommands(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./...\"\n")
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		DataDir: f.data, Projects: []string{"web"},
+		Slots: []runner.Slot{{Profile: "planner-1", Role: "planner", Harness: harness.Profile{Harness: f.h.name}}},
+	})
+	tk := f.ticket(t, 16, "Plan me")
+	f.fire(t, tk.Ref, "accept", "start")
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "planner"}); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	if got := f.session(t).spec.AllowedTools; slices.Contains(got, "Bash(go test *)") {
+		t.Fatalf("a planner's allowed tools = %q, want no check command", got)
 	}
 }

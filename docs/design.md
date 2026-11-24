@@ -745,7 +745,7 @@ claude --print "$(cat brief.md)" \
 | `--print` with the brief | mode without a terminal: the brief arrives as the first message, and the process exits when the agent is done |
 | `--append-system-prompt` | the role instruction |
 | `--output-format stream-json` | the harness prints every message and tool call line by line; the Runner reads this stream, writes it to the event log and shows it in the TUI |
-| `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask |
+| `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
