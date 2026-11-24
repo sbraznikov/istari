@@ -242,6 +242,12 @@ func (s *Server) operations() map[string]operation {
 			}
 			return k.Fire(ctx, r.Actor, r.Ref, r.Trigger)
 		}),
+		"ticket.resume": write(ticketAgain, func(ctx context.Context, r TicketReadyRequest) (any, error) {
+			return s.resume(ctx, r.Actor, r.Ref)
+		}),
+		"recover": write(okAgain, func(ctx context.Context, r ActorRequest) (any, error) {
+			return s.recoverTickets(ctx, r.Actor)
+		}),
 		"ticket.hold": write(ticketAgain, func(ctx context.Context, r TicketHoldRequest) (any, error) {
 			return k.SetHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),

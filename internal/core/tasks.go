@@ -502,6 +502,21 @@ func (t *Tasks) Retry(ctx context.Context, actor, id string) error {
 	})
 }
 
+// Revoke takes a claimed task from its owner before its lease runs out and
+// returns it to ready: its run is known to be gone (istari ticket resume,
+// spec section 4.6). Attempts are not counted.
+func (t *Tasks) Revoke(ctx context.Context, actor, id string) error {
+	return t.byActor(ctx, actor, id, "task.revoked", func(task *Task) (map[string]any, error) {
+		if task.State != TaskClaimed {
+			return nil, errorf(CodeInvalidState, "task %s is %s, not claimed", id, task.State)
+		}
+		payload := map[string]any{"owner": task.Owner}
+		task.State = TaskReady
+		task.release()
+		return payload, nil
+	})
+}
+
 // Cancel cancels a task from any open state.
 func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
 	return t.byActor(ctx, actor, id, "task.canceled", func(task *Task) (map[string]any, error) {

@@ -370,3 +370,43 @@ func TestAChangeByAnUnknownAuthorSaysSo(t *testing.T) {
 const conforming = "## Context\n\nLimits protect the API.\n\n## What needs to be done\n\n- Add a limiter.\n\n" +
 	"## Acceptance criteria\n\n- [ ] A burst is refused.\n\n## Out of scope\n\n- Per-user limits.\n\n" +
 	"## Dependencies\n\n- Needs: none\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"
+
+func TestAnUnknownTicketPastReadyIsLeftForRecover(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("t", conforming, "alex", "istari:in_progress", "istari:hold:needs_input")
+	report := f.run(t)
+	if _, err := f.tickets.Get(ctx, ghRef(n)); err == nil {
+		t.Fatal("sync took a ticket istari lost as a new one")
+	}
+	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:in_progress", "istari:hold:needs_input"}) {
+		t.Fatalf("labels = %v: sync changed what recover needs", got)
+	}
+	if report.Unknown != 1 {
+		t.Fatalf("report = %+v, want one unknown", report)
+	}
+}
+
+func TestRecoverTakesTheTicketsStateHoldAndJournalFromTheTracker(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add a cache", conforming, "alex", "istari:in_progress", "istari:hold:needs_input", "priority:P1", "size:S")
+	f.gh.HumanComment(n, "bob", "unrelated")
+	var restored []string
+	report, err := f.sync.Recover(ctx, func(_ context.Context, r tickets.Ref) error { restored = append(restored, r.String()); return nil })
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	tk := f.ticket(t, n)
+	if tk.State != core.TicketInProgress || tk.Hold != "needs_input" || tk.Priority != "P1" || tk.Size != "S" || tk.Title != "Add a cache" {
+		t.Fatalf("recovered = %+v", tk)
+	}
+	if report.Recovered != 1 || !slices.Equal(restored, []string{ghRef(n)}) {
+		t.Fatalf("report %+v, journals restored %v", report, restored)
+	}
+	again := f.run(t) // the next sync agrees with the tracker
+	if again.Reverted != 0 || again.Transitioned != 0 || again.Comments != 0 {
+		t.Fatalf("the sync after recover = %+v", again)
+	}
+	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:in_progress", "istari:hold:needs_input"}) {
+		t.Fatalf("labels = %v", got)
+	}
+}

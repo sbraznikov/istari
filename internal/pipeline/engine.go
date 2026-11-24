@@ -249,6 +249,18 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return nil
 	}
 	r := roundOf(tk.Ref, all)
+	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
+		// A ticket past planning without tasks was recovered from the
+		// tracker (istari recover): it gets the stages of its state on.
+		if err := e.expand(ctx, tk, 1, from); err != nil {
+			return err
+		}
+		tasks, err := e.tasks.List(ctx)
+		if err != nil {
+			return err
+		}
+		r = roundOf(tk.Ref, tasks)
+	}
 	fire := func(trigger string) error {
 		_, err := e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, trigger)
 		return err
@@ -365,6 +377,40 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 }
 
 const waitingDependency = "waiting_dependency"
+
+// resumeFrom tells, for a ticket past planning, the stages its state still
+// has ahead, in pipeline order: in_progress from the implementer's stage,
+// in_review after verify, awaiting_approval after the reviewer's. nil: the
+// state has no stages to resume.
+func resumeFrom(state core.TicketState) func(TaskSpec) bool {
+	// after starts at the first stage behind the last one that is.
+	after := func(is func(TaskSpec) bool) func(TaskSpec) bool {
+		seen := false
+		return func(s TaskSpec) bool {
+			if is(s) {
+				seen = true
+				return false
+			}
+			return seen
+		}
+	}
+	var starts func(TaskSpec) bool
+	switch state {
+	case core.TicketInProgress:
+		starts = func(s TaskSpec) bool { return s.Role == "implementer" }
+	case core.TicketInReview:
+		starts = after(func(s TaskSpec) bool { return s.Stage == StageVerify })
+	case core.TicketAwaitingApproval:
+		starts = after(func(s TaskSpec) bool { return s.Role == "reviewer" })
+	default:
+		return nil
+	}
+	started := false
+	return func(s TaskSpec) bool {
+		started = started || starts(s)
+		return started
+	}
+}
 
 // maxRefines bounds how often a ticket below the standard is refined.
 const maxRefines = 3

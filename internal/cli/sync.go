@@ -27,3 +27,19 @@ func newSyncCommand(opts *Options) *cobra.Command {
 		},
 	}
 }
+
+// newRecoverCommand returns istari recover: rebuild what istari lost with
+// its database from the tracker (spec section 4.6).
+func newRecoverCommand(opts *Options) *cobra.Command {
+	return writeCommand(opts, &cobra.Command{
+		Use:   "recover",
+		Short: "Restore lost tickets, their states, holds and journals from the tracker",
+		Args:  Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		var r tickets.SyncReport
+		if err := opts.call(cmd, "recover", key, api.ActorRequest{Actor: opts.Actor}, &r); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, r, []string{"RECOVERED"}, [][]string{{strconv.Itoa(r.Recovered)}})
+	})
+}

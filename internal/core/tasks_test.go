@@ -501,3 +501,19 @@ func TestRetryReturnsAFailedTaskToReadyWithFreshAttempts(t *testing.T) {
 		t.Fatalf("task.retried events = %d, want 1", len(got))
 	}
 }
+
+func TestRevokingALeaseReturnsTheTaskAtOnceAndTheOldLeaseIsDead(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "t_1", "implementer")
+	assertCode(t, f.tasks.Revoke(ctx, "human:alex", "t_1"), core.CodeInvalidState) // not claimed
+	lease := f.claim(t, "t_1")
+	if err := f.tasks.Revoke(ctx, "human:alex", "t_1"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if task, _ := f.tasks.Get(ctx, "t_1"); task.State != core.TaskReady || task.Owner != "" {
+		t.Fatalf("after Revoke: %s owned by %q", task.State, task.Owner)
+	}
+	if err := f.tasks.Complete(ctx, lease); err == nil {
+		t.Fatal("the revoked lease still completes the task")
+	}
+}

@@ -79,6 +79,11 @@ type SyncReport struct {
 	Transitioned int `json:"transitioned"`
 	Reverted     int `json:"reverted"`
 	Comments     int `json:"comments"`
+	// Unknown are tickets istari does not have whose labels say they are
+	// past ready: istari lost them, and istari recover takes them back.
+	Unknown int `json:"unknown,omitempty"`
+	// Recovered are the tickets istari recover took back.
+	Recovered int `json:"recovered,omitempty"`
 }
 
 // Syncer keeps the tracker and istari's tickets in step (spec section 3.1,
@@ -101,6 +106,8 @@ type Syncer struct {
 
 	mu      sync.Mutex           // one sync at a time
 	updated map[string]time.Time // per ticket: the tracker's update time whose comments were read
+	// recovering: a sync from Recover, which takes lost tickets back.
+	recovering bool
 }
 
 // NewSyncer returns a Syncer.
@@ -192,6 +199,49 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 	return errors.Join(errs...)
 }
 
+// lost tells whether a ticket istari does not have but its tracker labels as
+// state was worked on by istari: past ready.
+func lost(state core.TicketState) bool {
+	return state != "" && state != core.TicketNew && state != core.TicketReady
+}
+
+// Recover takes back the tickets istari lost with its database (spec
+// section 4.6, istari recover): every open ticket labelled past ready that
+// istari does not have gets the state and hold of its labels, and its
+// journal is restored from its comments by restore. The tracker is not
+// changed.
+func (s *Syncer) Recover(ctx context.Context, restore func(context.Context, Ref) error) (SyncReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recovering = true
+	defer func() { s.recovering = false }()
+	var report SyncReport
+	var errs []error
+	for _, repo := range s.repos {
+		open, err := s.provider.List(ctx, Query{Repo: repo.Repo})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("recover %s: %w", repo.Repo, err))
+			continue
+		}
+		for _, t := range open {
+			if !lost(t.State.State) {
+				continue
+			}
+			if _, err := s.tickets.Get(ctx, t.Ref.String()); err == nil {
+				continue // istari has it
+			}
+			if err := s.reconcile(ctx, repo, t, &report); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", t.Ref, err))
+				continue
+			}
+			if err := restore(ctx, t.Ref); err != nil {
+				errs = append(errs, fmt.Errorf("%s: the journal: %w", t.Ref, err))
+			}
+		}
+	}
+	return report, errors.Join(errs...)
+}
+
 // side is a ticket's state as one side has it.
 type side struct {
 	State  core.TicketState `json:"state"`
@@ -270,9 +320,21 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 	tk, err := s.tickets.Get(ctx, ref)
 	var coreErr *core.Error
 	if errors.As(err, &coreErr) && coreErr.Code == core.CodeNotFound {
-		tk, err = s.tickets.CreateWith(ctx, "human:"+t.Author, core.NewTicket{Ref: ref, Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL})
-		if err == nil {
-			report.Created++
+		nt := core.NewTicket{Ref: ref, Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
+		switch {
+		case !lost(t.State.State):
+			if tk, err = s.tickets.CreateWith(ctx, "human:"+t.Author, nt); err == nil {
+				report.Created++
+			}
+		case s.recovering:
+			// Labels past ready are taken as they are only when a human
+			// asked for it: anyone who can label could set them.
+			if tk, err = s.tickets.Recover(ctx, "system", nt, t.State.State, t.State.Hold); err == nil {
+				report.Recovered++
+			}
+		default:
+			report.Unknown++
+			return nil
 		}
 	}
 	if err != nil {
