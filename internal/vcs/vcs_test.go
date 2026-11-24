@@ -85,7 +85,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Track(ctx, ticket, githubtest.Repo, pr.Number); err != nil {
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
 		t.Fatal(err)
 	}
 	gh.SetHeadSHA(pr.Number, "abc123")
@@ -246,7 +246,7 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	w := vcs.NewWatcher(c, s, nil)
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
-	w.Track(ctx, ticket, githubtest.Repo, pr.Number)
+	w.Track(ctx, ticket, githubtest.Repo, pr)
 	if err := c.Merge(ctx, githubtest.Repo, pr.Number, "squash"); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 	w := vcs.NewWatcher(c, s, nil)
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
-	w.Track(ctx, ticket, githubtest.Repo, pr.Number)
+	w.Track(ctx, ticket, githubtest.Repo, pr)
 	gh.SetHeadSHA(pr.Number, "def456")
 	gh.SetStatus("def456", "failure") // a repository with commit statuses only
 	gh.AddReview(pr.Number, "alex", "CHANGES_REQUESTED")
@@ -297,5 +297,46 @@ func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
 	got := gh.Issue(pr.Number)
 	if got.Title != "Y" || !strings.Contains(got.Body, "new") || !strings.Contains(got.Body, "Closes #3") || !strings.Contains(got.Body, "Ticket: "+ticket) {
 		t.Fatalf("after update: %q %q", got.Title, got.Body)
+	}
+}
+
+func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, nil)
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "old111")
+	gh.SetChecks("old111", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pushed(ctx, ticket, "new222"); err != nil { // the rework round pushed
+		t.Fatal(err)
+	}
+	if err := w.Poll(ctx); err != nil { // GitHub still shows the old head
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("after the push the old commit's checks are taken: %+v", tr)
+	}
+	gh.SetHeadSHA(pr.Number, "new222")
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "failure" || tr.SHA != "new222" {
+		t.Fatalf("the pushed commit's checks: %+v", tr)
 	}
 }

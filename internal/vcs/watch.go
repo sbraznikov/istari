@@ -24,10 +24,15 @@ type Tracked struct {
 	Ticket string `json:"ticket"`
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
-	Checks string `json:"checks,omitempty"`
-	SHA    string `json:"sha,omitempty"` // the head commit the checks are of
-	Review string `json:"review,omitempty"`
-	Done   bool   `json:"done,omitempty"` // merged or closed: no longer polled
+	URL    string `json:"url,omitempty"`
+	Head   string `json:"head,omitempty"` // the commit istari last pushed to it
+	// Replaced is the commit that push replaced: its checks are no longer
+	// news, even while GitHub still shows it as the head.
+	Replaced string `json:"replaced,omitempty"`
+	Checks   string `json:"checks,omitempty"`
+	SHA      string `json:"sha,omitempty"` // the head commit the checks are of
+	Review   string `json:"review,omitempty"`
+	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
 
 	version int64
 }
@@ -49,9 +54,9 @@ func NewWatcher(c *Client, s store.Store, clock func() time.Time) *Watcher {
 }
 
 // Track starts watching a ticket's pull request.
-func (w *Watcher) Track(ctx context.Context, ticket, repo string, n int) error {
-	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: n})
-	raw, _ := json.Marshal(map[string]any{"repo": repo, "number": n})
+func (w *Watcher) Track(ctx context.Context, ticket, repo string, pr Opened) error {
+	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: pr.Number, URL: pr.URL})
+	raw, _ := json.Marshal(map[string]any{"repo": repo, "number": pr.Number})
 	_, err := w.store.Append(ctx, store.Event{Type: "vcs.tracked", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
 		store.Change{Kind: prKind, ID: ticket, Data: data})
 	if errors.Is(err, store.ErrConflict) {
@@ -72,6 +77,29 @@ func (w *Watcher) PullRequestOf(ctx context.Context, ticket string) (Tracked, er
 	}
 	t.version = rec.Version
 	return t, nil
+}
+
+// Pushed records the commit istari pushed to a tracked pull request: the
+// checks istari knew are of an older commit, so they are forgotten until CI
+// reports on this one.
+func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
+	for {
+		t, err := w.PullRequestOf(ctx, ticket)
+		if err != nil {
+			return err
+		}
+		if t.SHA != "" {
+			t.Replaced = t.SHA
+		}
+		t.Head, t.Checks, t.SHA = head, "", ""
+		data, _ := json.Marshal(t)
+		raw, _ := json.Marshal(map[string]any{"number": t.Number, "head": head})
+		_, err = w.store.Append(ctx, store.Event{Type: "vcs.pushed", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
 }
 
 // Poll reads every open tracked pull request once.
@@ -108,7 +136,8 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		payload map[string]any
 	}
 	var changes []change
-	if s.Checks != "" && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
+	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
+	if s.Checks != "" && !stale && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
 		t.Checks, t.SHA = s.Checks, s.HeadSHA
 		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
 	}

@@ -2,11 +2,15 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/sbraznikov/istari/internal/pipeline"
+	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -70,27 +74,44 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if ws.Branch == "" || !isWorktree(ctx, run.Dir) {
 		return vcs.Opened{}, fmt.Errorf("pr: %s has no worktree", run.Ticket)
 	}
+	// The checks must judge the code the pull request gets.
+	if dirty, err := gitOut(ctx, run.Dir, "status", "--porcelain"); err != nil {
+		return vcs.Opened{}, err
+	} else if dirty != "" {
+		return vcs.Opened{}, fmt.Errorf("pr: the worktree has uncommitted changes; commit them with istari checkpoint first:\n%s", dirty)
+	}
+	head, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
+	if err != nil {
+		return vcs.Opened{}, err
+	}
+	// Only the result of a run by code goes into the journal (spec 7.7).
+	entry := &journal.CheckpointEntry{Branch: ws.Branch, Commit: head[:min(12, len(head))], Checks: map[string]string{}}
+	record := func(done string) error {
+		entry.Done = done
+		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
+	}
 	checks, _, err := p.cp.checks(ctx, ws.Repo)
 	if err != nil {
 		return vcs.Opened{}, err
 	}
-	full, ok := checks["full"]
+	name := "full"
+	full, ok := checks[name]
 	if !ok {
-		full, ok = checks["test"] // without a full suite, the tests
+		name = "test" // without a full suite, the tests
+		full, ok = checks[name]
 	}
-	if ok {
-		if passed, output := runCheck(ctx, run.Dir, full); !passed {
-			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
-		}
-	}
-	url, private := p.cp.ws.PushTarget(ws.Repo)
-	var token string
-	if p.cp.tokens != nil {
-		if token, err = p.cp.tokens.Token(ctx, ws.Repo); err != nil {
+	if !ok {
+		entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
+	} else if passed, output := runCheck(ctx, run.Dir, full); passed {
+		entry.Checks[name] = "green"
+	} else {
+		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
+		if err := record("the full checks fail: the pull request is not opened"); err != nil {
 			return vcs.Opened{}, err
 		}
+		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
 	}
-	if err := vcs.Push(ctx, vcs.PushSpec{Worktree: run.Dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token}); err != nil {
+	if err := p.cp.push(ctx, ws, run.Dir); err != nil {
 		return vcs.Opened{}, err
 	}
 	clone := p.cp.ws.clonePath(ws.Repo)
@@ -98,12 +119,28 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if err != nil {
 		return vcs.Opened{}, err
 	}
-	pr, err := p.client.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: ref.Repo, Ticket: run.Ticket, Head: ws.Branch, Base: base, Title: title, Body: body, Draft: true})
-	if err != nil {
+	// One pull request per ticket: a later round updates it (spec 4.3).
+	np := vcs.NewPullRequest{Repo: ref.Repo, Ticket: run.Ticket, Head: ws.Branch, Base: base, Title: title, Body: body, Draft: true}
+	done := "opened"
+	var pr vcs.Opened
+	if t, err := p.watch.PullRequestOf(ctx, run.Ticket); err == nil && !t.Done {
+		if err := p.client.UpdatePullRequest(ctx, np, t.Number); err != nil {
+			return vcs.Opened{}, err
+		}
+		pr, done = vcs.Opened{Number: t.Number, URL: t.URL}, "updated"
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return vcs.Opened{}, err
+	} else {
+		if pr, err = p.client.OpenPullRequest(ctx, np); err != nil {
+			return vcs.Opened{}, err
+		}
+		if err := p.watch.Track(ctx, run.Ticket, ref.Repo, pr); err != nil {
+			return pr, err
+		}
 	}
-	if err := p.watch.Track(ctx, run.Ticket, ref.Repo, pr.Number); err != nil {
+	if err := p.watch.Pushed(ctx, run.Ticket, head); err != nil {
 		return pr, err
 	}
-	return pr, nil
+	entry.PR = pr.URL
+	return pr, record(fmt.Sprintf("pull request #%d %s", pr.Number, done))
 }

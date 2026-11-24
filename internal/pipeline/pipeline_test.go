@@ -112,6 +112,19 @@ func TestARepositoryValueOverridesTheGlobalDefault(t *testing.T) {
 	}
 }
 
+func TestSelfReviewIsOnUnlessThePipelineTurnsItOff(t *testing.T) {
+	if !pipeline.Default().Settings(config.Defaults{}).SelfReview {
+		t.Fatal("without a file self_review is off, want on (spec 7.6)")
+	}
+	p, err := pipeline.Parse([]byte("[limits]\nself_review = false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Settings(config.Defaults{}).SelfReview {
+		t.Fatal("self_review = false left it on")
+	}
+}
+
 func TestWithThePlanGateTheImplementerWaitsForAHuman(t *testing.T) {
 	got := steps(pipeline.Default().Expand(pipeline.Settings{PlanGate: true}))
 	if !reflect.DeepEqual(got[1], step{"plan-approval", pipeline.RoleHuman, []string{"plan"}}) {

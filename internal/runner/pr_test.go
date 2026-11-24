@@ -1,13 +1,16 @@
 package runner_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -67,5 +70,74 @@ func TestPrOpenPushesAndOpensADraftLinkedToTheTicket(t *testing.T) {
 	}
 	if f.head() != strings.TrimSpace(gitIn(t, f.ws.Dir, "rev-parse", "HEAD")) {
 		t.Fatal("the branch was not pushed before the pull request")
+	}
+}
+
+func TestPrOpenIsRefusedWhileTheWorktreeHasUncommittedChanges(t *testing.T) {
+	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
+	write(t, filepath.Join(f.ws.Dir, "cache.go"), "package cache\n")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "istari checkpoint") {
+		t.Fatalf("pr open with uncommitted work: %v", err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
+func TestPrOpenJournalsTheFullChecksItRan(t *testing.T) {
+	f, _, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"echo FULL SUITE BROKE; exit 1\"\n")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil {
+		t.Fatal("pr open with red full checks was accepted")
+	}
+	entries := prJournal(t, f)
+	if len(entries) != 1 || entries[0].Checkpoint == nil || entries[0].Checkpoint.Checks["full"] != "red" || !strings.Contains(entries[0].Checkpoint.Failures["full"], "FULL SUITE BROKE") {
+		t.Fatalf("journal = %+v", entries)
+	}
+}
+
+func TestPrOpenWithoutAnyCheckSaysSoInTheJournal(t *testing.T) {
+	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\n")
+	pr, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err != nil {
+		t.Fatalf("pr open: %v", err)
+	}
+	entries := prJournal(t, f)
+	if len(entries) != 1 || entries[0].Checkpoint == nil || !strings.Contains(strings.Join(entries[0].Checkpoint.Notes, "\n"), "full: no command") ||
+		!strings.Contains(entries[0].Checkpoint.Done, fmt.Sprintf("#%d", pr.Number)) || gh.IssueCount() != 1 {
+		t.Fatalf("journal = %+v", entries)
+	}
+}
+
+func prJournal(t *testing.T, f *cpFixture) []journal.Entry {
+	t.Helper()
+	ref, err := tickets.ParseRef(f.tk.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestPrOpenInALaterRoundUpdatesTheTicketsPullRequest(t *testing.T) {
+	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
+	first, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err != nil {
+		t.Fatalf("pr open: %v", err)
+	}
+	write(t, filepath.Join(f.ws.Dir, "cache.go"), "package cache\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "rework")
+	again, err := prs.Open(ctx, f.run, "Add the cache, reworked", strings.Replace(description, "A cache.", "A reworked cache.", 1))
+	if err != nil {
+		t.Fatalf("pr open in the rework round: %v", err)
+	}
+	if again.Number != first.Number || gh.IssueCount() != 1 || !strings.Contains(gh.Issue(first.Number).Body, "A reworked cache.") {
+		t.Fatalf("first %+v, again %+v, pull request %+v", first, again, gh.Issue(first.Number))
+	}
+	if f.head() != strings.TrimSpace(gitIn(t, f.ws.Dir, "rev-parse", "HEAD")) {
+		t.Fatal("the rework was not pushed")
 	}
 }

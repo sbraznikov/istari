@@ -54,7 +54,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 func TestAReadyTicketBecomesADraftPullRequest(t *testing.T) {
 	server := gitServer(t)
 	seed := filepath.Join(server, "seed")
-	os.MkdirAll(filepath.Join(seed, ".istari"), 0o755)
+	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte("[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"test -f feature.txt\"\nverify_red = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,6 @@ func TestAReadyTicketBecomesADraftPullRequest(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	_ = d
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		if pr := findPull(gh); pr > 0 {
 			got := gh.Issue(pr)

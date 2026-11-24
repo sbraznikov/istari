@@ -36,7 +36,7 @@ type EngineOptions struct {
 	HasPlan func(ctx context.Context, ref string) (bool, error)
 	// Checks tells the CI state of a ticket's pull request (pending, success
 	// or failure); ok is false while it has none. nil: CI is not watched.
-	Checks func(ctx context.Context, ref string) (state, sha string, ok bool)
+	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -54,7 +54,6 @@ type Engine struct {
 	cache map[string]cached
 
 	states map[string]core.TicketState // of this reconcile's tickets
-	redSHA map[string]string           // per ticket, the red commit a rework was started for
 }
 
 type cached struct {
@@ -74,7 +73,7 @@ func NewEngine(tasks *core.Tasks, tk *core.Tickets, opts EngineOptions) *Engine 
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Engine{tasks: tasks, tickets: tk, opts: opts, cache: map[string]cached{}, redSHA: map[string]string{}}
+	return &Engine{tasks: tasks, tickets: tk, opts: opts, cache: map[string]cached{}}
 }
 
 // Load returns the repository's pipeline: its file, validated, or the default.
@@ -335,8 +334,8 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 	case core.TicketInProgress:
 		if e.opts.Checks != nil && len(tk.Children) == 0 {
-			if state, sha, ok := e.opts.Checks(ctx, tk.Ref); ok {
-				return e.verify(ctx, tk, r, state, sha)
+			if state, ok := e.opts.Checks(ctx, tk.Ref); ok {
+				return e.verify(ctx, tk, r, state)
 			}
 		}
 		if len(tk.Children) > 0 {
@@ -372,7 +371,7 @@ const maxRefines = 3
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):
 // green completes the verify task and fires T6; red starts a rework round.
-func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state, sha string) error {
+func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state string) error {
 	v, ok := r.tasks[StageVerify]
 	if !ok || v.State != core.TaskReady { // the implementer is not done, or it was handled
 		return nil
@@ -389,15 +388,14 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state, sha
 		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
 		return err
 	case "failure":
-		// One rework per red commit: the next round's push brings new CI.
-		e.mu.Lock()
-		seen := e.redSHA[tk.Ref] == sha
-		e.redSHA[tk.Ref] = sha
-		e.mu.Unlock()
-		if seen {
-			return nil
+		// The red CI is handled once: the next round's verify waits for its
+		// implementer, and a round that leaves CI red counts toward
+		// max_review_rounds.
+		err := e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
+		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
+			return nil // the ticket is held for a human
 		}
-		return e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
+		return err
 	}
 	return nil
 }
