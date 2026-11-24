@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/tickets/github"
 )
 
 var ticketHeader = []string{"TICKET", "STATE", "HOLD", "PROJECT", "UPDATED"}
@@ -22,6 +24,26 @@ func ticketRows(tickets ...core.Ticket) [][]string {
 func newTicketCommand(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry", Args: Args(cobra.NoArgs)}
 	cmd.AddCommand(newTicketCheckCommand(opts))
+	cmd.AddCommand(writeCommand(opts, &cobra.Command{
+		Use:   "ready <ref>",
+		Short: "Admit a ticket to work (trusted members; the ticket must meet the standard)",
+		Args:  Args(cobra.ExactArgs(1)),
+	}, func(cmd *cobra.Command, args []string, key string) error {
+		actor := opts.Actor
+		if !cmd.Flags().Changed("actor") && os.Getenv("ISTARI_ACTOR") == "" {
+			// Trust is a tracker login, not the local user name.
+			login, err := github.Login(cmd.Context())
+			if err != nil {
+				return err
+			}
+			actor = "human:" + login
+		}
+		var ticket core.Ticket
+		if err := opts.call(cmd, "ticket.ready", key, api.TicketReadyRequest{Actor: actor, Ref: args[0]}, &ticket); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+	}))
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List tickets", Args: Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {

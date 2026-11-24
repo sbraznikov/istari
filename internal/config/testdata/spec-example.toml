@@ -39,6 +39,7 @@ name    = "web"
 repo    = "acme/web"
 tickets = { provider = "github" }     # by default — issues of the same repository
 slack   = { work = "#web-agents", decisions = "#web-decisions", owner = "@alex" }
+trusted = ["alex"]                    # admitted without a human (section 4.5); absent — everyone with write access
 max_concurrent_runs = 2               # claimed tasks at once in this project; absent — no own limit
 
 [[project]]                           # a service made of two repositories

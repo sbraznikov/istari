@@ -36,7 +36,8 @@ type DaemonOptions struct {
 	Limits       core.Limits
 	Tracker      tickets.SyncProvider // nil: no ticket sync
 	Repos        []tickets.SyncRepo
-	SyncInterval time.Duration // 0: tickets.DefaultSyncInterval
+	Standards    tickets.Standards // nil: no admission
+	SyncInterval time.Duration     // 0: tickets.DefaultSyncInterval
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -68,7 +69,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	defer os.Remove(socket)
 
-	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Tracker: opts.Tracker, Repos: opts.Repos})
+	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards})
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)

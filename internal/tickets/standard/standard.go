@@ -6,6 +6,8 @@ package standard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -44,15 +46,40 @@ func Default() Standard {
 
 // Load reads a standard file; keys it leaves out keep the default.
 func Load(path string) (Standard, error) {
-	std := Default()
-	md, err := toml.DecodeFile(path, &std)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Standard{}, fmt.Errorf("ticket standard %s: %w", path, err)
 	}
-	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		return Standard{}, fmt.Errorf("ticket standard %s: unknown key %s", path, undecoded[0])
+	std, err := Parse(data)
+	if err != nil {
+		return Standard{}, fmt.Errorf("ticket standard %s: %w", path, err)
 	}
 	return std, nil
+}
+
+// Parse reads a standard; keys it leaves out keep the default.
+func Parse(data []byte) (Standard, error) {
+	std := Default()
+	md, err := toml.Decode(string(data), &std)
+	if err != nil {
+		return Standard{}, err
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		return Standard{}, fmt.Errorf("unknown key %s", undecoded[0])
+	}
+	return std, nil
+}
+
+// Hash is a digest of a ticket's required sections, for spec 4.1 T15: an
+// edit of those sections changes it, an edit elsewhere (other sections,
+// labels) or of whitespace alone does not.
+func Hash(std Standard, body string) string {
+	b := parse(body)
+	h := sha256.New()
+	for _, name := range std.Sections {
+		fmt.Fprintf(h, "%s\x00%s\x00", name, strings.Join(strings.Fields(b.sections[name]), " "))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Draft is a ticket to check: an existing one (Ref set, labels from the

@@ -107,6 +107,12 @@ type History interface {
 	Comments(ctx context.Context, ref Ref) ([]Comment, error)
 }
 
+// Files reads a repository's files on its default branch.
+type Files interface {
+	// ReadFile returns the file at path, or ErrNotFound.
+	ReadFile(ctx context.Context, repo, path string) ([]byte, error)
+}
+
 // Access tells who may change a repository's tickets.
 type Access interface {
 	// CanWrite tells whether login has write access to repo.

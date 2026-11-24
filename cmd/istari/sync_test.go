@@ -11,11 +11,17 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
-// fakeGH puts a gh on PATH that prints token, as `gh auth token` does.
+// fakeGH puts a gh on PATH that prints token, as `gh auth token` does, and
+// the login alex for `gh api user`.
 func fakeGH(t *testing.T, token string) string {
 	t.Helper()
+	return fakeGHAs(t, token, "alex")
+}
+
+func fakeGHAs(t *testing.T, token, login string) string {
+	t.Helper()
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\n[ \"$1 $2\" = \"auth token\" ] && echo %s\n", token)
+	script := fmt.Sprintf("#!/bin/sh\n[ \"$1 $2\" = \"auth token\" ] && echo %s\n[ \"$1 $2\" = \"api user\" ] && echo %s\nexit 0\n", token, login)
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -68,5 +74,42 @@ func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
 	d := startDaemon(t, newDataDir(t))
 	if _, stderr, code := d.cli(t, "sync"); code != 1 || !strings.Contains(stderr, "sync_disabled") {
 		t.Fatalf("istari sync without a tracker: exit %d %q", code, stderr)
+	}
+}
+
+func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
+	gh := githubtest.New(t)
+	body := strings.SplitN(conforming, "\n", 2)[1]
+	n := gh.Seed("Add rate limits", body, "carol") // carol may only read: not trusted
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := startDaemonWithConfig(t, dataDir, config, env...)
+	d.mustCLI(t, nil, "sync")
+	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
+	var tk struct{ State string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.State != "new" {
+		t.Fatalf("an untrusted author's ticket is %s after sync, want new", tk.State)
+	}
+
+	asMallory := []string{"PATH=" + fakeGHAs(t, gh.Token, "mallory")}
+	if _, stderr, code := istariEnv(t, t.TempDir(), config, asMallory, "ticket", "ready", ref); code != 1 || !strings.Contains(stderr, "not_trusted") {
+		t.Fatalf("ticket ready as mallory: exit %d %q", code, stderr)
+	}
+	asAlex := []string{"PATH=" + fakeGH(t, gh.Token)}
+	if out, stderr, code := istariEnv(t, t.TempDir(), config, asAlex, "ticket", "ready", ref); code != 0 {
+		t.Fatalf("ticket ready as alex: exit %d %s %s", code, out, stderr)
+	}
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.State != "ready" {
+		t.Fatalf("after ticket ready the ticket is %s", tk.State)
+	}
+	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
+		t.Fatalf("issue labels = %v, want [istari:ready]", labels)
 	}
 }

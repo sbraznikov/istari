@@ -8,6 +8,7 @@ import (
 	"log"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,12 +39,36 @@ type SyncProvider interface {
 type SyncRepo struct {
 	Repo    string // owner/repo
 	Project string
+	// Trusted are the logins admitted without a human, who may also admit
+	// others' tickets; empty means everyone with write access (spec 4.5,
+	// 15.3; maintainer decision on #19).
+	Trusted []string
+}
+
+// Standards checks tickets against their repository's ticket standard.
+type Standards interface {
+	Check(ctx context.Context, repo string, t Ticket) (Conformance, error)
+}
+
+// Conformance is the result of a structural check.
+type Conformance struct {
+	Deviations []string // empty: the ticket meets the standard
+	Hash       string   // digest of the required sections, for T15
 }
 
 // SyncOptions configures a Syncer.
 type SyncOptions struct {
 	Clock func() time.Time
+	// Standards turns on admission (T2) and the re-check on edit (T15);
+	// without it the sync only mirrors states.
+	Standards Standards
 }
+
+// Codes of admission refusals.
+const (
+	CodeNotTrusted  = "not_trusted"
+	CodeNotStandard = "not_standard"
+)
 
 // SyncReport counts what one sync did.
 type SyncReport struct {
@@ -186,6 +211,9 @@ type baseRecord struct {
 	// FirstComment is the id of the last comment that existed when istari
 	// first saw the ticket; earlier comments are not delivered as events.
 	FirstComment int64 `json:"first_comment,omitempty"`
+	// Hash is the digest of the required sections when the ticket was
+	// admitted; an edit that changes it in ready is T15.
+	Hash string `json:"hash,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -223,6 +251,10 @@ func (s *Syncer) record(ctx context.Context, x *syncing, typ, actor string, tk c
 	raw, _ := json.Marshal(payload)
 	_, err := s.store.Append(ctx, store.Event{Type: typ, At: s.opts.Clock(), Actor: actor, Project: tk.Project, Ticket: tk.Ref, Payload: raw},
 		store.Change{Kind: baseKind, ID: tk.Ref, Data: data, IfVersion: x.version})
+	if err == nil {
+		x.base, x.tk = base, tk
+		x.version++
+	}
 	return err
 }
 
@@ -257,7 +289,10 @@ func (s *Syncer) reconcile(ctx context.Context, repo SyncRepo, t Ticket, report 
 	if err := s.reconcileState(ctx, x); err != nil {
 		return err
 	}
-	return s.comments(ctx, x)
+	if err := s.comments(ctx, x); err != nil {
+		return err
+	}
+	return s.admission(ctx, x)
 }
 
 func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
@@ -363,13 +398,33 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	if who == "" {
 		return s.revert(ctx, x, c, "who made the change is unknown, so its right to make it cannot be checked")
 	}
-	allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
-	if err != nil {
-		return err
+	var conf Conformance
+	if trigger == "accept" {
+		// Admission (spec 4.5): a trusted member, and a ticket that meets
+		// the standard.
+		trusted, err := s.trusted(ctx, x.repo, who)
+		if err != nil {
+			return err
+		}
+		if !trusted {
+			return s.revert(ctx, x, c, fmt.Sprintf("@%s is not a trusted member of %s, so cannot admit tickets", who, x.repo.Project))
+		}
+		if conf, err = s.conformance(ctx, x.repo, x.t); err != nil {
+			return err
+		}
+		if len(conf.Deviations) > 0 {
+			return s.revert(ctx, x, c, "the ticket does not meet the standard yet: "+strings.Join(conf.Deviations, "; "))
+		}
+	} else {
+		allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return s.revert(ctx, x, c, fmt.Sprintf("@%s has no write access to %s", who, x.repo.Repo))
+		}
 	}
-	if !allowed {
-		return s.revert(ctx, x, c, fmt.Sprintf("@%s has no write access to %s", who, x.repo.Repo))
-	}
+	x.base.Hash = conf.Hash
 	next, err := s.tickets.Fire(ctx, "human:"+who, x.tk.Ref, trigger)
 	if errors.As(err, new(*core.Error)) {
 		return s.revert(ctx, x, c, err.Error())
@@ -432,4 +487,141 @@ func (s *Syncer) comments(ctx context.Context, x *syncing) error {
 	}
 	s.updated[ref] = x.t.Updated
 	return nil
+}
+
+// trusted tells whether login may have tickets admitted without a human and
+// admit others': the project's trusted list, or write access without one.
+func (s *Syncer) trusted(ctx context.Context, repo SyncRepo, login string) (bool, error) {
+	if login == "" {
+		return false, nil
+	}
+	if len(repo.Trusted) > 0 {
+		return slices.ContainsFunc(repo.Trusted, func(t string) bool { return strings.EqualFold(t, login) }), nil
+	}
+	return s.provider.CanWrite(ctx, repo.Repo, login)
+}
+
+// conformance checks a ticket against its repository's standard; without
+// Standards every ticket conforms.
+func (s *Syncer) conformance(ctx context.Context, repo SyncRepo, t Ticket) (Conformance, error) {
+	if s.opts.Standards == nil {
+		return Conformance{}, nil
+	}
+	return s.opts.Standards.Check(ctx, repo.Repo, t)
+}
+
+// admission admits a new ticket of a trusted author that meets the standard
+// (T2 by the system), and returns a ready ticket whose required sections
+// changed to new (T15).
+func (s *Syncer) admission(ctx context.Context, x *syncing) error {
+	if s.opts.Standards == nil || x.tk.Hold != "" {
+		return nil
+	}
+	switch x.tk.State {
+	case core.TicketNew:
+		trusted, err := s.trusted(ctx, x.repo, x.t.Author)
+		if err != nil || !trusted {
+			return err
+		}
+		conf, err := s.conformance(ctx, x.repo, x.t)
+		if err != nil || len(conf.Deviations) > 0 {
+			return err
+		}
+		return s.admit(ctx, x, "system", conf.Hash)
+	case core.TicketReady:
+		conf, err := s.conformance(ctx, x.repo, x.t)
+		if err != nil {
+			return err
+		}
+		switch {
+		case x.base.Hash == "":
+			x.base.Hash = conf.Hash // ready before istari kept a hash: from now on
+			return s.record(ctx, x, EventSyncObserved, "system", x.tk, map[string]any{"hash": conf.Hash})
+		case conf.Hash != x.base.Hash:
+			next, err := s.tickets.Fire(ctx, "system", x.tk.Ref, "edited")
+			if err != nil {
+				return err
+			}
+			x.report.Transitioned++
+			x.base.Hash = ""
+			if err := s.push(ctx, x, next); err != nil {
+				return err
+			}
+			x.report.Pushed++
+		}
+	}
+	return nil
+}
+
+// admit fires T2 and writes the new state out, remembering the hash.
+func (s *Syncer) admit(ctx context.Context, x *syncing, actor, hash string) error {
+	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
+	if err != nil {
+		return err
+	}
+	x.report.Transitioned++
+	x.base.Hash = hash
+	if err := s.push(ctx, x, next); err != nil {
+		return err
+	}
+	x.report.Pushed++
+	return nil
+}
+
+// Ready admits a ticket by hand (istari ticket ready): login must be a
+// trusted member and the ticket must meet the standard.
+func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ref, err := ParseRef(refText)
+	if err != nil {
+		return &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+	}
+	var repo SyncRepo
+	for _, r := range s.repos {
+		if strings.EqualFold(r.Repo, ref.Repo) {
+			repo = r
+		}
+	}
+	if repo.Repo == "" {
+		return &core.Error{Code: core.CodeNotFound, Message: fmt.Sprintf("%s is in no synced repository", ref)}
+	}
+	t, err := s.provider.Get(ctx, ref)
+	if errors.Is(err, ErrNotFound) {
+		return &core.Error{Code: core.CodeNotFound, Message: fmt.Sprintf("%s does not exist", ref)}
+	}
+	if err != nil {
+		return err
+	}
+	var report SyncReport
+	if err := s.reconcile(ctx, repo, t, &report); err != nil { // mirror it first
+		return err
+	}
+	tk, err := s.tickets.Get(ctx, ref.String())
+	if err != nil {
+		return err
+	}
+	if tk.State != core.TicketNew {
+		return &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("%s is %s, not new", ref, tk.State)}
+	}
+	trusted, err := s.trusted(ctx, repo, login)
+	if err != nil {
+		return err
+	}
+	if !trusted {
+		return &core.Error{Code: CodeNotTrusted, Message: fmt.Sprintf("%s is not a trusted member of %s", login, repo.Project)}
+	}
+	conf, err := s.conformance(ctx, repo, t)
+	if err != nil {
+		return err
+	}
+	if len(conf.Deviations) > 0 {
+		return &core.Error{Code: CodeNotStandard, Message: fmt.Sprintf("%s does not meet the standard: %s", ref, strings.Join(conf.Deviations, "; "))}
+	}
+	base, version, err := s.base(ctx, ref.String())
+	if err != nil {
+		return err
+	}
+	x := &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}
+	return s.admit(ctx, x, "human:"+login, conf.Hash)
 }
