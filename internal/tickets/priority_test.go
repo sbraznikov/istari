@@ -132,3 +132,34 @@ func TestTheSizeLabelIsTheTicketsSize(t *testing.T) {
 		t.Fatalf("ticket.sized events = %d, want 2", n)
 	}
 }
+
+func TestAPriorityLabelAddedNextToTheOldOneReplacesIt(t *testing.T) {
+	for _, order := range [][]string{{"priority:P2", "priority:P0"}, {"priority:P0", "priority:P2"}} {
+		f := newSync(t)
+		n := f.gh.Seed("t", "", "bob", "priority:P2")
+		f.run(t)
+		f.gh.SetPermission("alex", "write")
+		f.gh.HumanSetLabels(n, "alex", append([]string{"istari:new"}, order...)...)
+		f.run(t)
+		if tk := f.ticket(t, n); tk.Priority != "P0" {
+			t.Fatalf("labels %v: priority = %q, want P0", order, tk.Priority)
+		}
+		labels := f.gh.Issue(n).Labels
+		if slices.Contains(labels, "priority:P2") || !slices.Contains(labels, "priority:P0") {
+			t.Fatalf("labels %v: issue has %v, want only priority:P0", order, labels)
+		}
+	}
+}
+
+func TestARepositorysOwnPriorityLabelsAreLeftAlone(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("t", "", "bob", "priority:high", "priority:P1")
+	f.run(t)
+	if _, err := f.tickets.Fire(ctx, "human:alex", ghRef(n), "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+	if labels := f.gh.Issue(n).Labels; !slices.Contains(labels, "priority:high") || !slices.Contains(labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:high kept next to priority:P1", labels)
+	}
+}

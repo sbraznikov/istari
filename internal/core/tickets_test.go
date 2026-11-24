@@ -335,7 +335,7 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 			t.Fatalf("ReplayTicket: %v", err)
 		}
 		if replayed.State != projected.State || replayed.Hold != projected.Hold || replayed.Priority != projected.Priority || replayed.Size != projected.Size {
-			t.Fatalf("after step to %s/%q/%q the replay gives %s/%q/%q", projected.State, projected.Hold, projected.Priority, replayed.State, replayed.Hold, replayed.Priority)
+			t.Fatalf("after step to %s/%q/%q/%q the replay gives %s/%q/%q/%q", projected.State, projected.Hold, projected.Priority, projected.Size, replayed.State, replayed.Hold, replayed.Priority, replayed.Size)
 		}
 	}
 	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)

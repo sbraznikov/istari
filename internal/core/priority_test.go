@@ -116,3 +116,15 @@ func TestATicketWithoutAPriorityIsHandedOutAtTheConfiguredDefault(t *testing.T) 
 		t.Fatalf("claim order = %v, want %v: no priority means the default P1", got, want)
 	}
 }
+
+func TestSettingTheSamePriorityAgainChangesNothing(t *testing.T) {
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.ticketAt(t, tickets, 1, "P1")
+	if _, err := tickets.SetPriority(ctx, "human:alex", "gh:acme/web#1", "P1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.events(t, store.Filter{TypePrefix: "ticket.prioritized"})); n != 1 {
+		t.Fatalf("ticket.prioritized events = %d, want 1", n)
+	}
+}

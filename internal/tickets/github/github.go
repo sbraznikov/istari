@@ -316,7 +316,10 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 		return err
 	}
 	labels := slices.DeleteFunc(slices.Clone(current.Labels), func(l string) bool { return strings.HasPrefix(l, statePrefix) })
-	labels = slices.DeleteFunc(labels, func(l string) bool { return strings.HasPrefix(l, priorityPrefix) })
+	labels = slices.DeleteFunc(labels, func(l string) bool {
+		p, ok := strings.CutPrefix(l, priorityPrefix)
+		return ok && slices.Contains(core.Priorities(), p) // the repository's own priority: labels stay
+	})
 	labels = append(labels, statePrefix+string(s.State))
 	if s.Hold != "" {
 		labels = append(labels, holdPrefix+s.Hold)

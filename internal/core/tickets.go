@@ -313,7 +313,8 @@ func (m *Tickets) changeHold(ctx context.Context, actor, ref, typ string, mutate
 }
 
 // SetPriority sets the ticket's priority. Only a human sets it (spec 4.9):
-// an actor other than human:<login> is refused with human_only.
+// an actor other than human:<login> is refused with human_only. Setting the
+// priority a ticket already has records nothing.
 func (m *Tickets) SetPriority(ctx context.Context, actor, ref, priority string) (Ticket, error) {
 	if !strings.HasPrefix(actor, "human:") {
 		return Ticket{}, errorf(CodeHumanOnly, "only a human sets the priority of %s, not %s", ref, actor)
@@ -328,6 +329,9 @@ func (m *Tickets) SetPriority(ctx context.Context, actor, ref, priority string) 
 			return err
 		}
 		from := ticket.Priority
+		if from == priority {
+			return nil // already set: nothing to record
+		}
 		ticket.Priority = priority
 		ticket.Updated = m.opts.Clock()
 		return m.commit(ctx, actor, EventTicketPrioritized, ticket, map[string]any{"from": from, "priority": priority, "actor": actor})

@@ -353,15 +353,31 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 	}
 }
 
-// labelValue returns the value of the ticket's label prefix+value whose value
-// is one of values, or "".
-func labelValue(labels []string, prefix string, values []string) string {
+// labelValues returns the values of the ticket's labels prefix+value whose
+// value is one of values.
+func labelValues(labels []string, prefix string, values []string) []string {
+	var out []string
 	for _, l := range labels {
-		if v, ok := strings.CutPrefix(l, prefix); ok && slices.Contains(values, v) {
-			return v
+		if v, ok := strings.CutPrefix(l, prefix); ok && slices.Contains(values, v) && !slices.Contains(out, v) {
+			out = append(out, v)
 		}
 	}
-	return ""
+	return out
+}
+
+// requested returns the one label value that differs from istari's: a human
+// who adds a label next to the old one leaves both. Several differing values
+// make the request unclear.
+func requested(values []string, local string) (value string, several bool) {
+	other := slices.DeleteFunc(slices.Clone(values), func(v string) bool { return v == local })
+	switch len(other) {
+	case 0:
+		return "", false
+	case 1:
+		return other[0], false
+	default:
+		return "", true
+	}
 }
 
 // priorityRequest handles a priority label a human set or changed since the
@@ -370,8 +386,12 @@ func labelValue(labels []string, prefix string, values []string) string {
 // member sets it); otherwise it is kept for settlePriority to revert. It runs
 // before the state is reconciled, so every label write carries the outcome.
 func (s *Syncer) priorityRequest(ctx context.Context, x *syncing) error {
-	tracker := labelValue(x.t.Labels, "priority:", core.Priorities())
-	if tracker == "" || tracker == x.tk.Priority || tracker == x.base.Priority {
+	tracker, several := requested(labelValues(x.t.Labels, "priority:", core.Priorities()), x.tk.Priority)
+	if several {
+		x.refused, x.reason = &change{what: "the priority labels"}, "the issue carries several priority labels, so the requested one is unclear"
+		return nil
+	}
+	if tracker == "" || tracker == x.base.Priority {
 		return nil
 	}
 	c := change{what: "the label `priority:" + tracker + "`"}
@@ -405,8 +425,8 @@ func (s *Syncer) priorityRequest(ctx context.Context, x *syncing) error {
 // size takes the ticket's size from its size label; the refiner keeps the
 // label in step with the standard (spec 4.7).
 func (s *Syncer) size(ctx context.Context, x *syncing) error {
-	size := labelValue(x.t.Labels, "size:", core.Sizes())
-	if size == "" || size == x.tk.Size {
+	size, _ := requested(labelValues(x.t.Labels, "size:", core.Sizes()), x.tk.Size)
+	if size == "" {
 		return nil
 	}
 	tk, err := s.tickets.SetSize(ctx, "system", x.tk.Ref, size)
@@ -426,7 +446,11 @@ func (s *Syncer) settlePriority(ctx context.Context, x *syncing) error {
 	if x.wrote {
 		return nil
 	}
-	if labelValue(x.t.Labels, "priority:", core.Priorities()) != x.tk.Priority {
+	var want []string
+	if x.tk.Priority != "" {
+		want = []string{x.tk.Priority}
+	}
+	if !slices.Equal(labelValues(x.t.Labels, "priority:", core.Priorities()), want) {
 		if err := s.push(ctx, x, x.tk); err != nil {
 			return err
 		}
