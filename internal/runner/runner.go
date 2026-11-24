@@ -45,7 +45,10 @@ type RunnerOptions struct {
 	Timeout  time.Duration // per run; 0: DefaultRunTimeout
 	// BudgetUSD is the spending cap of one run; 0 means none. Exceeding it
 	// blocks the task as budget_exceeded (spec section 7.5).
-	BudgetUSD     float64
+	BudgetUSD float64
+	// Guard is the command the harness runs before every shell command of
+	// an agent (istari hook git-guard, spec section 7.7); "" means none.
+	Guard         string
 	Poll          time.Duration // how often a free slot looks for work; 0: DefaultPoll
 	Socket        string        // the daemon's socket, for the agent's istari commands
 	TranscriptMax int64         // 0: DefaultTranscriptMax
@@ -245,10 +248,25 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	}
 	env := map[string]string{
 		"ISTARI_PROFILE": slot.Profile, "ISTARI_ROLE": slot.Role, "ISTARI_TICKET": task.Ticket,
-		"ISTARI_TASK": task.ID, "ISTARI_TOKEN": token, "ISTARI_RUN": run.ID,
+		"ISTARI_TASK": task.ID, "ISTARI_TOKEN": token, "ISTARI_RUN": run.ID, "ISTARI_WORKTREE": run.Dir,
 	}
 	if r.opts.Socket != "" {
 		env["ISTARI_SOCKET"] = r.opts.Socket
+	}
+	// The agent's git and gh see none of the user's settings or logins:
+	// pushing goes through istari, and the hook is not the only barrier
+	// (spec sections 7.7 and 11). Commits are the run's own.
+	ghDir := filepath.Join(r.opts.DataDir, "runs", run.ID, "gh")
+	if err := os.MkdirAll(ghDir, 0o700); err != nil {
+		fail("run: " + err.Error())
+		return
+	}
+	who := slot.Profile + " (istari)"
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": ghDir,
+		"GIT_AUTHOR_NAME": who, "GIT_AUTHOR_EMAIL": "istari@localhost", "GIT_COMMITTER_NAME": who, "GIT_COMMITTER_EMAIL": "istari@localhost",
+	} {
+		env[k] = v
 	}
 	// The instruction comes from the main branch: the ticket's own branch
 	// must not rewrite the instructions of the roles that check it.
@@ -265,7 +283,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD, Guard: r.opts.Guard})
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())

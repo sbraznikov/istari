@@ -2,10 +2,12 @@ package main_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,7 @@ out=%[1]q
 istari=%[2]q
 env | grep '^ISTARI_' | sort > "$out/env"
 env > "$out/allenv"
+printf '%%s\n' "$@" > "$out/args"
 git -c user.name=agent -c user.email=agent@example.com commit -q --allow-empty -m "work" > /dev/null 2>&1
 push() { curl -s -o /dev/null -w "%%{http_code}" --unix-socket "$ISTARI_SOCKET" -H "Authorization: Bearer $ISTARI_TOKEN" -d "$1" http://istari/v1/vcs.push; }
 push '{"actor":"x","branch":"main"}' > "$out/push_main"
@@ -114,6 +117,25 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 		if !strings.Contains(env, want) {
 			t.Errorf("the agent's environment lacks %s:\n%s", want, env)
 		}
+	}
+	// The daemon hands the harness its git guard; run it as the harness
+	// would, on a push from the worktree.
+	args := strings.Split(read("args"), "\n")
+	i := slices.Index(args, "--settings")
+	var settings struct {
+		Hooks struct {
+			PreToolUse []struct{ Hooks []struct{ Command string } }
+		}
+	}
+	if i < 0 || json.Unmarshal([]byte(args[i+1]), &settings) != nil || len(settings.Hooks.PreToolUse) == 0 {
+		t.Fatalf("the harness got no git guard: %q", args)
+	}
+	wt := strings.TrimSpace(read("pwd"))
+	guard := exec.Command("sh", "-c", settings.Hooks.PreToolUse[0].Hooks[0].Command)
+	guard.Env = append(os.Environ(), "ISTARI_WORKTREE="+wt)
+	guard.Stdin = strings.NewReader(`{"tool_name":"Bash","cwd":"` + wt + `","tool_input":{"command":"git push"}}`)
+	if out, err := guard.CombinedOutput(); guard.ProcessState == nil || guard.ProcessState.ExitCode() != 2 || !strings.Contains(string(out), "istari checkpoint") {
+		t.Errorf("the guard on git push: %v %s", err, out)
 	}
 	if pwd := strings.TrimSpace(read("pwd")); !strings.HasSuffix(pwd, filepath.Join("workspaces", "web", "web", "5")) {
 		t.Errorf("the agent ran in %s, want the ticket worktree", pwd)

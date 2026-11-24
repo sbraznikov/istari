@@ -128,7 +128,49 @@ func args(spec harness.RunSpec, resume string) []string {
 	if spec.MaxBudgetUSD > 0 {
 		a = append(a, "--max-budget-usd", strconv.FormatFloat(spec.MaxBudgetUSD, 'f', -1, 64))
 	}
+	if spec.Guard != "" {
+		// Settings given on the command line rank above the repository's,
+		// so a file in the worktree cannot switch the hook off.
+		settings, _ := json.Marshal(map[string]any{
+			"disableAllHooks": false,
+			"hooks": map[string]any{"PreToolUse": []any{map[string]any{
+				"matcher": hookMatcher,
+				"hooks":   []any{map[string]string{"type": "command", "command": spec.Guard + " --harness " + Name}},
+			}}},
+		})
+		a = append(a, "--settings", string(settings))
+	}
 	return append(a, "--", spec.Brief)
+}
+
+// hookMatcher are the tools the guard sees: the shell, and the file tools,
+// which could write into a git directory.
+const hookMatcher = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+
+// ReadHook implements harness.HookReader: Claude Code's PreToolUse input.
+func (h *Harness) ReadHook(raw []byte) (harness.HookCall, error) {
+	var in struct {
+		Tool  string `json:"tool_name"`
+		Cwd   string `json:"cwd"`
+		Input struct {
+			Command      string `json:"command"`
+			FilePath     string `json:"file_path"`
+			NotebookPath string `json:"notebook_path"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return harness.HookCall{}, fmt.Errorf("claudecode: the hook input: %w", err)
+	}
+	call := harness.HookCall{Cwd: in.Cwd}
+	switch in.Tool {
+	case "Bash":
+		call.Command = in.Input.Command
+	case "Write", "Edit", "MultiEdit":
+		call.Path = in.Input.FilePath
+	case "NotebookEdit":
+		call.Path = in.Input.NotebookPath
+	}
+	return call, nil
 }
 
 // baseEnv are the variables of the daemon's environment a harness needs to

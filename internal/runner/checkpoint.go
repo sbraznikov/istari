@@ -56,6 +56,9 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 	if ws.Branch == "" || !isWorktree(ctx, run.Dir) {
 		return journal.Entry{}, fmt.Errorf("checkpoint: %s has no worktree", run.Ticket)
 	}
+	if err := OnBranch(ctx, ws, run.Dir); err != nil {
+		return journal.Entry{}, fmt.Errorf("checkpoint: %w", err)
+	}
 	done, next, _ := strings.Cut(message, ";")
 	entry := &journal.CheckpointEntry{Done: strings.TrimSpace(done), Next: strings.TrimSpace(next), Branch: ws.Branch, Checks: map[string]string{}}
 	if entry.Done == "" {
@@ -95,6 +98,11 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			}
 		}
 		slices.Sort(entry.Files)
+	}
+	if based, main, err := c.ws.BasedOnMain(ctx, ws, run.Dir); err != nil {
+		return journal.Entry{}, err
+	} else if !based {
+		entry.Notes = append(entry.Notes, "the branch is not based on the current "+main+": merge it before istari pr open")
 	}
 	if len(tests) == 0 {
 		entry.Notes = append(entry.Notes, "no test change in this slice")
