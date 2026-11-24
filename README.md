@@ -1,6 +1,8 @@
 # istari
 
-<img src="docs/assets/istari-logo.png" alt="istari — a branching staff topped with an amber star" width="640">
+<p align="center">
+  <img src="docs/assets/istari-logo.png" alt="istari — a branching staff topped with an amber star" width="427">
+</p>
 
 istari is a self-hosted system that runs the software development lifecycle for coding agents. It takes a ticket and carries it to a merged pull request through a fixed pipeline of stages that agents execute under human control.
 
