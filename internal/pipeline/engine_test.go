@@ -385,3 +385,82 @@ func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
 		t.Fatalf("after three refines the ticket's hold is %q, want attempts_exhausted", tk.Hold)
 	}
 }
+
+func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_size = \"M\"\n"})
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", ref, "L"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketPlanning {
+		t.Fatalf("an L ticket with max_size M is %s after its plan, want planning", st)
+	}
+}
+
+func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	kids := []string{"gh:acme/web#2", "gh:acme/web#3"}
+	for _, k := range kids {
+		if _, err := f.tickets.Create(ctx, "human:alex", k, "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", ref, kids); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Fire(ctx, "agent:planner-1", ref, "split"); err != nil { // T5
+		t.Fatal(err)
+	}
+	done := func(k string) {
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+			f.tickets.Fire(ctx, "system", k, tr)
+		}
+	}
+	done(kids[0])
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("with one child open the parent is %s", st)
+	}
+	done(kids[1])
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketDone {
+		t.Fatalf("with all children done the parent is %s, want done (T12)", st)
+	}
+}
+
+func TestAPlanTaskDoneWithoutAPlanOrTooLargeHoldsTheTicket(t *testing.T) {
+	noPlan := func(context.Context, string) (bool, error) { return false, nil }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{HasPlan: noPlan})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketPlanning || tk.Hold != "needs_input" {
+		t.Fatalf("a plan task done without a plan: %s, hold %q; want planning on needs_input", tk.State, tk.Hold)
+	}
+}
+
+func TestACanceledChildHoldsItsParent(t *testing.T) {
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	kid := "gh:acme/web#2"
+	f.tickets.Create(ctx, "human:alex", kid, "web")
+	f.tickets.SetChildren(ctx, "agent:planner-1", ref, []string{kid})
+	if _, err := f.tickets.Fire(ctx, "agent:planner-1", ref, "split"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Fire(ctx, "human:alex", kid, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "waiting_dependency" {
+		t.Fatalf("a parent with a canceled child has hold %q, want waiting_dependency", tk.Hold)
+	}
+}

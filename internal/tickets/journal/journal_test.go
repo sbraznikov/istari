@@ -239,3 +239,14 @@ func TestAStrayMarkerAboveTheBlockDoesNotSwallowTheTextBetween(t *testing.T) {
 		t.Fatalf("want one block and no stray marker:\n%s", body)
 	}
 }
+
+func TestAPlanMakesItsFirstSliceTheNextStep(t *testing.T) {
+	plan := journal.Entry{Kind: journal.Plan, Actor: "agent:planner-1", Plan: &journal.PlanEntry{Summary: "Two slices", Slices: []string{"the cache layer", "the race test"}}}
+	if w := journal.Summarize([]journal.Entry{plan}); w.Next != "the cache layer" {
+		t.Fatalf("next = %q, want the first slice", w.Next)
+	}
+	cp := journal.Entry{Kind: journal.Checkpoint, Actor: "agent:implementer-1", Checkpoint: &journal.CheckpointEntry{Done: "cache", Next: "the race test"}}
+	if w := journal.Summarize([]journal.Entry{plan, cp}); w.Next != "the race test" {
+		t.Fatalf("after a checkpoint next = %q, want the checkpoint's", w.Next)
+	}
+}

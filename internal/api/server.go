@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ type Server struct {
 	watch     *vcs.Watcher
 	saves     *runner.Checkpoints
 	refines   *runner.Refines
+	plans     *runner.Plans
 	tracker   tickets.SyncProvider
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
@@ -166,7 +168,29 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			srv.refines = runner.NewRefines(rt, journal.New(jt, ns, opts.Clock), srv.tickets, opts.Standards)
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine})
+	hasPlan := func(ctx context.Context, ref string) (bool, error) {
+		r, err := tickets.ParseRef(ref)
+		if err != nil {
+			return false, nil
+		}
+		entries, err := journal.New(nil, ns, nil).Stored(ctx, r)
+		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan})
+	if srv.spaces != nil {
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		var sizer runner.Sizer
+		if t, ok := opts.Tracker.(runner.RefineTracker); ok {
+			sizer = t
+		}
+		srv.plans = runner.NewPlans(srv.spaces, journal.New(jt, ns, opts.Clock), srv.tickets, sizer)
+		if srv.syncer != nil {
+			srv.plans.WithSplit(srv.tasks, opts.Tracker, srv.syncer.Created)
+		}
+	}
 	srv.ops = srv.operations()
 	srv.mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

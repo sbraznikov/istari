@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	submit := writeCommand(opts, &cobra.Command{
 		Use: "submit --file <result.yaml>", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
-		data, err := os.ReadFile(file)
+		data, err := readFileOrStdin(cmd, file)
 		if err != nil {
 			return err
 		}
@@ -175,9 +176,30 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, ok, []string{"OK"}, [][]string{{"refine result applied"}})
 	})
-	submit.Flags().StringVar(&file, "file", "", "the result, YAML")
+	submit.Flags().StringVar(&file, "file", "", "the result, YAML; - reads it from standard input")
 	refine.AddCommand(submit)
-	return []*cobra.Command{whoami, complete, checkpoint, refine}
+	plan := &cobra.Command{Use: "plan", Short: "For the planner: submit the plan of a ticket", Args: Args(cobra.NoArgs)}
+	var planFile string
+	planSubmit := writeCommand(opts, &cobra.Command{
+		Use: "submit --file <plan.yaml>", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
+	}, func(cmd *cobra.Command, _ []string, key string) error {
+		data, err := readFileOrStdin(cmd, planFile)
+		if err != nil {
+			return err
+		}
+		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run
+		if err := opts.call(cmd, "plan.submit", key, api.PlanSubmitRequest{Actor: opts.Actor, Plan: string(data)}, &answer); err != nil {
+			return err
+		}
+		rows := [][]string{{"size", orDash(answer.Size)}}
+		for _, c := range answer.Children {
+			rows = append(rows, []string{"child", c})
+		}
+		return render(cmd.OutOrStdout(), opts, answer, []string{"WHAT", "VALUE"}, rows)
+	})
+	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input")
+	plan.AddCommand(planSubmit)
+	return []*cobra.Command{whoami, complete, checkpoint, refine, plan}
 }
 
 func budgetText(w api.Whoami) string {
@@ -185,4 +207,16 @@ func budgetText(w api.Whoami) string {
 		return fmt.Sprintf("$%.2f spent, no run budget", w.SpentUSD)
 	}
 	return fmt.Sprintf("$%.2f of $%.2f spent, $%.2f left", w.SpentUSD, w.BudgetUSD, w.BudgetLeftUSD)
+}
+
+// readFileOrStdin reads a file, or standard input for "-": an agent whose
+// tools cannot write files passes its result through a heredoc.
+func readFileOrStdin(cmd *cobra.Command, path string) ([]byte, error) {
+	if path == "" {
+		return nil, usageError{fmt.Errorf("--file is required (- for standard input)")}
+	}
+	if path == "-" {
+		return io.ReadAll(cmd.InOrStdin())
+	}
+	return os.ReadFile(path)
 }

@@ -3,6 +3,7 @@ package main_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,5 +38,16 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
 	if gh.IssueCount() != 3 || gh.Issue(3).Title != "A single ticket" {
 		t.Fatalf("a single ticket: %d issues, %+v", gh.IssueCount(), gh.Issue(3))
+	}
+}
+
+func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
+	d := startDaemon(t, newDataDir(t))
+	cmd := exec.Command(binary, "--config", d.config, "plan", "submit", "--file", "-")
+	cmd.Stdin = strings.NewReader("summary: s\n")
+	out, err := cmd.CombinedOutput()
+	// Read and sent: the daemon answers that a plan is the planner's.
+	if err == nil || !strings.Contains(string(out), "token_invalid") {
+		t.Fatalf("plan submit from stdin: %v\n%s", err, out)
 	}
 }

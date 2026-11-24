@@ -354,6 +354,10 @@ func Summarize(entries []Entry) WorkState {
 			if c.PR != "" {
 				w.PR = c.PR
 			}
+		case Plan:
+			if len(e.Plan.Slices) > 0 {
+				w.Next = e.Plan.Slices[0] // until a checkpoint names the next step
+			}
 		case Review:
 			if e.Review.PR != "" {
 				w.PR = e.Review.PR
