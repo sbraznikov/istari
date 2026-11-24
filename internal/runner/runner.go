@@ -385,7 +385,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
@@ -567,7 +567,7 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 }
 
 // brief assembles the run's brief from the ticket and its journal.
-func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, conflicts []string) string {
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts []string) string {
 	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
@@ -594,6 +594,19 @@ func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, conf
 	}
 	if in.Journal, err = journal.New(nil, r.store, nil).Stored(ctx, ref); err != nil {
 		log.Printf("istari: brief of %s: the journal: %v", tk.Ref, err)
+	}
+	if task.Role == "reviewer" && r.ws != nil {
+		var zone []string
+		for _, e := range in.Journal {
+			if e.Kind == journal.Plan {
+				zone = e.Plan.Zone // the latest plan's
+			}
+		}
+		if review, err := r.ws.ReviewInput(ctx, tk.Ref, dir, zone); err != nil {
+			log.Printf("istari: brief of %s: the review: %v", tk.Ref, err)
+		} else {
+			in.Review = &review
+		}
 	}
 	return Brief(in)
 }
