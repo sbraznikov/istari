@@ -112,12 +112,13 @@ func (p *Provider) Subscribe(context.Context) (<-chan tickets.Event, error) {
 }
 
 type issue struct {
-	ID     int64  `json:"id"`
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	State  string `json:"state"`
-	Labels []struct {
+	ID          int64  `json:"id"`
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	State       string `json:"state"`
+	StateReason string `json:"state_reason"`
+	Labels      []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	User struct {
@@ -138,6 +139,9 @@ func (i issue) ticket(repo string) tickets.Ticket {
 	}
 	for _, l := range i.Labels {
 		t.Labels = append(t.Labels, l.Name)
+	}
+	if t.Closed {
+		t.ClosedAs = i.StateReason
 	}
 	t.State = stateOf(t.Labels)
 	for _, l := range t.Labels {
