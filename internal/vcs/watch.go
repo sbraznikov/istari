@@ -111,12 +111,13 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		t.Checks = s.Checks
 		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
 	}
-	if s.Review != "" && s.Review != t.Review {
+	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {
 		t.Review = s.Review
 		changes = append(changes, change{EventReview, map[string]any{"number": t.Number, "review": s.Review, "by": s.By}})
 	}
-	if s.Merged || s.Closed {
+	if (s.Merged || s.Closed) && !t.Done {
 		t.Done = true
+		changes = append(changes, change{"vcs.closed", map[string]any{"number": t.Number, "merged": s.Merged}})
 	}
 	for i, c := range changes {
 		raw, _ := json.Marshal(c.payload)

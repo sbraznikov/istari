@@ -475,6 +475,12 @@ func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove fu
 	}, nil
 }
 
+// PushTarget returns the repository's URL and istari's private repository
+// that pushes are made from, out of the agent's reach.
+func (w *Workspaces) PushTarget(repo string) (url, private string) {
+	return w.remote(repo), filepath.Join(w.opts.DataDir, "push", repo+".git")
+}
+
 // MainFile reads a file of the repository's main branch, as last fetched;
 // a missing file is an error wrapping fs.ErrNotExist.
 func (w *Workspaces) MainFile(ctx context.Context, repo, path string) ([]byte, error) {

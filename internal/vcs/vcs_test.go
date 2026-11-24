@@ -151,46 +151,151 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
-	root := t.TempDir()
-	remote := filepath.Join(root, "web.git")
+// pushFixture is a remote with main, a clone of istari's (the agent's
+// worktree shares its config) on a ticket branch, and istari's private push
+// repository.
+func pushFixture(t *testing.T) (root, remote, work string, spec vcs.PushSpec) {
+	t.Helper()
+	root = t.TempDir()
+	remote = filepath.Join(root, "web.git")
 	git(t, root, "init", "-q", "--bare", "-b", "main", remote)
-	work := filepath.Join(root, "work")
+	work = filepath.Join(root, "work")
 	git(t, root, "clone", "-q", remote, work)
 	git(t, work, "commit", "-q", "--allow-empty", "-m", "initial")
 	git(t, work, "push", "-q", "origin", "main")
 	git(t, work, "checkout", "-q", "-b", "istari/7/x")
 	git(t, work, "commit", "-q", "--allow-empty", "-m", "work")
-	own := "istari/7/x"
-	if err := vcs.Push(ctx, work, own, own, false, ""); err != nil {
+	return root, remote, work, vcs.PushSpec{Worktree: work, URL: remote, Private: filepath.Join(root, "push", "web.git"), Own: "istari/7/x", Target: "istari/7/x"}
+}
+
+func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	if err := vcs.Push(ctx, spec); err != nil {
 		t.Fatalf("push to the own branch: %v", err)
 	}
-	for _, target := range []string{"main", "istari/8/other"} {
-		if err := vcs.Push(ctx, work, own, target, false, ""); err == nil {
+	for _, target := range []string{"main", "istari/8/other", "istari/7/x:refs/heads/main"} {
+		other := spec
+		other.Target = target
+		if err := vcs.Push(ctx, other); err == nil {
 			t.Fatalf("a push to %s was allowed", target)
 		}
 	}
 	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "work, rebased")
-	if err := vcs.Push(ctx, work, own, own, false, ""); err == nil {
+	if err := vcs.Push(ctx, spec); err == nil {
 		t.Fatal("a rewritten history was pushed without force")
 	}
-	if err := vcs.Push(ctx, work, own, own, true, ""); err != nil {
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
 		t.Fatalf("force with lease to the own branch: %v", err)
 	}
 	if head, remoteHead := git(t, work, "rev-parse", "HEAD"), git(t, remote, "rev-parse", own); head != remoteHead {
 		t.Fatalf("remote %s, want %s", remoteHead, head)
 	}
-	// Someone else pushes to the branch: a forced push must not overwrite it.
+	// Someone else pushes to the branch; the agent moves its own view of it.
 	other := filepath.Join(root, "other")
 	git(t, root, "clone", "-q", "-b", own, remote, other)
 	git(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
 	git(t, other, "push", "-q", "origin", own)
 	theirs := git(t, other, "rev-parse", "HEAD")
+	git(t, work, "fetch", "-q", "origin")
 	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "mine again")
-	if err := vcs.Push(ctx, work, own, own, true, ""); err == nil {
+	if err := vcs.Push(ctx, forced); err == nil {
 		t.Fatal("a forced push overwrote work istari had not seen")
 	}
 	if got := git(t, remote, "rev-parse", own); got != theirs {
 		t.Fatalf("remote %s, want their %s kept", got, theirs)
+	}
+}
+
+func TestAnAgentCannotRedirectThePush(t *testing.T) {
+	root, remote, work, spec := pushFixture(t)
+	elsewhere := filepath.Join(root, "elsewhere.git")
+	git(t, root, "init", "-q", "--bare", elsewhere)
+	// What an agent could do in its worktree, whose config it shares.
+	git(t, work, "config", "remote.origin.pushurl", elsewhere)
+	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
+	hooks := filepath.Join(root, "evil-hooks")
+	os.MkdirAll(hooks, 0o755)
+	os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n"), 0o755)
+	git(t, work, "config", "core.hooksPath", hooks)
+	spec.Token = "secret-installation-token"
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "stolen")); err == nil {
+		t.Fatal("the agent's hook ran during istari's push")
+	}
+	if out, err := exec.Command("git", "-C", elsewhere, "rev-parse", "--verify", spec.Own).CombinedOutput(); err == nil {
+		t.Fatalf("the push went elsewhere: %s", out)
+	}
+	if got := git(t, remote, "rev-parse", spec.Own); got != git(t, work, "rev-parse", "HEAD") {
+		t.Fatal("the push did not reach the repository's own URL")
+	}
+}
+
+func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, nil)
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	w.Track(ctx, ticket, githubtest.Repo, pr.Number)
+	if err := c.Merge(ctx, githubtest.Repo, pr.Number, "squash"); err != nil {
+		t.Fatal(err)
+	}
+	w.Poll(ctx)
+	if tr, err := w.PullRequestOf(ctx, ticket); err != nil || !tr.Done {
+		t.Fatalf("after the merge: %+v, %v; want done", tr, err)
+	}
+}
+
+func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, nil)
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	w.Track(ctx, ticket, githubtest.Repo, pr.Number)
+	gh.SetHeadSHA(pr.Number, "def456")
+	gh.SetStatus("def456", "failure") // a repository with commit statuses only
+	gh.AddReview(pr.Number, "alex", "CHANGES_REQUESTED")
+	w.Poll(ctx)
+	gh.DismissReviews(pr.Number)
+	w.Poll(ctx)
+	var got []string
+	events, _ := s.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: "vcs."}, 0)
+	for _, e := range events {
+		var p struct{ Checks, Review string }
+		json.Unmarshal(e.Payload, &p)
+		got = append(got, e.Type+":"+p.Checks+p.Review)
+	}
+	if want := "vcs.tracked: vcs.checks:failure vcs.review:changes_requested vcs.review:none"; strings.Join(got, " ") != want {
+		t.Fatalf("events = %s, want %s", strings.Join(got, " "), want)
+	}
+}
+
+func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X", Body: "old"})
+	if err := c.UpdatePullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Title: "Y", Body: "new"}, pr.Number); err != nil {
+		t.Fatal(err)
+	}
+	got := gh.Issue(pr.Number)
+	if got.Title != "Y" || !strings.Contains(got.Body, "new") || !strings.Contains(got.Body, "Closes #3") || !strings.Contains(got.Body, "Ticket: "+ticket) {
+		t.Fatalf("after update: %q %q", got.Title, got.Body)
 	}
 }

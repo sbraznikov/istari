@@ -109,6 +109,9 @@ func (a *AppTokens) Token(ctx context.Context, repo string) (string, error) {
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if err := a.call(ctx, http.MethodPost, fmt.Sprintf("/app/installations/%d/access_tokens", id), &tok); err != nil {
+		// Uninstalled or reinstalled: look the installation up again next time.
+		delete(a.installations, repo)
+		delete(a.tokens, id)
 		return "", fmt.Errorf("github app: an installation token: %w", err)
 	}
 	a.tokens[id] = appToken{value: tok.Token, expires: tok.ExpiresAt}

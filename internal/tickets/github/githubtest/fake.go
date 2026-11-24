@@ -50,6 +50,7 @@ type Server struct {
 	installation    int64
 	issued          map[string]time.Time // installation tokens → expiry
 	checks          map[string][]Check   // commit → check runs
+	statuses        map[string]string    // commit → combined status
 	deletedBranches []string
 }
 
@@ -105,7 +106,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		labels: map[string]Label{"bug": {Name: "bug", Color: "d73a4a"}}, issues: map[int]*Issue{}, nextID: 1000,
 		subIssues: map[int][]int64{}, perms: map[string]string{"alex": "admin"}, pageSize: 100,
 		moved: map[int]bool{}, deleted: map[int]bool{}, files: map[string]string{},
-		issued: map[string]time.Time{}, checks: map[string][]Check{}}
+		issued: map[string]time.Time{}, checks: map[string][]Check{}, statuses: map[string]string{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -130,6 +131,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/reviews", s.reviews)
 	mux.HandleFunc("PUT "+repo+"/pulls/{n}/merge", s.mergePull)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
+	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)
 	mux.HandleFunc("DELETE "+repo+"/git/refs/{ref...}", s.deleteRef)
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)

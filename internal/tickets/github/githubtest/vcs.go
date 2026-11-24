@@ -210,3 +210,29 @@ func (s *Server) deleteRef(w http.ResponseWriter, r *http.Request) {
 	s.deletedBranches = append(s.deletedBranches, strings.TrimPrefix(r.PathValue("ref"), "heads/"))
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// SetStatus sets the combined commit status of a commit (pending, success,
+// failure or error), as a repository without check runs reports CI.
+func (s *Server) SetStatus(sha, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statuses[sha] = state
+}
+
+// DismissReviews dismisses every review of a pull request.
+func (s *Server) DismissReviews(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.issues[n].Reviews {
+		s.issues[n].Reviews[k].State = "DISMISSED"
+	}
+}
+
+func (s *Server) combinedStatus(w http.ResponseWriter, r *http.Request) {
+	state, ok := s.statuses[r.PathValue("sha")]
+	count := 1
+	if !ok {
+		state, count = "pending", 0
+	}
+	s.write(w, http.StatusOK, map[string]any{"state": state, "total_count": count})
+}

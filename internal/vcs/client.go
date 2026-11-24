@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -53,24 +54,96 @@ func (c *Client) OpenPullRequest(ctx context.Context, p NewPullRequest) (Opened,
 	if err != nil {
 		return Opened{}, err
 	}
+	var pr Opened
+	err = c.do(ctx, p.Repo, http.MethodPost, "/repos/"+p.Repo+"/pulls", map[string]string{"title": p.Title, "body": linked(p, ref), "head": p.Head, "base": p.Base}, &pr)
+	return pr, err
+}
+
+// UpdatePullRequest sets a pull request's title and body; the link to its
+// ticket is kept.
+func (c *Client) UpdatePullRequest(ctx context.Context, p NewPullRequest, n int) error {
+	ref, err := tickets.ParseRef(p.Ticket)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, p.Repo, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", p.Repo, n), map[string]string{"title": p.Title, "body": linked(p, ref)}, nil)
+}
+
+// linked is a pull request's body with its ticket link.
+func linked(p NewPullRequest, ref tickets.Ref) string {
 	body := strings.TrimSpace(p.Body)
 	if ref.Provider == "gh" && strings.EqualFold(ref.Repo, p.Repo) {
 		body += fmt.Sprintf("\n\nCloses #%d", ref.Number)
 	}
-	body = strings.TrimSpace(body + "\n\nTicket: " + p.Ticket)
-	var pr Opened
-	err = c.do(ctx, p.Repo, http.MethodPost, "/repos/"+p.Repo+"/pulls", map[string]string{"title": p.Title, "body": body, "head": p.Head, "base": p.Base}, &pr)
-	return pr, err
+	return strings.TrimSpace(body + "\n\nTicket: " + p.Ticket)
 }
 
 // Status is what a pull request's checks and reviews say.
 type Status struct {
 	HeadSHA string
 	Checks  string // "", pending, success or failure
-	Review  string // "", approved or changes_requested
+	Review  string // none, approved or changes_requested
 	By      string // who gave the deciding review
 	Merged  bool
 	Closed  bool
+}
+
+// ReviewNone is the review state of a pull request without a deciding review.
+const ReviewNone = "none"
+
+// checks sums up a commit's check runs and its combined status: failure if
+// any failed, pending if any still runs, success if all passed, "" if there
+// are none.
+func (c *Client) checks(ctx context.Context, repo, sha string) (string, error) {
+	state := ""
+	add := func(s string) {
+		switch {
+		case s == "failure" || state == "failure":
+			state = "failure"
+		case s == "pending" || state == "pending":
+			state = "pending"
+		case s == "success":
+			state = "success"
+		}
+	}
+	for page := 1; ; page++ {
+		var runs struct {
+			CheckRuns []struct {
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"check_runs"`
+		}
+		if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page), nil, &runs); err != nil {
+			return "", err
+		}
+		for _, r := range runs.CheckRuns {
+			switch {
+			case r.Status != "completed":
+				add("pending")
+			case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
+				add("success")
+			default: // failure, cancelled, timed_out, action_required, stale
+				add("failure")
+			}
+		}
+		if len(runs.CheckRuns) < 100 {
+			break
+		}
+	}
+	var combined struct {
+		State      string `json:"state"`
+		TotalCount int    `json:"total_count"`
+	}
+	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/status", repo, sha), nil, &combined); err != nil {
+		return "", err
+	}
+	if combined.TotalCount > 0 {
+		if combined.State == "error" {
+			combined.State = "failure"
+		}
+		add(combined.State)
+	}
+	return state, nil
 }
 
 // Status reads the pull request's head, its checks and its reviews.
@@ -87,29 +160,11 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 	}
 	s := Status{HeadSHA: pr.Head.SHA, Merged: pr.Merged, Closed: pr.State == "closed"}
 	if s.HeadSHA != "" {
-		var runs struct {
-			CheckRuns []struct {
-				Status     string `json:"status"`
-				Conclusion string `json:"conclusion"`
-			} `json:"check_runs"`
-		}
-		if err := c.do(ctx, repo, http.MethodGet, "/repos/"+repo+"/commits/"+s.HeadSHA+"/check-runs?per_page=100", nil, &runs); err != nil {
+		checks, err := c.checks(ctx, repo, s.HeadSHA)
+		if err != nil {
 			return Status{}, err
 		}
-		for _, r := range runs.CheckRuns {
-			switch {
-			case r.Status != "completed":
-				if s.Checks != "failure" {
-					s.Checks = "pending"
-				}
-			case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
-				if s.Checks == "" {
-					s.Checks = "success"
-				}
-			default:
-				s.Checks = "failure"
-			}
-		}
+		s.Checks = checks
 	}
 	var reviews []struct {
 		State string `json:"state"`
@@ -123,7 +178,7 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 	latest := map[string]string{} // a reviewer's latest deciding review counts
 	var order []string
 	for _, r := range reviews {
-		if r.State != "APPROVED" && r.State != "CHANGES_REQUESTED" {
+		if r.State != "APPROVED" && r.State != "CHANGES_REQUESTED" && r.State != "DISMISSED" {
 			continue
 		}
 		if _, seen := latest[r.User.Login]; !seen {
@@ -131,12 +186,13 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 		}
 		latest[r.User.Login] = r.State
 	}
+	s.Review = ReviewNone
 	for _, who := range order {
 		switch latest[who] {
 		case "CHANGES_REQUESTED":
 			s.Review, s.By = "changes_requested", who
 		case "APPROVED":
-			if s.Review == "" {
+			if s.Review == ReviewNone {
 				s.Review, s.By = "approved", who
 			}
 		}
@@ -149,7 +205,10 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 func (c *Client) Merge(ctx context.Context, repo string, n int, method string) error {
 	var pr struct {
 		Head struct {
-			Ref string `json:"ref"`
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 	}
 	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
@@ -158,7 +217,14 @@ func (c *Client) Merge(ctx context.Context, repo string, n int, method string) e
 	if err := c.do(ctx, repo, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, n), map[string]string{"merge_method": method}, nil); err != nil {
 		return err
 	}
-	return c.do(ctx, repo, http.MethodDelete, "/repos/"+repo+"/git/refs/heads/"+pr.Head.Ref, nil, nil)
+	if !strings.EqualFold(pr.Head.Repo.FullName, repo) {
+		return nil // a fork's branch is not ours to delete
+	}
+	err := c.do(ctx, repo, http.MethodDelete, "/repos/"+repo+"/git/refs/heads/"+pr.Head.Ref, nil, nil)
+	if err != nil && strings.Contains(err.Error(), ": 422 ") {
+		return nil // deleted already, e.g. by the repository's auto-delete
+	}
+	return err
 }
 
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
@@ -198,33 +264,97 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 // CodePushRefused refuses a push outside the agent's own ticket branch.
 const CodePushRefused = "push_refused"
 
-// Push pushes the worktree's HEAD to the ticket's own branch on origin, for
-// an agent (spec section 2.1: the token may push only to its ticket branch).
-// Any other target is refused. force pushes with a lease on what istari last
-// saw of the branch, so work pushed by someone else is never overwritten.
-// The token, if any, goes to git as a header of this one command.
-func Push(ctx context.Context, dir, own, target string, force bool, token string) error {
-	if target != own {
-		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf("an agent pushes only to its ticket branch %s, not %s", own, target)}
+// PushSpec is one push of an agent's work.
+type PushSpec struct {
+	Worktree string // the agent's worktree: where the commits are
+	URL      string // the repository's own URL, as istari knows it
+	Private  string // istari's private bare repository the push is made from
+	Own      string // the ticket's branch
+	Target   string // the branch asked for
+	Force    bool   // with a lease on what istari last pushed or saw
+	Token    string
+}
+
+// Push pushes the worktree's HEAD to the ticket's own branch, for an agent
+// (spec section 2.1: only branches of its ticket). Any other target is
+// refused. The worktree shares its config with the agent, so the push is not
+// made from it: istari fetches the commits into a private repository of its
+// own and pushes from there to the repository's URL, with no hooks and the
+// token in git's environment, not its arguments. A forced push leases on what
+// istari itself last pushed or saw, so work pushed by someone else is never
+// overwritten.
+func Push(ctx context.Context, p PushSpec) error {
+	refuse := func(format string, args ...any) error {
+		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf(format, args...)}
 	}
-	var args []string
-	if token != "" {
-		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-		args = append(args, "-c", "http.extraheader=AUTHORIZATION: basic "+basic)
+	if p.Target != p.Own {
+		return refuse("an agent pushes only to its ticket branch %s, not %s", p.Own, p.Target)
 	}
-	args = append(args, "push", "--porcelain")
-	if force {
-		args = append(args, "--force-with-lease=refs/heads/"+own)
-	}
-	args = append(args, "origin", "HEAD:refs/heads/"+own)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
+	run := func(env []string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
+		cmd.Dir = p.Private
+		cmd.Env = append(cleanEnv(), env...)
+		out, err := cmd.CombinedOutput()
 		msg := strings.TrimSpace(string(out))
-		if token != "" {
-			msg = strings.ReplaceAll(msg, token, "***")
+		if p.Token != "" {
+			msg = strings.ReplaceAll(msg, p.Token, "***")
 		}
-		return &core.Error{Code: CodePushRefused, Message: "git push: " + msg}
+		if err != nil {
+			return msg, refuse("git %s: %s", args[0], msg)
+		}
+		return msg, nil
 	}
-	return nil
+	if _, err := os.Stat(p.Private); err != nil {
+		if err := os.MkdirAll(p.Private, 0o700); err != nil {
+			return err
+		}
+		if _, err := run(nil, "init", "-q", "--bare"); err != nil {
+			return err
+		}
+	}
+	work := "refs/istari/push/" + p.Own
+	seen := "refs/istari/seen/" + p.Own
+	if _, err := run(nil, "fetch", "-q", "--no-tags", p.Worktree, "+HEAD:"+work); err != nil {
+		return err
+	}
+	auth := authEnv(p.Token)
+	args := []string{"push", "--porcelain"}
+	if p.Force {
+		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
+		if err != nil {
+			// Nothing pushed from here yet: lease on the branch as it is now.
+			expected = ""
+			if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
+				expected, _, _ = strings.Cut(out, "\t")
+			}
+		}
+		args = append(args, "--force-with-lease=refs/heads/"+p.Own+":"+expected)
+	}
+	args = append(args, p.URL, work+":refs/heads/"+p.Own)
+	if _, err := run(auth, args...); err != nil {
+		return err
+	}
+	_, err := run(nil, "update-ref", seen, work)
+	return err
+}
+
+// authEnv gives git the token as a header through its environment.
+func authEnv(token string) []string {
+	if token == "" {
+		return nil
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraheader", "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic " + basic}
+}
+
+// cleanEnv is the daemon's environment without git's own variables or any
+// user or system git config.
+func cleanEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
 }

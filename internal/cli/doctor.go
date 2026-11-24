@@ -45,7 +45,7 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				v := check{Name: "vcs github", OK: true}
 				switch {
 				case cfg.GitHubApp.AppID == 0:
-					v.Detail = "no [github_app]: pushes and pull requests are made as the gh CLI's user"
+					v.Detail = "no [github_app]: pushes and pull requests are made as the gh CLI's user, whose credentials an agent running as you can reach"
 				default:
 					if _, err := vcs.NewAppTokens(cfg.GitHubApp.AppID, cfg.GitHubApp.PrivateKey, ""); err != nil {
 						v.OK, v.Detail = false, err.Error()

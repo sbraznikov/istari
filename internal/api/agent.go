@@ -99,5 +99,6 @@ func (s *Server) push(ctx context.Context, r PushRequest) error {
 	if err != nil {
 		return err
 	}
-	return vcs.Push(ctx, ws.Dir, ws.Branch, target, r.Force, token)
+	url, private := s.spaces.PushTarget(ws.Repo)
+	return vcs.Push(ctx, vcs.PushSpec{Worktree: ws.Dir, URL: url, Private: private, Own: ws.Branch, Target: target, Force: r.Force, Token: token})
 }
