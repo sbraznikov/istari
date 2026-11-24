@@ -365,3 +365,30 @@ func TestClearHoldCanInsistOnTheReason(t *testing.T) {
 		t.Fatalf("ClearHold(attempts_exhausted) = %q, %v", got.Hold, err)
 	}
 }
+
+func TestARecoveredTicketStartsInTheStateAndHoldTheTrackerHas(t *testing.T) {
+	tickets, s := newTickets(t, nil)
+	tk, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Limits"}, core.TicketInProgress, "needs_input")
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if tk.State != core.TicketInProgress || tk.Hold != "needs_input" || tk.Title != "Limits" {
+		t.Fatalf("recovered = %+v", tk)
+	}
+	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
+	replayed, err := core.ReplayTicket(events)
+	if err != nil || replayed.State != core.TicketInProgress || replayed.Hold != "needs_input" {
+		t.Fatalf("replay = %+v, %v", replayed, err)
+	}
+	if _, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref}, core.TicketReady, ""); err == nil {
+		t.Fatal("a ticket istari has was recovered over")
+	}
+	for _, bad := range []struct {
+		state core.TicketState
+		hold  string
+	}{{"bogus", ""}, {core.TicketReady, "bogus"}} {
+		if _, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: "gh:acme/web#77"}, bad.state, bad.hold); err == nil {
+			t.Errorf("recovering into %q/%q was accepted", bad.state, bad.hold)
+		}
+	}
+}

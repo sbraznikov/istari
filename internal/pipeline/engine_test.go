@@ -520,3 +520,35 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 		t.Fatalf("after two rounds with CI red the ticket is %s, hold %q", tk.State, tk.Hold)
 	}
 }
+
+func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
+	for _, c := range []struct {
+		fires       []string
+		first, none string // the first stage it gets, and one before it that it must not get
+	}{
+		{[]string{"accept", "start", "plan_accepted"}, "implement", "plan"},
+		{[]string{"accept", "start", "plan_accepted", "pr_ready"}, "review", "implement"},
+		{[]string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"}, "approve", "review"},
+	} {
+		f := newEngine(t, config.Defaults{}, nil)
+		if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range c.fires {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := f.state(t, ref)
+		f.reconcile(t)
+		if task := f.stage(t, ref, c.first); task.State != core.TaskReady {
+			t.Errorf("%s: %s is %s, want ready", state, c.first, task.State)
+		}
+		all, _ := f.tasks.List(ctx)
+		for _, task := range all {
+			if pipeline.StageOf(task) == c.none {
+				t.Errorf("%s: it got a %s task", state, c.none)
+			}
+		}
+	}
+}

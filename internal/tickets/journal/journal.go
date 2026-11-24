@@ -552,6 +552,35 @@ func (j *Journal) Stored(ctx context.Context, ref tickets.Ref) ([]Entry, error) 
 	return out, nil
 }
 
+// Restore puts the entries of the ticket's comments that istari's log lacks
+// into the log, in order, without writing to the ticket: istari recover
+// after the database was lost (spec section 4.6).
+func (j *Journal) Restore(ctx context.Context, ref tickets.Ref) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	entries, err := j.Read(ctx, ref)
+	if err != nil {
+		return err
+	}
+	stored, err := j.Stored(ctx, ref)
+	if err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if i < len(stored) {
+			continue // the log has the entries up to here
+		}
+		data, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if _, err := j.store.Append(ctx, store.Event{Type: EventPrefix + string(e.Kind), At: e.At, Actor: e.Actor, Ticket: ref.String(), Payload: data}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Read rebuilds the ticket's journal from its comments alone: istari's own
 // marked comments, in order. A human's comment that imitates a marker is not
 // an entry.

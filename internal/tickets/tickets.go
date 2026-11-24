@@ -121,6 +121,8 @@ type Files interface {
 type Access interface {
 	// CanWrite tells whether login has write access to repo.
 	CanWrite(ctx context.Context, repo, login string) (bool, error)
+	// Self returns the login istari acts as in the tracker.
+	Self(ctx context.Context) (string, error)
 }
 
 // Query selects tickets of one repository.

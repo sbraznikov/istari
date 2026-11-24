@@ -652,3 +652,43 @@ func repoName(repo string) string {
 	_, name, _ := strings.Cut(repo, "/")
 	return name
 }
+
+// MergeMain brings the main branch, fetched just now, into the ticket's
+// worktree (spec section 4.6, resuming: step 2). It returns the files in
+// conflict, left with their markers for the worker: resolving them is its
+// first step.
+func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []string, err error) {
+	ws, err := w.get(ctx, ticket)
+	if err != nil {
+		return nil, err
+	}
+	if ws.State != WorkspaceActive || !isWorktree(ctx, ws.Dir) {
+		return nil, fmt.Errorf("merge main: %s has no worktree", ticket)
+	}
+	clone, err := w.clone(ctx, ws.Repo)
+	if err != nil {
+		return nil, err
+	}
+	main, err := mainBranch(ctx, clone)
+	if err != nil {
+		return nil, err
+	}
+	upstream := "refs/remotes/origin/" + main
+	// The merge is istari's own commit, whatever identity the machine has.
+	_, merr := gitOut(ctx, ws.Dir, "-c", "user.name=istari", "-c", "user.email=istari@localhost",
+		"merge", "--no-edit", "-m", "Merge "+main+" into "+ws.Branch, upstream)
+	if merr == nil {
+		return nil, nil
+	}
+	// The merge stopped: on conflicts, or on an earlier merge whose
+	// conflicts are not resolved yet. Otherwise it did not start, e.g.
+	// uncommitted changes it would overwrite.
+	unmerged, err := gitOut(ctx, ws.Dir, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil, err
+	}
+	if unmerged == "" {
+		return nil, fmt.Errorf("merge main into %s: %w", ws.Branch, merr)
+	}
+	return strings.Split(unmerged, "\n"), nil
+}

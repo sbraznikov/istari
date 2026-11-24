@@ -340,3 +340,14 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 		t.Fatalf("the pushed commit's checks: %+v", tr)
 	}
 }
+
+func TestAPullRequestIsFoundByItsURL(t *testing.T) {
+	if pr, ok := vcs.PullRequestAt("https://github.com/acme/web/pull/42"); !ok || pr.Number != 42 {
+		t.Fatalf("PullRequestAt = %+v, %v", pr, ok)
+	}
+	for _, url := range []string{"", "https://github.com/acme/web/issues/42", "https://github.com/acme/web/pull/x", "https://github.com/acme/web/pull/0"} {
+		if _, ok := vcs.PullRequestAt(url); ok {
+			t.Errorf("%q is taken for a pull request", url)
+		}
+	}
+}

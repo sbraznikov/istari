@@ -182,3 +182,20 @@ func TestTheSelfReviewStepIsInTheBriefOnlyWhenItIsOn(t *testing.T) {
 		t.Fatal("with self_review = false the brief has the self-review step")
 	}
 }
+
+func TestConflictsWithTheMainBranchComeBeforeTheNextStep(t *testing.T) {
+	in := briefInput()
+	if b := runner.Brief(in); strings.Contains(b, "conflict") {
+		t.Fatal("a brief without conflicts talks about them")
+	}
+	in.Conflicts = []string{"README.md"}
+	if b := runner.Brief(in); !strings.Contains(b, "## First: resolve the merge conflicts") {
+		t.Fatal("one conflict is not in the brief")
+	}
+	in.Conflicts = []string{"README.md", "limits.go"}
+	b := runner.Brief(in)
+	first, next := strings.Index(b, "## First: resolve the merge conflicts"), strings.Index(b, "## Next step")
+	if first < 0 || next < 0 || first > next || !strings.Contains(b[first:next], "- README.md\n- limits.go") {
+		t.Fatalf("brief:\n%s", b[:min(len(b), 2000)])
+	}
+}

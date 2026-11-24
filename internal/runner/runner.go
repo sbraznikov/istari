@@ -112,6 +112,22 @@ func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
 
+// Working tells which of this runner's live runs works on a task, if any.
+func (r *Runner) Working(ctx context.Context, task string) (run string, ok bool) {
+	runs, err := r.runs.List(ctx)
+	if err != nil {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, run := range runs {
+		if _, live := r.active[run.ID]; live && run.Task == task {
+			return run.ID, true
+		}
+	}
+	return "", false
+}
+
 // Stop asks a running run to stop; its task fails with the reason.
 func (r *Runner) Stop(ctx context.Context, id, actor string) error {
 	r.mu.Lock()
@@ -194,6 +210,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
 		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout, BudgetUSD: r.opts.BudgetUSD,
 	}
+	var conflicts []string
 	if slot.Role == "refiner" {
 		// The refiner works before the ticket has a worktree and reads the
 		// main branch (spec section 7.2).
@@ -211,6 +228,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			return
 		}
 		run.Dir = ws.Dir
+		// The implementer's run pulls the main branch in; conflicts are its
+		// first step (spec section 4.6). Other roles judge the branch as
+		// the pull request has it.
+		if slot.Role == "implementer" {
+			if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
+				log.Printf("istari: run of %s: merging the main branch: %v", task.Ticket, err)
+			}
+		}
 	}
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
 	token, err := r.runs.create(bg, &run)
@@ -240,7 +265,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: r.opts.BudgetUSD})
 	sess, err := h.Start(bg, spec)
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
@@ -414,8 +439,8 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 }
 
 // brief assembles the run's brief from the ticket and its journal.
-func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket) string {
-	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true}
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, conflicts []string) string {
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Brief(in)

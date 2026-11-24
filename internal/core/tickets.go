@@ -27,6 +27,11 @@ const (
 	TicketCanceled         TicketState = "canceled"
 )
 
+// States are the ticket states, in the order of the pipeline.
+func States() []TicketState {
+	return []TicketState{TicketNew, TicketReady, TicketPlanning, TicketInProgress, TicketInReview, TicketAwaitingApproval, TicketDone, TicketCanceled}
+}
+
 // HoldReasons are the reasons a ticket can be held (spec section 4.1).
 func HoldReasons() []string {
 	return []string{"needs_input", "attempts_exhausted", "budget_exceeded", "paused", "waiting_dependency", "waiting_zone"}
@@ -231,6 +236,34 @@ func (m *Tickets) CreateWith(ctx context.Context, actor string, nt NewTicket) (T
 	}
 	return ticket, nil
 }
+
+// Recover creates a ticket istari lost, in the state and hold its tracker
+// labels have (spec section 4.6: istari recover rebuilds the database from
+// the tracker). It is the history's start, like create.
+func (m *Tickets) Recover(ctx context.Context, actor string, nt NewTicket, state TicketState, hold string) (Ticket, error) {
+	if nt.Ref == "" {
+		return Ticket{}, errorf(CodeInvalidTicket, "a ticket needs a reference")
+	}
+	if !slices.Contains(States(), state) {
+		return Ticket{}, errorf(CodeInvalidTicket, "%q is not a ticket state", state)
+	}
+	if hold != "" && !slices.Contains(HoldReasons(), hold) {
+		return Ticket{}, errorf(CodeInvalidTicket, "%q is not a hold reason", hold)
+	}
+	ticket := Ticket{Ref: nt.Ref, Project: nt.Project, Title: nt.Title, Author: nt.Author, URL: nt.URL, State: state, Hold: hold, Updated: m.opts.Clock()}
+	payload := transitionPayload("", state, triggerRecover, actor)
+	payload["reason"] = hold
+	err := m.commit(ctx, actor, EventTicketTransitioned, ticket, payload)
+	if errors.Is(err, store.ErrConflict) {
+		return Ticket{}, errorf(CodeInvalidTicket, "ticket %s already exists", nt.Ref)
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
+const triggerRecover = "recover"
 
 // Fire applies the transition for trigger from the ticket's current state.
 // A pair (state, trigger) outside the table fails with invalid_transition and
@@ -485,10 +518,14 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			return Ticket{}, invalid(e, "%v", err)
 		}
 		if ticket.Ref == "" {
-			if e.Type != EventTicketTransitioned || p.Trigger != "create" {
-				return Ticket{}, invalid(e, "the history does not start with create")
+			switch {
+			case e.Type == EventTicketTransitioned && p.Trigger == "create":
+				ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, BudgetOf: p.BudgetOf, Updated: e.At}
+			case e.Type == EventTicketTransitioned && p.Trigger == triggerRecover:
+				ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: p.To, Hold: p.Reason, Updated: e.At}
+			default:
+				return Ticket{}, invalid(e, "the history does not start with create or recover")
 			}
-			ticket = Ticket{Ref: e.Ticket, Project: e.Project, State: TicketNew, BudgetOf: p.BudgetOf, Updated: e.At}
 			continue
 		}
 		if e.Ticket != ticket.Ref {

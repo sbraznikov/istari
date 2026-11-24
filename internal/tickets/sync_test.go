@@ -3,6 +3,7 @@ package tickets_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -370,3 +371,79 @@ func TestAChangeByAnUnknownAuthorSaysSo(t *testing.T) {
 const conforming = "## Context\n\nLimits protect the API.\n\n## What needs to be done\n\n- Add a limiter.\n\n" +
 	"## Acceptance criteria\n\n- [ ] A burst is refused.\n\n## Out of scope\n\n- Per-user limits.\n\n" +
 	"## Dependencies\n\n- Needs: none\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"
+
+func TestAnUnknownTicketPastReadyIsLeftForRecover(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("t", conforming, "alex", "istari:in_progress", "istari:hold:needs_input")
+	report := f.run(t)
+	if _, err := f.tickets.Get(ctx, ghRef(n)); err == nil {
+		t.Fatal("sync took a ticket istari lost as a new one")
+	}
+	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:in_progress", "istari:hold:needs_input"}) {
+		t.Fatalf("labels = %v: sync changed what recover needs", got)
+	}
+	if report.Unknown != 1 {
+		t.Fatalf("report = %+v, want one unknown", report)
+	}
+}
+
+func TestRecoverTakesTheTicketsStateHoldAndJournalFromTheTracker(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add a cache", conforming, "alex", "istari:in_progress", "istari:hold:needs_input", "priority:P1", "size:S")
+	f.gh.HumanComment(n, "bob", "unrelated")
+	var restored []string
+	report, err := f.sync.Recover(ctx, func(_ context.Context, r tickets.Ref) error { restored = append(restored, r.String()); return nil })
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	tk := f.ticket(t, n)
+	if tk.State != core.TicketInProgress || tk.Hold != "needs_input" || tk.Priority != "P1" || tk.Size != "S" || tk.Title != "Add a cache" {
+		t.Fatalf("recovered = %+v", tk)
+	}
+	if report.Recovered != 1 || !slices.Equal(restored, []string{ghRef(n)}) {
+		t.Fatalf("report %+v, journals restored %v", report, restored)
+	}
+	again := f.run(t) // the next sync agrees with the tracker
+	if again.Reverted != 0 || again.Transitioned != 0 || again.Comments != 0 {
+		t.Fatalf("the sync after recover = %+v", again)
+	}
+	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:in_progress", "istari:hold:needs_input"}) {
+		t.Fatalf("labels = %v", got)
+	}
+}
+
+func TestRecoverTakesOnlyStateLabelsIstariOrATrustedMemberSet(t *testing.T) {
+	f := newSync(t, "bob")
+	f.gh.SetPermission("mallory", "triage")
+	n := f.gh.Seed("Sneak in", conforming, "mallory", "istari:in_progress")
+	own := f.gh.Seed("Istari's own", conforming, f.gh.TokenUser, "istari:in_progress") // istari is not on the trusted list
+	report, err := f.sync.Recover(ctx, func(context.Context, tickets.Ref) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, own); tk.State != core.TicketInProgress {
+		t.Fatalf("istari's own label: %s", tk.State)
+	}
+	if _, err := f.tickets.Get(ctx, ghRef(n)); err == nil {
+		t.Fatal("a state label set by an untrusted user was recovered")
+	}
+	if report.Recovered != 1 || len(report.Skipped) != 1 || !strings.Contains(report.Skipped[0], "mallory") {
+		t.Fatalf("report = %+v, want the ticket skipped with who labelled it", report)
+	}
+}
+
+func TestRecoverTakesBackTheClosedTicketsARecoveredOneNeeds(t *testing.T) {
+	f := newSync(t)
+	done := f.gh.Seed("Done before", conforming, "alex", "istari:done")
+	f.gh.HumanClose(done, "alex", "completed")
+	n := f.gh.Seed("Needs it", strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: #%d", done), 1), "alex", "istari:in_progress")
+	if _, err := f.sync.Recover(ctx, func(context.Context, tickets.Ref) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, n); !slices.Equal(tk.Needs, []string{ghRef(done)}) {
+		t.Fatalf("needs = %v", tk.Needs)
+	}
+	if tk := f.ticket(t, done); tk.State != core.TicketDone {
+		t.Fatalf("the closed need is %s, want done", tk.State)
+	}
+}

@@ -126,6 +126,9 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/labels/{name}", s.getLabel)
 	mux.HandleFunc("POST "+repo+"/labels", s.createLabel)
 	mux.HandleFunc("GET "+repo+"/collaborators/{user}/permission", s.permission)
+	mux.HandleFunc("GET /user", func(w http.ResponseWriter, _ *http.Request) {
+		s.write(w, http.StatusOK, map[string]string{"login": s.TokenUser})
+	})
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
 	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
