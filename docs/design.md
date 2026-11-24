@@ -324,6 +324,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket was created by an agent while working on an already admitted ticket; it inherits the parent's admission and budget;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`.
 
+Trusted members are the project's `trusted` list (section 12); a project without the list trusts everyone with write access to the repository.
+
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
 **Checking in advance.** `istari ticket check` shows the deviations from the standard without changing anything. An agent with which a human is writing a specification can call it before creating the ticket.
@@ -1244,7 +1246,6 @@ Every milestone starting with M2 is run through tickets in this repository's Git
 
 1. **Where the daemon runs at night.** If it is a laptop, it must not go to sleep: during sleep both the daemon and the agents stop. Options: prevent sleep while unattended work is running, or keep the daemon on an always-on machine. The choice determines the priority of authentication and Postgres.
 2. **How a service consumes a component.** The design does not depend on the answer: the linking method is detected automatically on `istari repo add` (section 4.4). Verify on a real pair of repositories that the detection works.
-3. **Admission to work.** Built in: a trusted member's ticket is admitted automatically, the others after confirmation. Who is trusted by default: everyone with write access to the repository, or an explicit list?
-4. **Stages after merge.** Are deployment and verification in production part of the first version's pipeline?
-5. **Harnesses.** Which adapters are needed in the first version besides Claude Code?
+3. **Stages after merge.** Are deployment and verification in production part of the first version's pipeline?
+4. **Harnesses.** Which adapters are needed in the first version besides Claude Code?
 
