@@ -1095,7 +1095,7 @@ The TUI supports themes. A theme changes only colors; the set of screens, the pa
 ```toml
 [daemon]
 data_dir = "~/.local/share/istari"
-max_concurrent_runs = 4
+max_concurrent_runs = 4               # claimed tasks at once in the whole installation
 
 [defaults]                            # for all projects; overridden in .istari/pipeline.toml
 max_review_rounds = 3                 # review rounds before a hold
@@ -1108,6 +1108,9 @@ zones             = "serialize"       # "serialize" | "warn" | "off": what to do
 mode          = "after_approval"      # "manual" | "after_approval" | "auto"
 auto_max_size = "S"                   # in auto mode: tickets no larger than this size are merged without a human
 method        = "squash"              # "squash" | "merge" | "rebase"
+
+[defaults.max_concurrent_runs_by_role] # claimed tasks at once per role; a role not listed has no own limit
+reviewer = 2
 
 [defaults.budget_usd]                 # ticket budget by size
 XS = 2
@@ -1131,6 +1134,7 @@ name    = "web"
 repo    = "acme/web"
 tickets = { provider = "github" }     # by default — issues of the same repository
 slack   = { work = "#web-agents", decisions = "#web-decisions", owner = "@alex" }
+max_concurrent_runs = 2               # claimed tasks at once in this project; absent — no own limit
 
 [[project]]                           # a service made of two repositories
 name  = "billing"

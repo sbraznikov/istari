@@ -35,10 +35,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
-			return api.RunDaemon(ctx, api.DaemonOptions{
-				DataDir: dataDir,
-				Limits:  core.Limits{Total: cfg.Daemon.MaxConcurrentRuns},
-			})
+			return api.RunDaemon(ctx, api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg)})
 		},
 	}
 	cmd.AddCommand(newDaemonInstallCommand(opts))
@@ -175,3 +172,14 @@ func xmlEscape(s string) string {
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// limitsOf collects the concurrency limits of the config.
+func limitsOf(cfg *config.Config) core.Limits {
+	l := core.Limits{Total: cfg.Daemon.MaxConcurrentRuns, PerProject: map[string]int{}, PerRole: cfg.Defaults.MaxConcurrentRunsByRole}
+	for _, p := range cfg.Projects {
+		if p.MaxConcurrentRuns != nil {
+			l.PerProject[p.Name] = *p.MaxConcurrentRuns
+		}
+	}
+	return l
+}
