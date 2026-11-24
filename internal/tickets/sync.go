@@ -188,15 +188,7 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			continue
 		}
 		if base.side.Closed && finished(tk.State) {
-			// Closed on both sides, unless a human's merge closed the issue
-			// and istari read that as a cancel: it is repaired to done.
-			repair, err := s.mergedPR(ctx, tk)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
-			}
-			if !repair {
-				continue
-			}
+			continue // closed on both sides
 		}
 		t, err := s.provider.Get(ctx, ref)
 		if errors.Is(err, ErrNotFound) {
