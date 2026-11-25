@@ -415,14 +415,14 @@ func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport
 		return err
 	}
 	for _, need := range tk.Needs {
-		ref, err := ParseRef(need)
+		needRef, err := ParseRef(need)
 		if err != nil {
 			continue
 		}
 		if _, err := s.tickets.Get(ctx, need); err == nil {
 			continue
 		}
-		c, err := s.provider.Get(ctx, ref)
+		c, err := s.provider.Get(ctx, needRef)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -432,7 +432,7 @@ func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport
 		if !c.Closed {
 			continue // an open need is recovered or synced on its own
 		}
-		cr, ok := s.repoOf(ref)
+		cr, ok := s.repoOf(needRef)
 		if !ok {
 			continue
 		}
