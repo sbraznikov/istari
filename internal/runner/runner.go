@@ -68,6 +68,9 @@ type RunnerOptions struct {
 	// Checkpoints, when set, saves the work of a run stopped on its timeout,
 	// its budget or by a human (spec section 7.2, step 6).
 	Checkpoints *Checkpoints
+	// Journal records what the runner notices about a run, such as a merge
+	// of the main branch given up; nil: istari's log only.
+	Journal *journal.Journal
 	// Skill is the agent skill installed into every workspace as
 	// .istari/skill.md when the repository has none (spec section 7.4);
 	// "": istari's own.
@@ -109,7 +112,25 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	if opts.Skill == "" {
 		opts.Skill = skill.Skill()
 	}
+	if opts.Journal == nil {
+		opts.Journal = journal.New(nil, s, opts.Clock)
+	}
 	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
+}
+
+// mainNotMerged records in the ticket's journal that the run starts without
+// the main branch merged, and why, so the worker knows its branch may be
+// behind (spec section 4.6, resuming: step 2).
+func (r *Runner) mainNotMerged(ctx context.Context, task core.Task, cause error) {
+	log.Printf("istari: run of %s: merging the main branch: %v", task.Ticket, cause)
+	ref, err := tickets.ParseRef(task.Ticket)
+	if err == nil {
+		err = r.opts.Journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", ID: task.ID,
+			Text: fmt.Sprintf("The main branch was not merged into the branch at the start of this run, so the branch may be behind main: %v", cause)})
+	}
+	if err != nil {
+		log.Printf("istari: run of %s: journaling the unmerged main branch: %v", task.Ticket, err)
+	}
 }
 
 // SetSelfReview sets how the runner learns a repository's self_review.
@@ -341,7 +362,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		// the pull request has it.
 		if slot.Role == "implementer" {
 			if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
-				log.Printf("istari: run of %s: merging the main branch: %v", task.Ticket, err)
+				r.mainNotMerged(bg, task, err)
 			}
 		}
 	}

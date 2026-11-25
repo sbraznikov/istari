@@ -144,6 +144,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			ro := opts.Runner
 			ro.Clock = opts.Clock
 			ro.Checkpoints = srv.saves
+			ro.Journal = journal.New(jt, ns, opts.Clock)
 			srv.runner = runner.New(ns, srv.tasks, srv.tickets, srv.spaces, ro)
 		}
 	}

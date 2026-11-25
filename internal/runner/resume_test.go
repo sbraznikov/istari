@@ -155,6 +155,34 @@ func TestAMergeThatCannotStartLeavesTheWorktreeAsItWas(t *testing.T) {
 	}
 }
 
+func TestWhenTheRemoteCannotBeReachedTheJournalSaysMainWasNotMergedAndWhy(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{})
+	tk, task := f.readyTask(t, 12)
+	if _, err := f.ws.Ensure(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Join(f.data, "repos", "acme", "web.git"), "remote", "set-url", "origin", filepath.Join(f.root, "nowhere.git"))
+	f.start(t)
+	ref, _ := tickets.ParseRef(tk.Ref)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Kind == journal.Note && e.ID == task.ID && strings.Contains(e.Text, "main branch was not merged") && strings.Contains(e.Text, "nowhere.git") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("journal = %+v; want a note that the main branch was not merged, and why", entries)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // failFirstFetch makes the remote refuse the clone's next fetch, and only
 // that one, as a remote that is briefly out of reach would.
 func (f *wsFixture) failFirstFetch(t *testing.T) {
