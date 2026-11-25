@@ -418,3 +418,22 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 		t.Fatalf("body = %q, want each axis with its own findings", body)
 	}
 }
+
+func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success", Log: "all fine"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "=== RUN   TestX\n--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"},
+	)
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if f.Check != "test" || f.Commit != "abc123" || f.URL == "" || f.Cut {
+		t.Fatalf("failure = %+v", f)
+	}
+	if !strings.Contains(f.Output, "--- FAIL: TestX") || !strings.Contains(f.Output, "got 1, want 2") || strings.Contains(f.Output, "all fine") {
+		t.Fatalf("output = %q", f.Output)
+	}
+}

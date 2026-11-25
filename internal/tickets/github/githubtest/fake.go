@@ -138,6 +138,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("PUT "+repo+"/pulls/{n}/merge", s.mergePull)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)
+	mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", s.jobLogs)
 	mux.HandleFunc("DELETE "+repo+"/git/refs/{ref...}", s.deleteRef)
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
