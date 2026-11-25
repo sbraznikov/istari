@@ -51,7 +51,7 @@ func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, err
 		parts = append(parts, string(log))
 	}
 	if len(names) == 0 {
-		return f, errors.New("no check run failed: the failure is a commit status, which has no log istari can read")
+		return f, errors.New("vcs: no check run failed: the failure is a commit status, which has no log istari can read")
 	}
 	f.Check = strings.Join(names, ", ")
 	share := MaxFailureLog / max(1, len(parts)) // each failed job keeps the end of its own log

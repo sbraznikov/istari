@@ -46,6 +46,7 @@ var every = []journal.Entry{
 }
 
 func TestACIFailureEntryShowsTheCheckTheCommitAndTheOutput(t *testing.T) {
+	t.Parallel()
 	text := journal.Text(every[len(every)-3])
 	for _, want := range []string{"test", "a1b2c3d", "https://github.com/acme/web/actions/runs/9/job/41", "--- FAIL: TestX", "cut"} {
 		if !strings.Contains(text, want) {

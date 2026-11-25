@@ -165,7 +165,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			jt = t
 		}
 		// A red head's CI failure entry reaches the rework brief (spec 4.3).
-		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock, vcs.WithJournal(journal.New(jt, ns, opts.Clock)))
+		srv.watch = vcs.NewWatcher(opts.VCS, ns, vcs.WatcherOptions{Clock: opts.Clock, Journal: journal.New(jt, ns, opts.Clock)})
 	}
 	var needsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
 	if opts.Tracker != nil && opts.Standards != nil {

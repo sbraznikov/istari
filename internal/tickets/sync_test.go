@@ -253,6 +253,7 @@ func TestAHumanCommentProducesOneEvent(t *testing.T) {
 }
 
 func TestATrustedMembersCommentOnATicketInWorkIsAJournalEntry(t *testing.T) {
+	t.Parallel()
 	f := newSync(t) // no trusted list: whoever can write is trusted
 	f.gh.SetPermission("mallory", "read")
 	n := f.gh.Seed("Add a cache", conforming, "alex") // alex administers the repository

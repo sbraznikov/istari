@@ -51,26 +51,20 @@ type Watcher struct {
 	journal *journal.Journal
 }
 
-// WatchOption configures a Watcher.
-type WatchOption func(*Watcher)
-
-// WithJournal has the watcher record a CI failure entry in the ticket's
-// journal when it sees a red head (spec 4.3). Without it, a red head is only
-// a vcs.checks event.
-func WithJournal(j *journal.Journal) WatchOption {
-	return func(w *Watcher) { w.journal = j }
+// WatcherOptions configures a Watcher.
+type WatcherOptions struct {
+	Clock func() time.Time // nil: time.Now
+	// Journal is where the watcher records a CI failure entry when it sees a
+	// red head (spec 4.3); nil: a red head is only a vcs.checks event.
+	Journal *journal.Journal
 }
 
 // NewWatcher returns a watcher.
-func NewWatcher(c *Client, s store.Store, clock func() time.Time, opts ...WatchOption) *Watcher {
-	if clock == nil {
-		clock = time.Now
+func NewWatcher(c *Client, s store.Store, opts WatcherOptions) *Watcher {
+	if opts.Clock == nil {
+		opts.Clock = time.Now
 	}
-	w := &Watcher{client: c, store: s, clock: clock}
-	for _, o := range opts {
-		o(w)
-	}
-	return w
+	return &Watcher{client: c, store: s, clock: opts.Clock, journal: opts.Journal}
 }
 
 // Track starts watching a ticket's pull request.

@@ -81,7 +81,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -245,7 +245,7 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -266,7 +266,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -310,7 +310,7 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -422,6 +422,7 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 }
 
 func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	gh.SetChecks("abc123",
@@ -441,6 +442,7 @@ func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
 }
 
 func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	log := "first line of setup\n" + strings.Repeat("ok  \tsome/package\t0.1s\n", vcs.MaxFailureLog/20) + "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"
@@ -469,7 +471,7 @@ func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watche
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	j := journal.New(nil, s, nil)
-	w := vcs.NewWatcher(c, s, nil, vcs.WithJournal(j))
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{Journal: j})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
@@ -495,6 +497,7 @@ func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
 }
 
 func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
+	t.Parallel()
 	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
 	for range 2 { // the second poll sees the same red head
 		if err := w.Poll(ctx); err != nil {
@@ -514,6 +517,7 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 }
 
 func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
+	t.Parallel()
 	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
 	if err := w.Poll(ctx); err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -531,6 +535,7 @@ func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
 }
 
 func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	gh.SetStatus("def456", "failure")
