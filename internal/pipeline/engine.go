@@ -435,12 +435,9 @@ const maxRefines = 3
 // (task.attempts_exhausted, spec 4.1): it holds the ticket until a human
 // retries it. Refine tasks are bounded by maxRefines instead.
 func exhausted(ref string, all []core.Task) bool {
-	for _, t := range all {
-		if t.Ticket == ref && t.State == core.TaskFailed && t.Attempts >= t.MaxAttempts && !strings.HasPrefix(StageOf(t), "refine-") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(all, func(t core.Task) bool {
+		return t.Ticket == ref && t.State == core.TaskFailed && t.Attempts >= t.MaxAttempts && !strings.HasPrefix(StageOf(t), "refine-")
+	})
 }
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):

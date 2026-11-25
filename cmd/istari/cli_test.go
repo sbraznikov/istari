@@ -1,7 +1,6 @@
 package main_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,10 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
-	"github.com/sbraznikov/istari/internal/store"
-	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
 // cli runs istari against the daemon d.
@@ -206,33 +202,8 @@ func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 
 func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	t.Parallel()
-	server := gitServer(t)
-	dataDir := newDataDir(t)
 	ref := "gh:acme/web#5"
-	// Before the daemon starts: a ticket in planning; the daemon's pipeline
-	// gives it its tasks.
-	s, err := store.Open(filepath.Join(dataDir, api.DatabaseName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	k := core.NewTickets(s, core.TicketOptions{})
-	ctx := context.Background()
-	if _, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Add limits"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, tr := range []string{"accept", "start"} {
-		if _, err := k.Fire(ctx, "system", ref, tr); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s.Close()
-	gh := githubtest.New(t)
-	config := filepath.Join(t.TempDir(), "config.toml")
-	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
-	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d := startPipelineDaemon(t, ref, nil) // the pipeline gives the ticket its tasks
 	hold := func() string {
 		var tk struct{ Hold string }
 		d.mustCLI(t, &tk, "ticket", "show", ref)
@@ -269,10 +240,10 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	if h := hold(); h != "" {
 		t.Fatalf("after retry the hold is %q", h)
 	}
-	// The daemon reconciles after the retry: the ticket is not held again.
-	time.Sleep(500 * time.Millisecond)
+	// The ticket goes on: its planner can claim the plan task again.
+	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
 	if h := hold(); h != "" {
-		t.Fatalf("a reconcile after retry held the ticket again: %q", h)
+		t.Fatalf("after the retried task was claimed the hold is %q", h)
 	}
 }
 
