@@ -182,9 +182,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		entries, err := journal.New(nil, ns, nil).Stored(ctx, r)
 		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
 	}
+	var merged func(ctx context.Context, ref string) (bool, error)
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	if srv.watch != nil {
+		merged = srv.watch.SeenMerged
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if err != nil || pr.Checks == "" {
@@ -201,7 +203,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			return opts.VCS.MarkReady(ctx, pr.Repo, pr.Number)
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)

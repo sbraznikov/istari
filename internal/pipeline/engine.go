@@ -45,6 +45,10 @@ type EngineOptions struct {
 	// of a review task; submitted is false while it has none (spec 7.6:
 	// the verdict is code's). nil: the review task's completion passes.
 	Review func(ctx context.Context, ref, task string) (findings int, submitted bool, err error)
+	// Merged tells whether the PR watch saw the ticket's pull request merged:
+	// a human may merge it before istari's own merge stage, and the ticket
+	// then finishes through T11 (spec 4.8). nil: only istari merges.
+	Merged func(ctx context.Context, ref string) (bool, error)
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -272,6 +276,19 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	fire := func(trigger string) error {
 		_, err := e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, trigger)
 		return err
+	}
+	switch tk.State {
+	case core.TicketInProgress, core.TicketInReview, core.TicketAwaitingApproval:
+		if e.opts.Merged == nil {
+			break
+		}
+		merged, err := e.opts.Merged(ctx, tk.Ref)
+		if err != nil {
+			return err
+		}
+		if merged {
+			return fire("merged") // T11: a human merged first
+		}
 	}
 	switch tk.State {
 	case core.TicketNew:

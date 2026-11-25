@@ -597,9 +597,12 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 	case tracker.State == "" && tracker.Closed && !local.Closed:
 		// Closed before istari labelled it: a request to cancel.
 		return s.request(ctx, x, tracker)
-	case tracker == x.base.side || tracker.State == "" || tracker == local:
+	case tracker == x.base.side || tracker.State == "" || tracker == local,
+		tracker.Closed && local.State == core.TicketDone && tracker.State == x.base.side.State:
 		// The tracker still has what istari last wrote, or no state yet, or
-		// only stray extra labels: istari's state goes out.
+		// only stray extra labels, or only the close of the issue that the
+		// merge of its PR made after istari finished the ticket (spec 4.8):
+		// istari's state goes out.
 		if err := s.push(ctx, x, x.tk); err != nil {
 			return err
 		}
