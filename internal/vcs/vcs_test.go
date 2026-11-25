@@ -473,27 +473,48 @@ func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watche
 	j := journal.New(nil, s, nil)
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{Journal: j})
 	ticket := "gh:" + githubtest.Repo + "#3"
-	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
 		t.Fatal(err)
 	}
 	gh.SetHeadSHA(pr.Number, "abc123")
 	gh.SetChecks("abc123", checks...)
-	ref, _ := tickets.ParseRef(ticket)
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return s, w, j, ref
 }
 
 // checkEvents are the vcs.checks events of the ticket, as "checks@sha".
 func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
 	t.Helper()
-	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref.String(), TypePrefix: vcs.EventChecks}, 0)
+	events, err := s.Read(ctx, "", store.Filter{Ticket: ref.String(), TypePrefix: vcs.EventChecks}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var got []string
 	for _, e := range events {
 		var p struct{ Checks, SHA string }
-		json.Unmarshal(e.Payload, &p)
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
 		got = append(got, p.Checks+"@"+p.SHA)
 	}
 	return got
+}
+
+// storedEntries are the journal entries of the ticket in istari's log.
+func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.Entry {
+	t.Helper()
+	entries, err := j.Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }
 
 func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
@@ -504,7 +525,7 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 			t.Fatalf("Poll: %v", err)
 		}
 	}
-	entries, _ := j.Stored(ctx, ref)
+	entries := storedEntries(t, j, ref)
 	if len(entries) != 1 || entries[0].Kind != journal.CI {
 		t.Fatalf("journal = %+v, want one ci entry", entries)
 	}
@@ -522,7 +543,7 @@ func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
 	if err := w.Poll(ctx); err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
-	entries, _ := j.Stored(ctx, ref)
+	entries := storedEntries(t, j, ref)
 	if len(entries) != 1 || entries[0].CI == nil || !strings.Contains(entries[0].CI.Error, "404") || entries[0].CI.Commit != "abc123" {
 		t.Fatalf("journal = %+v, want a ci entry that says the log could not be read and why", entries)
 	}
