@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 // Seam is a public boundary a test observes, agreed before the first test:
@@ -148,12 +151,54 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 		if priority == "" {
 			priority = core.DefaultPriority
 		}
+		std, err := standardOf(run.Dir)
+		if err != nil {
+			return PlanResult{}, err
+		}
 		for i, pt := range split.Tickets {
 			split.Tickets[i].Body = withTable(pt, priority, ref.Repo)
+			if err := checkChild(ctx, std, run.Dir, ref.Repo, split.Tickets[i]); err != nil {
+				return PlanResult{}, err
+			}
 		}
 		res.Split = &split
 	}
 	return res, nil
+}
+
+// standardOf is the ticket standard of the checkout in dir: its
+// .istari/ticket-standard.toml, else the default.
+func standardOf(dir string) (standard.Standard, error) {
+	path := filepath.Join(dir, ".istari", "ticket-standard.toml")
+	if _, err := os.Stat(path); dir == "" || err != nil {
+		return standard.Default(), nil
+	}
+	return standard.Load(path)
+}
+
+// checkChild checks a split child with its table against the structural
+// standard, as istari ticket check does (spec 4.3 and 4.5). Its paths are
+// checked in the run's checkout when the child is of the parent's repository.
+func checkChild(ctx context.Context, std standard.Standard, dir, parentRepo string, pt tickets.PlanTicket) error {
+	checker := standard.Checker{Standard: std, Repo: parentRepo}
+	if pt.Repo != "" {
+		checker.Repo = pt.Repo
+	}
+	if strings.EqualFold(checker.Repo, parentRepo) {
+		checker.Root = dir
+	}
+	got, err := checker.Check(ctx, standard.Draft{Title: pt.Title, Body: pt.Body, Labels: pt.Labels})
+	if err != nil {
+		return err
+	}
+	if got.OK() {
+		return nil
+	}
+	var deviations []string
+	for _, d := range got.Deviations {
+		deviations = append(deviations, d.Message)
+	}
+	return fmt.Errorf("plan: child %s does not meet the ticket standard: %s", pt.Key, strings.Join(deviations, "; "))
 }
 
 // withTable is a split child's body with the table of the ticket standard

@@ -123,7 +123,12 @@ func TestATicketAboveMaxSizeMustBeSplit(t *testing.T) {
 	if _, err := f.plans.Check(ctx, f.run, res, runner.PlanSettings{MaxSize: "M"}); err == nil || !strings.Contains(err.Error(), "split") {
 		t.Fatalf("Check = %v, want a split required", err)
 	}
-	split, _ := runner.ParsePlanResult([]byte(goodPlan + "split:\n  tickets:\n    - key: one\n      title: First half\n"))
+	body := "      body: |\n        " + strings.ReplaceAll(strings.TrimRight(childBody, "\n"), "\n", "\n        ") + "\n"
+	split, err := runner.ParsePlanResult([]byte(goodPlan + "split:\n  tickets:\n    - key: one\n      title: First half\n      type: feature\n      size: M\n" + body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.run.Dir = f.dir(31)
 	if _, err := f.plans.Check(ctx, f.run, split, runner.PlanSettings{MaxSize: "M"}); err != nil {
 		t.Fatalf("a split plan: %v", err)
 	}
@@ -226,6 +231,29 @@ func TestASplitChildNamingAnotherRepositoryHasItInItsTable(t *testing.T) {
 	}
 	if body := res.Split.Tickets[0].Body; !strings.HasSuffix(body, "| feature | M | P2 | `acme/lib` |\n") {
 		t.Fatalf("the child's body:\n%s\nwant acme/lib and the default priority in its table", body)
+	}
+}
+
+func TestASplitWithAChildThatMissesTheStandardIsRefusedBeforeAnyIssue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		child tickets.PlanTicket
+		named string
+	}{
+		"no size":      {tickets.PlanTicket{Key: "b", Title: "Half B", Body: childBody, Type: "bug"}, "size"},
+		"missing path": {tickets.PlanTicket{Key: "b", Title: "Half B", Body: strings.Replace(childBody, "cache/cache.go", "checkpoint_test.go", 1), Type: "bug", Size: "S"}, "checkpoint_test.go"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSplit(t)
+			issues := f.gh.IssueCount()
+			good := tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "bug", Size: "S"}
+			_, err := f.plans.Check(ctx, f.run, splitPlan(good, tc.child), runner.PlanSettings{MaxSize: "L"})
+			if err == nil || !strings.Contains(err.Error(), "child b") || !strings.Contains(err.Error(), tc.named) || strings.Contains(err.Error(), "child a") {
+				t.Fatalf("Check = %v, want child b refused with its %s named", err, tc.named)
+			}
+			if f.gh.IssueCount() != issues {
+				t.Fatalf("issues: %d, want %d: nothing created", f.gh.IssueCount(), issues)
+			}
+		})
 	}
 }
 
