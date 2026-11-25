@@ -104,6 +104,7 @@ func assertDeviation(t *testing.T, res standard.Result, rule, says string) {
 }
 
 func TestAConformingTicketHasNoDeviations(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	res := f.check(t, standard.Draft{Body: body(nil)})
 	if len(res.Deviations) != 0 || res.Type != "feature" || res.Size != "M" || res.Priority != "P1" || res.Repository != "acme/web" {
@@ -112,12 +113,14 @@ func TestAConformingTicketHasNoDeviations(t *testing.T) {
 }
 
 func TestAMissingOrEmptySectionIsNamed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	assertDeviation(t, f.check(t, standard.Draft{Body: body(map[string]string{"Out of scope": "-"})}), "section", "Out of scope")
 	assertDeviation(t, f.check(t, standard.Draft{Body: body(map[string]string{"Acceptance criteria": "  "})}), "section", "Acceptance criteria")
 }
 
 func TestAnInvalidSizePriorityOrTypeFails(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	assertDeviation(t, f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | XXL | P1 | `acme/web` | |"})}), "size", "XXL")
 	assertDeviation(t, f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M | P7 | `acme/web` | |"})}), "priority", "P7")
@@ -128,6 +131,7 @@ func TestAnInvalidSizePriorityOrTypeFails(t *testing.T) {
 }
 
 func TestAMissingPriorityIsDefaultedNotFailed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M |  | `acme/web` | |"})})
 	if len(res.Deviations) != 0 || res.Priority != "P2" || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "P2") {
@@ -136,6 +140,7 @@ func TestAMissingPriorityIsDefaultedNotFailed(t *testing.T) {
 }
 
 func TestTheRepositoryIsRequiredAndMustMatch(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	assertDeviation(t, f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M | P1 |  | |"})}), "repository", "missing")
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: 9}
@@ -143,6 +148,7 @@ func TestTheRepositoryIsRequiredAndMustMatch(t *testing.T) {
 }
 
 func TestDependencyRefsMustExistAndNotBeCanceled(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	open := f.gh.Seed("dep", body(nil), "alex")
 	canceled := f.gh.Seed("dropped", body(nil), "alex")
@@ -156,6 +162,7 @@ func TestDependencyRefsMustExistAndNotBeCanceled(t *testing.T) {
 }
 
 func TestACycleInDependenciesFailsAndIsListed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	// #1 needs #2, #2 needs #1; the checked ticket is #1.
 	f.gh.Seed("a", body(map[string]string{"needs": "#2"}), "alex")
@@ -166,6 +173,7 @@ func TestACycleInDependenciesFailsAndIsListed(t *testing.T) {
 }
 
 func TestBacktickedPathsMustExistUnlessMarkedNew(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	res := f.check(t, standard.Draft{Body: body(map[string]string{
 		"What needs to be done": "- Change `internal/store/missing.go` and `cmd/tool/main.go` (new).\n- Not paths: `istari ticket check`, `--json`, `gh:acme/web#1`, `istari:ready`, `migrations/**`, `T15`.",
@@ -177,6 +185,7 @@ func TestBacktickedPathsMustExistUnlessMarkedNew(t *testing.T) {
 }
 
 func TestTheStandardComesFromTheRepository(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "ticket-standard.toml")
 	os.WriteFile(path, []byte("sections = [\"Context\", \"Risks\"]\ntypes = [\"feature\"]\nsizes = [\"S\", \"M\"]\npriorities = [\"P1\", \"P2\"]\nrepository = true\ndependencies = \"Needs\"\n"), 0o644)
 	std, err := standard.Load(path)
@@ -192,6 +201,7 @@ func TestTheStandardComesFromTheRepository(t *testing.T) {
 }
 
 func TestOnlyFilePathsAreCheckedAsPaths(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	notPaths := "`standard.Default`, `cfg.Defaults.Priority`, `os.Stat`, `api.github.com`, `github.com/acme/web`, " +
 		"`main...HEAD`, `acme/other`, `v1.2.3`, `~/.config/istari/config.toml`, `../..`, `component#57`"
@@ -208,6 +218,7 @@ func TestOnlyFilePathsAreCheckedAsPaths(t *testing.T) {
 }
 
 func TestCodeFencesAndRulesInsideSectionsDoNotBreakParsing(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	ctxText := "Example:\n\n```markdown\n## Out of scope\n\n`not/a/real/path.go`\n- Needs: #404\n```\n\n---\n\nMore context after a rule."
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"Context": ctxText})})
@@ -217,6 +228,7 @@ func TestCodeFencesAndRulesInsideSectionsDoNotBreakParsing(t *testing.T) {
 }
 
 func TestLabelsAndTablesAreReadIgnoringCase(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| Feature | m | p1 | `acme/web` | |"}), Labels: []string{"Size:M", "Type:feature"}})
 	if len(res.Deviations) != 0 || res.Size != "M" || res.Type != "feature" || res.Priority != "P1" {
@@ -225,6 +237,7 @@ func TestLabelsAndTablesAreReadIgnoringCase(t *testing.T) {
 }
 
 func TestCrossRepositoryShorthandsAreResolved(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.gh.Seed("a", body(nil), "alex")
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"needs": "#1, component#57, acme/other#3"})})
@@ -235,6 +248,7 @@ func TestCrossRepositoryShorthandsAreResolved(t *testing.T) {
 }
 
 func TestAShorthandWithoutAKnownRepositoryIsReported(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.checker.Repo = ""
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"needs": "#5"})})
@@ -242,6 +256,7 @@ func TestAShorthandWithoutAKnownRepositoryIsReported(t *testing.T) {
 }
 
 func TestADefaultPriorityOutsideTheStandardIsADeviation(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.checker.Standard.Priorities = []string{"P0", "P1"}
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M |  | `acme/web` | |"})})
@@ -249,6 +264,7 @@ func TestADefaultPriorityOutsideTheStandardIsADeviation(t *testing.T) {
 }
 
 func TestTheWorkStateBlockIsNotPartOfTheTicketText(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	plain := body(nil)
 	tracked := journal.WithWorkState(plain, journal.WorkState{Stage: "ready", Branch: "istari/1/x", Next: "Write the test", OpenQuestions: []string{"Which API?"}})
@@ -267,6 +283,7 @@ func TestTheWorkStateBlockIsNotPartOfTheTicketText(t *testing.T) {
 }
 
 func TestTheOriginalTextARefinerKeptIsNotPartOfTheTicket(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	plain := body(nil)
 	kept := plain + "\n" + standard.OriginalStart + "\n\n## Context\n\nThe old words.\n\n## Out of scope\n\n- Nothing.\n\n" + standard.OriginalEnd + "\n"
