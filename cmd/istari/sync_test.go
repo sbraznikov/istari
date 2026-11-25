@@ -31,6 +31,7 @@ func fakeGHAs(t *testing.T, token, login string) string {
 }
 
 func TestIstariSyncMirrorsTheTrackersIssues(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", "## Context\n…", "bob")
 	dataDir := newDataDir(t)
@@ -73,6 +74,7 @@ func trackerOK(doctor string) bool {
 }
 
 func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	if _, stderr, code := d.cli(t, "sync"); code != 1 || !strings.Contains(stderr, "sync_disabled") {
 		t.Fatalf("istari sync without a tracker: exit %d %q", code, stderr)
@@ -80,6 +82,7 @@ func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
 }
 
 func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	body := strings.SplitN(conforming, "\n", 2)[1]
 	n := gh.Seed("Add rate limits", body, "carol") // carol may only read: not trusted
@@ -126,6 +129,7 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 }
 
 func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", "", "bob", "bug")
 	dataDir := newDataDir(t)
@@ -159,6 +163,7 @@ func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 }
 
 func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Limits", "We should add rate limits.\n", "carol") // carol may only read
 	ours := gh.Seed("Quotas", "We should add quotas.\n", "alex")    // alex can write: trusted

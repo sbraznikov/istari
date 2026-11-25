@@ -64,7 +64,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 	if entry.Done == "" {
 		entry.Done = "checkpoint"
 	}
-	prev, err := c.previous(ctx, run, ref, ws)
+	prev, prevTest, err := c.previous(ctx, run, ref, ws)
 	if err != nil {
 		return journal.Entry{}, err
 	}
@@ -129,7 +129,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		}
 	}
 	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 {
-		judged, passed, err := c.onPrevious(ctx, ws.Repo, run.Dir, prev, tests, gone, cmd)
+		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, cmd)
 		switch {
 		case err != nil:
 			return journal.Entry{}, err
@@ -140,6 +140,9 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Notes = append(entry.Notes, "verify_red: the new tests ("+strings.Join(tests, ", ")+") pass on the code of the previous checkpoint: the slice is not counted")
 		default:
 			entry.Checks["verify_red"] = "green"
+		}
+		if judged {
+			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
 		}
 	}
 
@@ -166,25 +169,26 @@ func (c *Checkpoints) push(ctx context.Context, ws Workspace, dir string) error 
 	return vcs.Push(ctx, vcs.PushSpec{Worktree: dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token})
 }
 
-// previous returns the commit of the ticket's last checkpoint, or where its
-// branch left the main branch.
-func (c *Checkpoints) previous(ctx context.Context, run Run, ref tickets.Ref, ws Workspace) (string, error) {
+// previous returns the commit of the ticket's last checkpoint and the test
+// result it recorded, or where its branch left the main branch and no result.
+func (c *Checkpoints) previous(ctx context.Context, run Run, ref tickets.Ref, ws Workspace) (commit, test string, err error) {
 	entries, err := c.journal.Stored(ctx, ref)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		if cp := entries[i].Checkpoint; cp != nil && cp.Commit != "" {
 			if full, err := gitOut(ctx, run.Dir, "rev-parse", "--verify", "-q", cp.Commit+"^{commit}"); err == nil {
-				return full, nil
+				return full, cp.Checks["test"], nil
 			}
 		}
 	}
 	main, err := mainBranch(ctx, c.ws.clonePath(ws.Repo))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return gitOut(ctx, run.Dir, "merge-base", "HEAD", "refs/remotes/origin/"+main)
+	commit, err = gitOut(ctx, run.Dir, "merge-base", "HEAD", "refs/remotes/origin/"+main)
+	return commit, "", err
 }
 
 // checks reads the check commands from the main branch: the ticket's branch
@@ -217,30 +221,23 @@ func (w *Workspaces) checks(ctx context.Context, repo string) (map[string]string
 }
 
 // onPrevious runs the test command on the previous checkpoint's code in a
-// scratch checkout: first as it is, which must pass for red first to be
-// judged; then with the slice's tests in place, which must fail. It reports
-// whether it could judge, and whether the slice's tests passed there.
-func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev string, tests, gone []string, cmd string) (judged, passed bool, err error) {
-	scratch, err := os.MkdirTemp("", "istari-red-")
-	if err != nil {
-		return false, false, err
-	}
-	os.Remove(scratch)
-	clone := c.ws.clonePath(repo)
-	c.ws.mu.Lock()
-	_, err = gitOut(ctx, clone, "worktree", "add", "--detach", scratch, prev)
-	c.ws.mu.Unlock()
-	if err != nil {
-		return false, false, err
-	}
-	defer func() {
-		c.ws.mu.Lock()
-		defer c.ws.mu.Unlock()
-		gitOut(context.WithoutCancel(ctx), clone, "worktree", "remove", "--force", scratch)
-		os.RemoveAll(scratch)
-	}()
-	if ok, _ := runCheck(ctx, scratch, cmd); !ok {
+// ticket's verify_red worktree with the slice's tests in place, which must
+// fail. The previous code must pass on its own for red first to be judged:
+// prevTest is its recorded test result; without one it runs there as it is
+// first. It reports whether it could judge, and whether the slice's tests
+// passed there.
+func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, cmd string) (judged, passed bool, err error) {
+	if prevTest == "red" {
 		return false, false, nil
+	}
+	scratch, err := c.ws.redCheckout(ctx, ws, prev)
+	if err != nil {
+		return false, false, err
+	}
+	if prevTest == "" {
+		if ok, _ := runCheck(ctx, scratch, cmd); !ok {
+			return false, false, nil
+		}
 	}
 	for _, t := range gone {
 		os.Remove(filepath.Join(scratch, t))

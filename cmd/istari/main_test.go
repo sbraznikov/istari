@@ -54,6 +54,7 @@ func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 }
 
 func TestVersionPrintsAVersionAndExitsZero(t *testing.T) {
+	t.Parallel()
 	out, _, code := run(t, "--version")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -64,6 +65,7 @@ func TestVersionPrintsAVersionAndExitsZero(t *testing.T) {
 }
 
 func TestUsageErrorsExitTwo(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"no-such-command"},
 		{"--no-such-flag"},
@@ -79,6 +81,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 }
 
 func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
+	t.Parallel()
 	empty := t.TempDir()
 	cmd := exec.Command(binary, "doctor")
 	cmd.Env = append(os.Environ(), "PATH="+empty)

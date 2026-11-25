@@ -8,6 +8,7 @@ import (
 )
 
 func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
+	t.Parallel()
 	wt := t.TempDir()
 	hook := func(input string, env ...string) (string, int) {
 		t.Helper()
@@ -46,6 +47,7 @@ func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
 }
 
 func TestTheGitGuardHookKeepsFileToolsOutOfGitDirectories(t *testing.T) {
+	t.Parallel()
 	wt := t.TempDir()
 	for path, want := range map[string]int{wt + "/src/a.go": 0, wt + "/.git": 2, "/data/repos/acme/web.git/config": 2} {
 		cmd := exec.Command(binary, "hook", "git-guard", "--harness", "claude-code")
