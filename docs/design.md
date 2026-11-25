@@ -205,13 +205,15 @@ any unfinished state ──► canceled ──► new (reopen)
 
 **Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
 
+A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
+
 | Reason | When it is set | Who clears it |
 |---|---|---|
 | `needs_input` | an agent asked a question and stopped | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
-| `waiting_dependency` | during the work it turned out that a ticket that is not yet completed is needed, usually in a neighboring repository | system, when the dependency ticket is completed |
+| `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
 
 **State machine rules.**
