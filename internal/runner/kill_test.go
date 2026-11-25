@@ -44,6 +44,7 @@ func childRunner(db, data, remotes string) {
 }
 
 func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Lease: 600 * time.Millisecond, Poll: 50 * time.Millisecond})
 	_, task := f.readyTask(t, 6)
 	child := exec.Command(os.Args[0], "-test.run=^$")

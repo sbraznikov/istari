@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,19 +75,15 @@ type runFixture struct {
 	h      *fakeHarness
 }
 
-var fakes sync.Map
+// fakeCount makes every fixture's harness name unique, so no two fixtures
+// (parallel tests, or one test run again by -count) share a fake harness.
+var fakeCount atomic.Int64
 
 func newRunner(t *testing.T, opts runner.RunnerOptions, events ...harness.Event) *runFixture {
 	t.Helper()
 	f := newWorkspaces(t)
-	name := "fake-" + t.Name()
-	var h *fakeHarness
-	if v, ok := fakes.Load(name); ok {
-		h = v.(*fakeHarness)
-	} else {
-		h = newFakeHarness(name, events...)
-		fakes.Store(name, h)
-	}
+	h := newFakeHarness("fake-"+t.Name()+"-"+strconv.FormatInt(fakeCount.Add(1), 10), events...)
+	name := h.name
 	if opts.Lease == 0 {
 		opts.Lease = time.Minute
 	}
@@ -162,6 +159,7 @@ func (f *runFixture) waitEvent(t *testing.T, typ string) store.Event {
 }
 
 func TestASlotClaimsAReadyTaskAndStartsTheHarnessInTheTicketWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	tk, task := f.readyTask(t, 1)
 	f.start(t)
@@ -200,6 +198,7 @@ func TestASlotClaimsAReadyTaskAndStartsTheHarnessInTheTicketWorktree(t *testing.
 }
 
 func TestARunPastItsTimeoutIsStoppedAndTheTaskFailsWithTheReason(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Timeout: 300 * time.Millisecond})
 	_, task := f.readyTask(t, 2)
 	f.start(t)
@@ -215,6 +214,7 @@ func TestARunPastItsTimeoutIsStoppedAndTheTaskFailsWithTheReason(t *testing.T) {
 }
 
 func TestARunThatSpendsItsBudgetBlocksTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: map[string]float64{"M": 1}}, // a ticket without a size has the M budget
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}},
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}})
@@ -227,6 +227,7 @@ func TestARunThatSpendsItsBudgetBlocksTheTask(t *testing.T) {
 }
 
 func TestAnExitWithoutIstariCompleteFailsTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 4)
 	f.start(t)
@@ -238,6 +239,7 @@ func TestAnExitWithoutIstariCompleteFailsTheTask(t *testing.T) {
 }
 
 func TestTheLeaseIsRenewedWhileTheRunLivesAndTheTokenDiesWithIt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Lease: 600 * time.Millisecond})
 	_, task := f.readyTask(t, 5)
 	f.start(t)
@@ -267,6 +269,7 @@ func runOf(t *testing.T, e store.Event) string {
 }
 
 func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	f.readyTask(t, 7)
 	f.start(t)
@@ -280,6 +283,7 @@ func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
 }
 
 func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	tk := f.ticket(t, 8, "Raw idea") // new: before planning
 	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
@@ -309,6 +313,7 @@ func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
 }
 
 func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
+	t.Parallel()
 	var events []harness.Event
 	for i := range 6 {
 		events = append(events, harness.Event{Kind: harness.EventMessage, Text: "message number " + strconv.Itoa(i)})
@@ -346,6 +351,7 @@ func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
 }
 
 func TestTheInstructionComesFromTheMainBranchNotTheTicketBranch(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	// The repository's own implementer instruction on main.
 	seed := filepath.Join(f.root, "seed")
@@ -375,6 +381,7 @@ func TestTheInstructionComesFromTheMainBranchNotTheTicketBranch(t *testing.T) {
 }
 
 func TestARunStoppedOnTimeoutLeavesACheckpointWithItsWork(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Timeout: 500 * time.Millisecond})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -400,6 +407,7 @@ func TestARunStoppedOnTimeoutLeavesACheckpointWithItsWork(t *testing.T) {
 }
 
 func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -425,6 +433,7 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 }
 
 func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -443,6 +452,7 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 }
 
 func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -461,6 +471,7 @@ func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
 }
 
 func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -480,6 +491,7 @@ func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
 }
 
 func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Lease: time.Hour})
 	_, task := f.readyTask(t, 11)
 	claimedAt := time.Now()
@@ -496,7 +508,10 @@ func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 }
 
 func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
-	f := newRunner(t, runner.RunnerOptions{Lease: 90 * time.Millisecond}) // shorter than making a worktree
+	t.Parallel()
+	// Shorter than making a worktree under parallel tests, yet long enough
+	// for its renewals (every third of it) to survive a busy scheduler.
+	f := newRunner(t, runner.RunnerOptions{Lease: 300 * time.Millisecond})
 	_, task := f.readyTask(t, 12)
 	f.start(t)
 	s := f.session(t)
@@ -522,6 +537,7 @@ func seedMain(t *testing.T, f *runFixture, path, content string) {
 }
 
 func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntypecheck = \"go vet ./...\"\ntest = \"go test ./... -short\"\nverify_red = true\n")
 	tk, _ := f.readyTask(t, 15)
@@ -548,6 +564,7 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 }
 
 func TestOtherRolesDoNotGetTheCheckCommands(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./...\"\n")
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
