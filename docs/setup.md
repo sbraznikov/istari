@@ -369,6 +369,27 @@ istari: runner: harness claude-code cannot run here, its roles get no slots: …
 
 The data directory holds `istari.db` (SQLite), `daemon.lock`, the socket `istari.sock`, istari's clones in `repos/`, the ticket worktrees in `workspaces/<project>/<repo>/<issue>`, and run transcripts in `runs/`. The tracker syncs every 5 minutes; `istari sync` syncs now.
 
+### Starting paused, on a repository with many open issues
+
+The first sync turns every admitted issue into a ticket, and the runner starts planning them at once, up to `max_concurrent_runs`. To look at them first, start the daemon with the hand-out of tasks paused:
+
+```sh
+istari daemon --paused
+```
+
+Tickets sync as usual, but no task is claimed. `istari tail --type dispatch.paused` shows the pause, as one made by `istari pause --all`. Check the tickets, pause or cancel those that should wait (`istari ticket pause <ref>`, `istari ticket cancel <ref>`), then start the hand-out:
+
+```sh
+istari ticket list
+istari resume --all
+```
+
+```
+resumed the hand-out of tasks for all projects
+```
+
+The pause is kept in the database: a daemon restarted without `--paused` stays paused until `istari resume --all`.
+
 ### As a service
 
 ```sh
@@ -491,6 +512,7 @@ It restores every open ticket labelled past `ready` that istari does not have, w
 ## 14. Advice for first use
 
 - Start with XS and S tickets with precise acceptance criteria.
+- On a repository that already has many open issues, start the daemon with `istari daemon --paused` (step 9) and run `istari resume --all` once you have looked at the synced tickets.
 - At first, set `gate = true` on the `plan` stage of `.istari/pipeline.toml` (step 7), to read each plan before code is written.
 - There is no Slack yet, so nobody is notified of questions: check `istari ticket list` for `needs_input` holds and read the questions in the ticket's comments.
 - Run the daemon from a stable build (step 2) and do not rebuild that binary while runs are in progress.
