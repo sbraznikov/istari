@@ -280,3 +280,28 @@ func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T)
 		t.Errorf("no quoted summary line of the schema contains \": \":\n%s", b)
 	}
 }
+
+func TestAnImplementerBriefShowsTheCIFailureFirst(t *testing.T) {
+	t.Parallel()
+	in := briefInput()
+	at := in.Journal[len(in.Journal)-1].At
+	in.Journal = append(in.Journal,
+		journal.Entry{Kind: journal.CI, Actor: "system", At: at.Add(time.Minute), CI: &journal.CIEntry{Check: "test", Commit: "abc123", URL: "https://github.com/acme/web/runs/41",
+			Output: strings.Repeat("ok  \tsome/package\t0.1s\n", 300) + "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n", Cut: true}},
+		journal.Entry{Kind: journal.Comment, Actor: "human:alex", At: at.Add(2 * time.Minute), Text: "TRUSTED COMMENT: TestX fails on CI only.", Link: "https://github.com/acme/web/issues/7#issuecomment-5"},
+	)
+	b := runner.Brief(in)
+	if len(b) > runner.MaxBrief {
+		t.Fatalf("the brief is %d bytes, more than %d", len(b), runner.MaxBrief)
+	}
+	failure, next := strings.Index(b, "--- FAIL: TestX"), strings.Index(b, "## Next step")
+	if failure < 0 || next < 0 || failure > next || !strings.Contains(b[:next], "abc123") {
+		t.Fatalf("want the CI failure with its commit before the next step; failure at %d, next step at %d", failure, next)
+	}
+	if strings.Count(b, "--- FAIL: TestX") != 1 {
+		t.Error("the CI failure is shown twice")
+	}
+	if !strings.Contains(b, "TRUSTED COMMENT: TestX fails on CI only.") {
+		t.Error("the comment newer than the last checkpoint is missing")
+	}
+}

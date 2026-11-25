@@ -60,6 +60,15 @@ func Brief(in BriefInput) string {
 		head.WriteString("## First: resolve the merge conflicts\n\nThe main branch moved and was merged into your worktree; these files conflict:\n\n- " +
 			strings.Join(in.Conflicts, "\n- ") + "\n\nResolve them, finish the merge with a commit, and make a checkpoint before anything else.\n\n")
 	}
+	failure := -1 // the CI failure shown before the next step, not again in the journal
+	if in.Role == "implementer" {
+		failure = newestFailure(in.Journal)
+	}
+	if failure >= 0 {
+		e := in.Journal[failure]
+		head.WriteString("## CI failed on the pull request\n\nCI on the pull request's head is red. istari read the failed jobs' logs; fix what they show first:\n\n" +
+			untrusted(entrySource(e), journal.Text(e)) + "\n")
+	}
 	head.WriteString("## Next step\n\n" + next + "\n\n")
 	head.WriteString(commandsSection(in.AllowedTools))
 
@@ -101,11 +110,13 @@ func Brief(in BriefInput) string {
 		b.WriteString("## Journal\n\n")
 		left := 0
 		for i, e := range in.Journal {
-			if !chosen[i] {
+			switch {
+			case i == failure:
+			case !chosen[i]:
 				left++
-				continue
+			default:
+				b.WriteString(untrusted(entrySource(e), journal.Text(e)) + "\n")
 			}
-			b.WriteString(untrusted(string(e.Kind)+" by "+e.Actor+" at "+e.At.UTC().Format("2006-01-02 15:04"), journal.Text(e)) + "\n")
 		}
 		if left > 0 {
 			fmt.Fprintf(&b, "%d older entries are left out; `istari ticket show %s` has the whole journal.\n", left, in.Ref)
@@ -117,7 +128,7 @@ func Brief(in BriefInput) string {
 	}
 	// The rest of the journal, newest first, while it fits.
 	for i := len(in.Journal) - 1; i >= 0; i-- {
-		if keep[i] || in.Journal[i].Kind == journal.Plan { // a plan is replaced by the latest one
+		if keep[i] || i == failure || in.Journal[i].Kind == journal.Plan { // a plan is replaced by the latest one
 			continue
 		}
 		keep[i] = true
@@ -158,8 +169,28 @@ func Brief(in BriefInput) string {
 	return out
 }
 
+// entrySource names a journal entry in its untrusted block.
+func entrySource(e journal.Entry) string {
+	return string(e.Kind) + " by " + e.Actor + " at " + e.At.UTC().Format("2006-01-02 15:04")
+}
+
+// newestFailure is the index of the newest CI failure entry when no
+// checkpoint came after it, else -1: a later checkpoint is a new push.
+func newestFailure(entries []journal.Entry) int {
+	for i := len(entries) - 1; i >= 0; i-- {
+		switch entries[i].Kind {
+		case journal.CI:
+			return i
+		case journal.Checkpoint:
+			return -1
+		}
+	}
+	return -1
+}
+
 // selectEntries marks the entries a brief always keeps: every decision and
-// assumption, the latest plan and review, the latest checkpoints.
+// assumption, the latest plan and review, the latest checkpoints, and the
+// comments newer than the latest checkpoint.
 func selectEntries(entries []journal.Entry) []bool {
 	keep := make([]bool, len(entries))
 	lastPlan, lastReview, checkpoints := -1, -1, 0
@@ -167,6 +198,8 @@ func selectEntries(entries []journal.Entry) []bool {
 		switch entries[i].Kind {
 		case journal.Decision, journal.Assumption:
 			keep[i] = true
+		case journal.Comment:
+			keep[i] = checkpoints == 0
 		case journal.Plan:
 			if lastPlan < 0 {
 				lastPlan, keep[i] = i, true
