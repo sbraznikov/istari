@@ -118,6 +118,33 @@ func TestPlanSubmitWithoutAFileOrAResultFileSaysWhatIsMissing(t *testing.T) {
 	}
 }
 
+func TestRefineAndReviewSubmitReadTheResultFileWithoutAFile(t *testing.T) {
+	t.Parallel()
+	d := startDaemon(t, newDataDir(t))
+	for _, role := range []string{"refine", "review"} {
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+			result := filepath.Join(t.TempDir(), "result.yaml")
+			submit := func() ([]byte, error) {
+				cmd := exec.Command(binary, "--config", d.config, role, "submit")
+				cmd.Env = append(os.Environ(), "ISTARI_RESULT="+result)
+				return cmd.CombinedOutput()
+			}
+			if out, err := submit(); err == nil || !strings.Contains(string(out), "write the result there first") {
+				t.Fatalf("%s submit before the result file is written: %v\n%s", role, err, out)
+			}
+			if err := os.WriteFile(result, []byte("verdict: ok\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out, err := submit()
+			// Read and sent: the daemon answers that the result is a role's.
+			if err == nil || !strings.Contains(string(out), "token_invalid") {
+				t.Fatalf("%s submit from the result file: %v\n%s", role, err, out)
+			}
+		})
+	}
+}
+
 func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
