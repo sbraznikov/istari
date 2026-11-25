@@ -163,6 +163,41 @@ func TestADaemonStartedPausedHandsOutNoTaskUntilResume(t *testing.T) {
 	d.mustCLI(t, nil, "task", "claim", "--ready", "--actor", "agent:a")
 }
 
+func TestTheStartPauseShowsInTailLikePauseAll(t *testing.T) {
+	t.Parallel()
+	dataDir := newDataDir(t)
+	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused", "--actor", "human:ops"})
+	d.mustCLI(t, nil, "resume", "--all", "--actor", "human:ops")
+	d.mustCLI(t, nil, "pause", "--all", "--actor", "human:ops")
+	type event struct {
+		Type, Actor, Project string
+		Payload              json.RawMessage
+	}
+	var paused []event
+	d.mustCLI(t, &paused, "tail", "--type", "dispatch.paused")
+	if len(paused) != 2 {
+		t.Fatalf("tail --type dispatch.paused = %+v, want the start pause and the pause --all", paused)
+	}
+	start, byCommand := paused[0], paused[1]
+	if start.Actor != "human:ops" || start.Project != "" || !bytes.Equal(start.Payload, byCommand.Payload) {
+		t.Fatalf("start pause = %+v %s, want it like pause --all: %+v %s", start, start.Payload, byCommand, byCommand.Payload)
+	}
+}
+
+func TestADaemonRestartedPausedOnAPausedHandOutStarts(t *testing.T) {
+	t.Parallel()
+	dataDir := newDataDir(t)
+	config := writeDaemonConfig(t, dataDir)
+	first := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
+	first.cmd.Process.Signal(syscall.SIGTERM)
+	first.cmd.Wait()
+	d := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
+	d.createTask(t, "t_1", "implementer")
+	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
+		t.Fatalf("claim after a paused restart: exit %d %q, want paused", code, stderr)
+	}
+}
+
 type sseEvent struct {
 	ID, Type string
 	Data     json.RawMessage
