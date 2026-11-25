@@ -546,17 +546,20 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 	p.mu.Lock()
 	f, ok := p.files[key]
 	p.mu.Unlock()
+	sameHead := headErr == nil && f.head == string(head)
 	// While GitHub refuses for the rate limit, the file of the last known
 	// head is given again: a refusal is "later", not a missing file.
-	fresh := headErr == nil && f.head == string(head)
-	if ok && (fresh || errors.Is(headErr, ratelimit.ErrRateLimited)) {
+	refused := errors.Is(headErr, ratelimit.ErrRateLimited)
+	if ok && (sameHead || refused) {
 		return slices.Clone(f.data), f.err
 	}
 	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")
 	if err != nil {
 		err = fmt.Errorf("github: read %s in %s: %w", path, repo, err)
 	}
-	if headErr == nil && (err == nil || errors.Is(err, tickets.ErrNotFound)) {
+	// Only an answer of a known head is kept: the file, or its absence.
+	answered := err == nil || errors.Is(err, tickets.ErrNotFound)
+	if headErr == nil && answered {
 		p.mu.Lock()
 		p.files[key] = file{head: string(head), data: data, err: err}
 		p.mu.Unlock()
