@@ -138,6 +138,9 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Checks[name] = "green"
 	} else {
 		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
+		if entry.Main, err = p.onMain(ctx, run.Ticket, ws, main, name, full, entries); err != nil {
+			return vcs.Opened{}, err
+		}
 		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err
 		}
@@ -175,4 +178,30 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	}
 	entry.PR = pr.URL
 	return pr, record(fmt.Sprintf("pull request #%d %s", pr.Number, done))
+}
+
+// mainSuffix marks the scratch worktree, next to the ticket's own, in which
+// a red check runs again on the main branch's tip.
+const mainSuffix = ".main"
+
+// onMain returns the result of a red check on the main branch's tip, which
+// tells whether the failure is the ticket's (spec 7.7). It is kept per main
+// commit: a result the journal has for the tip is used again; otherwise the
+// command runs once in a scratch checkout of the tip.
+func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, main, name, cmd string, entries []journal.Entry) (*journal.MainCheck, error) {
+	dir := ws.Dir + mainSuffix
+	remove, err := p.cp.ws.Scratch(ctx, ticket, dir)
+	if err != nil {
+		return nil, err
+	}
+	defer remove()
+	tip, err := gitOut(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	m := &journal.MainCheck{Commit: tip[:min(12, len(tip))], Check: name, Result: "green"}
+	if passed, output := runCheck(ctx, dir, cmd); !passed {
+		m.Result, m.Output = "red", output
+	}
+	return m, nil
 }
