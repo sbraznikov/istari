@@ -38,6 +38,8 @@ git clone https://github.com/sbraznikov/istari && cd istari
 go build -o ~/bin/istari ./cmd/istari
 ```
 
+Agents find the binary the daemon runs from: istari puts its directory first on their `PATH`, so `~/bin/istari` serves them whether or not `~/bin` is on the daemon's `PATH`. The binary must keep the name `istari`. For the commands below in your own shell, `~/bin` must be on your `PATH`.
+
 If your Go is older than 1.27.3, `go install` downloads the newer toolchain itself:
 
 ```
