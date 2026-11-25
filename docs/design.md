@@ -331,6 +331,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 
+The project key `admission` (section 12) says whether the first condition applies. `"trusted"`, the default, admits a trusted author's ticket on its own. `"label"` admits a ticket only by a trusted member's manual admission or by inheritance from an admitted ticket: a trusted author is not enough, and until a trusted member admits it the ticket is checked against the standard and waits in `new` without a refiner run. Tickets already admitted when the mode changes stay as they are.
+
 **Which tickets inherit the budget.** Admission is always inherited; the budget is not:
 
 - A child of a split has a budget of its own, by its own size from `budget_usd` (section 4.7). The parent was split because it is too large to work on, and `XL` has no budget. What the planner spent on the parent stays on the parent and does not count against the children.
@@ -759,6 +761,17 @@ claude --print "$(cat brief.md)" \
 | `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
+**What the brief says about allowed tools.** In a mode where nobody is asked (`dontAsk`), a command that no rule allows is denied, and a compound command (`a; b | c`) is denied whole when one of its parts is. So the brief has a section "Commands you may run" that lists every shell rule of the run's `--allowedTools` (`istari *`, `git log *`, …). The list is taken from the same allowed tools the harness gets, after the profile and the implementer's check rules are applied, so it cannot drift from the rules. The section also says:
+
+- run each `istari` command on its own, not chained with other commands;
+- a denied command denies only that command: the others, and the `istari` commands that submit the result (`istari review submit`, …) and `istari complete` above all, still work.
+
+The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, `git show` and `istari`; the reviewer may also run `git fetch origin main`, so it can see what the main branch has.
+
+**Allowed tools of the roles.** The refiner, the planner and the reviewer change nothing in the repository: they get the reading tools (`Read`, `Grep`, `Glob`), `Bash(istari *)` and git's reading commands, and, as their one write, the run's result file. The Runner gives each of their runs the path `ISTARI_RESULT` (`<data_dir>/runs/<run>/result.yaml`, inside the run's own directory) and allows writing that one path (`Write(//<path>)`, `Edit(//<path>)`). The guard hook refuses a file tool of these roles on any other path, so a settings file in the repository cannot widen it. The implementer keeps its tools and gets no result file.
+
+The result file exists because a heredoc does not carry a long result. Claude Code's shell parser gives up on a long command ("Parser aborted (timeout, resource limit, or over-length)"), and then `Bash(istari *)` is not matched and the command is refused. Measured on 2026-11-25: a heredoc `istari` command of 9,014 and of 9,335 characters was allowed; one of 9,999, 10,000, 10,125 and 13,842 characters was refused, whatever the lines and characters in it.
+
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
@@ -856,6 +869,8 @@ Review rules:
 | Standards axis: a code smell from the baseline set | return for rework (T7) |
 
 Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets a hold and waits for a human.
+
+**How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
 
 **Repository requirements.** The Standards axis is the more precise, the more complete `CODING_STANDARDS.md`, `CONTRIBUTING.md`, `GLOSSARY.md` and the ADRs are. `istari doctor` reports which of them are missing.
 
@@ -1163,6 +1178,7 @@ repo    = "acme/web"
 tickets = { provider = "github" }     # by default — issues of the same repository
 slack   = { work = "#web-agents", decisions = "#web-decisions", owner = "@alex" }
 trusted = ["alex"]                    # admitted without a human (section 4.5); absent — everyone with write access
+admission = "trusted"                 # "trusted" | "label" (section 4.5): "label" — only a trusted member's manual admission; absent — "trusted"
 max_concurrent_runs = 2               # claimed tasks at once in this project; absent — no own limit
 
 [[project]]                           # a service made of two repositories
