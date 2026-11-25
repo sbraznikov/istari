@@ -245,6 +245,7 @@ func (f *cpFixture) slice(t *testing.T, name string) {
 }
 
 func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
+	t.Parallel()
 	f, runs := newLoggedCheckpoints(t)
 	f.slice(t, "first")
 	if c := f.checkpoint(t, "First slice"); c.Checks["test"] != "green" || c.Checks["verify_red"] != "green" {
@@ -262,6 +263,7 @@ func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
 }
 
 func TestTheVerifyRedWorktreeIsRemovedWithTheTicketsWorktree(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	f.slice(t, "first")
 	f.checkpoint(t, "First slice")
@@ -294,6 +296,7 @@ func TestTheVerifyRedWorktreeIsRemovedWithTheTicketsWorktree(t *testing.T) {
 }
 
 func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
+	t.Parallel()
 	f, runs := newLoggedCheckpoints(t)
 	// An ignored file is left behind too: only a full clean removes it.
 	write(t, filepath.Join(f.ws.Dir, ".gitignore"), "leftover\n")
@@ -318,6 +321,7 @@ func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 }
 
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	f.slice(t, "first")
 	c := f.checkpoint(t, "First slice")

@@ -111,5 +111,5 @@ Places where today's code does not meet a rule. New code follows the rule; fixin
 - **S4.6** Background loops log with `log.Printf`; structured logging (`log/slog`) is not used.
 - **S5.6** Goroutines start with `wg.Add(1); go func(){ defer wg.Done() … }()` (`internal/api/daemon.go`).
 - **S7.10** Some end-to-end tests wait with fixed sleeps rather than a deadline loop (`cmd/istari/daemon_test.go`).
-- **S7.12** Only the tests of `internal/runner` call `t.Parallel()`; the other packages follow in the sibling tickets of #149.
+- **S7.12** The tests of some packages do not call `t.Parallel()` yet; the sibling tickets of #149 bring them in line.
 - **S8.1** One `sort.Strings` (`internal/harness/claudecode/claudecode.go`) and a few counting loops remain.
