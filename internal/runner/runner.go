@@ -27,6 +27,8 @@ const (
 	DefaultPoll          = 2 * time.Second
 	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
 	DefaultStartRetry    = 5 * time.Second
+	DefaultStartPause    = time.Minute
+	startFailuresToPause = 3 // start failures in a row that pause a slot
 	stopGrace            = 10 * time.Second
 )
 
@@ -77,6 +79,9 @@ type RunnerOptions struct {
 	// before it releases it, so a binary being replaced has time to come
 	// back (spec section 7.3); 0: DefaultStartRetry.
 	StartRetry time.Duration
+	// StartPause is how long a slot claims nothing after its harness did not
+	// start three times in a row (spec section 7.3); 0: DefaultStartPause.
+	StartPause time.Duration
 }
 
 // Runner starts agents (spec section 7.2). Only the runner does: a free slot
@@ -113,6 +118,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.StartRetry <= 0 {
 		opts.StartRetry = DefaultStartRetry
+	}
+	if opts.StartPause <= 0 {
+		opts.StartPause = DefaultStartPause
 	}
 	if opts.Skill == "" {
 		opts.Skill = skill.Skill()
@@ -259,10 +267,23 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 func (r *Runner) slot(ctx context.Context, slot Slot) {
+	failures := 0 // start failures in a row
 	for ctx.Err() == nil {
 		lease, err := r.tasks.ClaimReadyIn(ctx, "agent:"+slot.Profile, slot.Role, r.opts.Projects)
 		if err == nil {
-			r.execute(ctx, slot, lease)
+			startErr := r.execute(ctx, slot, lease)
+			if startErr == nil {
+				failures = 0
+				continue
+			}
+			if failures++; failures >= startFailuresToPause {
+				failures = 0
+				log.Printf("istari: runner %s: paused for %s: the harness did not start: %v", slot.Profile, shortDuration(r.opts.StartPause), startErr)
+				select {
+				case <-ctx.Done():
+				case <-time.After(r.opts.StartPause):
+				}
+			}
 			continue
 		}
 		var e *core.Error
@@ -274,6 +295,15 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 		case <-time.After(r.opts.Poll):
 		}
 	}
+}
+
+// shortDuration writes a whole number of minutes as "1m", not "1m0s".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	return s
 }
 
 // ending is why a run ended, as the runner saw it.
