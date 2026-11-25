@@ -53,6 +53,7 @@ func standardBody(original string) string {
 }
 
 func TestAMalformedRefinerResultIsRejected(t *testing.T) {
+	t.Parallel()
 	for name, data := range map[string]string{
 		"not yaml":        "verdict: [",
 		"no verdict":      "size: S\n",
@@ -68,6 +69,7 @@ func TestAMalformedRefinerResultIsRejected(t *testing.T) {
 }
 
 func TestARewriteMustKeepTheOriginalByteForByte(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	changed := standardBody(strings.Replace(rawTicket, "rate limits", "limits", 1))
 	err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", Body: changed, Changes: []string{"structure"}})
@@ -80,6 +82,7 @@ func TestARewriteMustKeepTheOriginalByteForByte(t *testing.T) {
 }
 
 func TestAKeptOriginalRewriteIsWrittenCheckedAndExplained(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", Body: standardBody(rawTicket),
 		Changes: []string{"Put the text into the standard's sections"}, Assumptions: []string{"Per-user limits are out of scope"}})
@@ -110,6 +113,7 @@ func TestAKeptOriginalRewriteIsWrittenCheckedAndExplained(t *testing.T) {
 }
 
 func TestMissingInformationBecomesAQuestionAndTheHold(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "needs_input", Size: "S", Questions: []string{"Which endpoints count as export?"}}); err != nil {
 		t.Fatal(err)
@@ -123,6 +127,7 @@ func TestMissingInformationBecomesAQuestionAndTheHold(t *testing.T) {
 }
 
 func TestAnXLTicketIsMarkedForASplit(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "needs_input", Size: "XL", Questions: []string{"Which part comes first?"}}); err != nil {
 		t.Fatal(err)
@@ -138,6 +143,7 @@ func TestAnXLTicketIsMarkedForASplit(t *testing.T) {
 }
 
 func TestADuplicateBecomesADecisionCard(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	card := &journal.DecisionEntry{Problem: "#1 may duplicate #2", State: "Both add export limits.", Recommendation: "A: close as a duplicate", Recommended: "A", Status: "proposed",
 		Options: []journal.Option{{Letter: "A", Gist: "Close as a duplicate", Consequences: "c", Size: "XS", Risks: "r", Changes: "none"}, {Letter: "B", Gist: "Keep both", Consequences: "c", Size: "XS", Risks: "r", Changes: "needs"}}}
@@ -162,6 +168,7 @@ func contains(list []string, s string) bool {
 }
 
 func TestMeetsIsRefusedForATicketBelowTheStandard(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "meets", Size: "S"}); err == nil || !strings.Contains(err.Error(), "standard") {
 		t.Fatalf("meets on a raw ticket: %v", err)
@@ -169,6 +176,7 @@ func TestMeetsIsRefusedForATicketBelowTheStandard(t *testing.T) {
 }
 
 func TestABadCardIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	card := &journal.DecisionEntry{Problem: "p", State: "s", Recommendation: "A", Recommended: "A", Status: "proposed",
 		Options: []journal.Option{{Letter: "A", Gist: "only one"}}}
@@ -181,6 +189,7 @@ func TestABadCardIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 }
 
 func TestARewriteKeepsTheWorkStateAndJournalsASizeChange(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: f.n}
 	f.gh.HumanSetLabels(f.n, "bob", "size:M")
@@ -203,6 +212,7 @@ func TestARewriteKeepsTheWorkStateAndJournalsASizeChange(t *testing.T) {
 }
 
 func TestTheOriginalBlockMustEndTheTicket(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	body := standardBody(rawTicket) + "\n## Afterwards\n\nMore.\n"
 	if err := f.refines.Apply(ctx, f.run, runner.RefineResult{Verdict: "rewrite", Size: "S", Body: body, Changes: []string{"x"}}); err == nil {
@@ -211,6 +221,7 @@ func TestTheOriginalBlockMustEndTheTicket(t *testing.T) {
 }
 
 func TestARewriteWithNothingToJournalStillKeepsTheWorkState(t *testing.T) {
+	t.Parallel()
 	f := newRefine(t)
 	f.gh.HumanSetLabels(f.n, "bob", "size:S")
 	f.gh.HumanEditBody(f.n, "bob", journal.WithWorkState(rawTicket, journal.WorkState{Stage: "new"}))

@@ -80,6 +80,7 @@ func (f *reviewFixture) review(t *testing.T) journal.Entry {
 }
 
 func TestAFindingWhoseQuoteIsNotInTheTicketIsDroppedAndNoted(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	checked := f.submit(t, `
 standards: 0 findings
@@ -103,6 +104,7 @@ findings:
 }
 
 func TestAFindingThatPointsOutsideTheDiffIsDropped(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(file string, line int) string {
 		return "  - {axis: spec, kind: partial, file: " + file + ", line: " + strconv.Itoa(line) +
@@ -124,6 +126,7 @@ func TestAFindingThatPointsOutsideTheDiffIsDropped(t *testing.T) {
 }
 
 func TestAStandardsQuoteIsCheckedInItsFileOnMainAcrossLineBreaks(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(source, quote string) string {
 		return "  - {axis: standards, kind: standard, file: cache/cache.go, line: 3, source: " + source + ", quote: " + quote + ", text: Get has no doc comment}\n"
@@ -141,6 +144,7 @@ func TestAStandardsQuoteIsCheckedInItsFileOnMainAcrossLineBreaks(t *testing.T) {
 }
 
 func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
+	t.Parallel()
 	const good = "{axis: spec, kind: missing, file: a.go, line: 1, source: ticket, quote: q, text: t}"
 	for name, report := range map[string]string{
 		"no spec line":       "standards: 0 findings\n",
@@ -161,6 +165,7 @@ func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
 }
 
 func TestACodeSmellQuotesTheBaselineOfTheReviewersInstructions(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t) // main has no .istari/roles/reviewer.md: the built-in one applies
 	checked := f.submit(t, `
 standards: 1 finding, possibly a mysterious name
@@ -180,6 +185,7 @@ findings:
 }
 
 func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	write(t, filepath.Join(f.run.Dir, "go.mod"), "module x\n")
 	gitIn(t, f.run.Dir, "add", ".")
@@ -197,6 +203,7 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 }
 
 func TestAQuoteMustComeFromTheSourceItsAxisAndKindAllow(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(axis, kind, source, quote string) string {
 		return "  - {axis: " + axis + ", kind: " + kind + ", file: cache/cache.go, line: 3, source: " + source + ", quote: \"" + quote + "\", text: t}\n"
