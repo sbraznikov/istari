@@ -757,6 +757,13 @@ claude --print "$(cat brief.md)" \
 | `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
+**What the brief says about allowed tools.** In a mode where nobody is asked (`dontAsk`), a command that no rule allows is denied, and a compound command (`a; b | c`) is denied whole when one of its parts is. So the brief has a section "Commands you may run" that lists every shell rule of the run's `--allowedTools` (`istari *`, `git log *`, …). The list is taken from the same allowed tools the harness gets, after the profile and the implementer's check rules are applied, so it cannot drift from the rules. The section also says:
+
+- run each `istari` command on its own, not chained with other commands;
+- a denied command denies only that command: the others, and `istari review submit` and `istari complete` above all, still work.
+
+The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, `git show` and `istari`; the reviewer may also run `git fetch origin main`, so it can see what the main branch has.
+
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
