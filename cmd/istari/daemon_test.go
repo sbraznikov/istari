@@ -31,7 +31,7 @@ type daemon struct {
 // lockedBuffer is the daemon's stderr: the daemon process writes it while a
 // test reads it.
 type lockedBuffer struct {
-	mu  sync.Mutex
+	mu  sync.Mutex // serializes the daemon's writes and the test's reads of buf
 	buf bytes.Buffer
 }
 

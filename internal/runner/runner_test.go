@@ -128,12 +128,17 @@ func (f *runFixture) start(t *testing.T) context.CancelFunc {
 	return cancel
 }
 
+// waitFor bounds how long a test waits for the runner: preparing, stopping
+// and checkpointing a run spawn git, and under -race and parallel load that
+// takes over 10s.
+const waitFor = 30 * time.Second
+
 func (f *runFixture) session(t *testing.T) fakeSession {
 	t.Helper()
 	select {
 	case s := <-f.h.started:
 		return s
-	case <-time.After(30 * time.Second): // preparing a run under -race and parallel load takes over 10s
+	case <-time.After(waitFor):
 		t.Fatal("the harness was not started")
 		return fakeSession{}
 	}
@@ -141,7 +146,7 @@ func (f *runFixture) session(t *testing.T) fakeSession {
 
 func (f *runFixture) waitTask(t *testing.T, id string, want core.TaskState) core.Task {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitFor)
 	for {
 		task, err := f.tasks.Get(ctx, id)
 		if err == nil && task.State == want {
@@ -157,7 +162,7 @@ func (f *runFixture) waitTask(t *testing.T, id string, want core.TaskState) core
 // waitEvent waits for the first event of typ and returns it.
 func (f *runFixture) waitEvent(t *testing.T, typ string) store.Event {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitFor)
 	for {
 		if events := f.events(t, typ); len(events) > 0 {
 			return events[0]
