@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -333,6 +334,19 @@ func TestEndingRunsLeftRunningEndsEachWithTheReasonInOneEvent(t *testing.T) {
 	}
 	if n := exitsOf(t, f, ended); n != 1 {
 		t.Errorf("run.exited events of the ended run = %d, want its own 1", n)
+	}
+}
+
+func TestStoppingAnEndedRunSaysItHasEndedWithItsReason(t *testing.T) {
+	t.Parallel()
+	_, restarted, _, running := leftRunning(t, 11)
+	if err := restarted.Runs().EndLeftRunning(ctx, "the daemon restarted"); err != nil {
+		t.Fatal(err)
+	}
+	err := restarted.Stop(ctx, running, "human:alex")
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != core.CodeInvalidState || e.Message != "run "+running+" has ended: the daemon restarted" {
+		t.Fatalf("Stop = %v, want invalid_state saying the run has ended with its reason", err)
 	}
 }
 

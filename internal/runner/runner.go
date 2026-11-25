@@ -227,8 +227,12 @@ func (r *Runner) Stop(ctx context.Context, id, actor string) error {
 	stop, ok := r.active[id]
 	r.mu.Unlock()
 	if !ok {
-		if _, err := r.runs.Get(ctx, id); err != nil {
+		run, err := r.runs.Get(ctx, id)
+		if err != nil {
 			return err
+		}
+		if run.State == RunEnded {
+			return &core.Error{Code: core.CodeInvalidState, Message: "run " + id + " has ended: " + run.Reason}
 		}
 		return &core.Error{Code: core.CodeInvalidState, Message: "run " + id + " is not running here"}
 	}
