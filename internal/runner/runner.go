@@ -783,14 +783,15 @@ var resultRoles = []string{"refiner", "planner", "reviewer"}
 // checkTools are the tool rules that let an agent run the check commands:
 // each command's program and subcommand with any arguments, so that
 // "go test ./... -short" allows "Bash(go test *)". The leading words end at
-// the first argument, a word that starts with "-", "." or "/". Sorted, one
+// the first argument, a word that starts with "-", ".", "/" or "{" (the
+// placeholders {files} and {dirs}). Sorted, one
 // rule per program and subcommand.
 func checkTools(checks pipeline.Checks) []string {
 	var rules []string
 	for _, c := range checks.List {
 		var lead []string
 		for _, w := range strings.Fields(c.Run) {
-			if strings.ContainsAny(w[:1], "-./") {
+			if strings.ContainsAny(w[:1], "-./{") {
 				break
 			}
 			lead = append(lead, w)

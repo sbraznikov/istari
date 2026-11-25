@@ -151,16 +151,28 @@ func parseChecks(data []byte, raw map[string]any) (Checks, error) {
 		refuse := func(key, format string, args ...any) error {
 			return fmt.Errorf("%s line %d: check %q: %s", Path, checkLine(data, name, key), name, fmt.Sprintf(format, args...))
 		}
+		setting := func(says string) error {
+			return fmt.Errorf("%s line %d: %s %s", Path, checkLine(data, name, ""), name, says)
+		}
 		switch name {
 		case "verify_red":
-			out.VerifyRed, _ = v.(bool)
+			b, ok := v.(bool)
+			if !ok {
+				return Checks{}, setting("is true or false")
+			}
+			out.VerifyRed = b
 			continue
 		case "test_files":
-			list, _ := v.([]any)
+			list, ok := v.([]any)
+			if !ok {
+				return Checks{}, setting("is a list of glob patterns")
+			}
 			for _, p := range list {
-				if s, ok := p.(string); ok {
-					out.TestFiles = append(out.TestFiles, s)
+				s, ok := p.(string)
+				if !ok {
+					return Checks{}, setting("is a list of glob patterns")
 				}
+				out.TestFiles = append(out.TestFiles, s)
 			}
 			continue
 		}

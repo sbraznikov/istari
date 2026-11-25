@@ -649,11 +649,11 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 func TestTheImplementerMayRunTheProjectsOwnNamedChecks(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
-	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test -short {dirs}\"\nformat = \"gofmt -l .\"\nlint = { run = \"cargo clippy -- -D warnings\", at = [\"pr\"] }\n")
+	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test -short {dirs}\"\nformat = \"gofmt -l .\"\nlint = { run = \"cargo clippy -- -D warnings\", at = [\"pr\"] }\nunit = \"npx vitest run {files}\"\n")
 	f.readyTask(t, 16)
 	f.start(t)
 	got := f.session(t).spec.AllowedTools
-	for _, want := range []string{"Bash(go test *)", "Bash(gofmt *)", "Bash(cargo clippy *)"} {
+	for _, want := range []string{"Bash(go test *)", "Bash(gofmt *)", "Bash(cargo clippy *)", "Bash(npx vitest run *)"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("allowed tools = %q, want %q among them", got, want)
 		}
