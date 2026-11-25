@@ -703,6 +703,8 @@ Rules:
 
 This is the same "claim, not get assigned" model as in Board: nobody decides that a task will go to `implementer-2`; the first free slot takes it. The task is claimed by the Runner slot itself in ordinary code, not by the model inside the harness: it takes the ready task of its role with the highest priority (the oldest one on a tie), obtains a lease on it and only then starts the harness. The model starts working with a task already in hand and cannot take someone else's.
 
+**Runs left running by a restart.** A run's process lives only as long as the daemon that started it. When the daemon starts, before any slot starts a run, it ends every run still recorded as `running`: the daemon lock proves that no other daemon owns it. Each such run becomes `ended` with the reason "the daemon restarted", in one `run.exited` event per run. Its task is not resumed by this: its lease runs out and the task is handed out again (section 4.2). `istari run stop` on such a run answers that it has ended, with its reason.
+
 **How the agent knows who it is and what to do.** From three things the Runner passes at start:
 
 | What | How it is passed | Content |
