@@ -210,6 +210,7 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 }
 
 func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	own := spec.Own
 	forced := spec
@@ -244,6 +245,7 @@ func assertRefused(t *testing.T, err error, msg string) {
 }
 
 func TestAForcedPushAcceptsARemoteBranchItsCommitContains(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	own := spec.Own
 	if err := vcs.Push(ctx, spec); err != nil {
