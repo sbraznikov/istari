@@ -141,7 +141,27 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 	if size != "" && s.MaxSize != "" && slices.Index(core.Sizes(), size) > slices.Index(core.Sizes(), s.MaxSize) && (res.Split == nil || len(res.Split.Tickets) == 0) {
 		return PlanResult{}, fmt.Errorf("plan: the ticket is %s, larger than max_size %s: it must be split into child tickets (split:)", size, s.MaxSize)
 	}
+	if res.Split != nil {
+		split := *res.Split
+		split.Tickets = slices.Clone(split.Tickets)
+		priority := tk.Priority
+		if priority == "" {
+			priority = core.DefaultPriority
+		}
+		for i, pt := range split.Tickets {
+			split.Tickets[i].Body = withTable(pt, priority, ref.Repo)
+		}
+		res.Split = &split
+	}
 	return res, nil
+}
+
+// withTable is a split child's body with the table of the ticket standard
+// at its end (spec 4.3): its type and size, the parent's priority and
+// repository.
+func withTable(pt tickets.PlanTicket, priority, repo string) string {
+	return strings.TrimRight(pt.Body, "\n") + "\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n" +
+		fmt.Sprintf("| %s | %s | %s | `%s` |\n", pt.Type, pt.Size, priority, repo)
 }
 
 // Record writes a checked plan: the plan entry, its seams as an assumption

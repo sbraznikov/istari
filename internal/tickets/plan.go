@@ -30,6 +30,10 @@ type PlanTicket struct {
 	Labels []string `yaml:"labels" json:"labels,omitempty"`
 	Needs  []string `yaml:"needs" json:"needs,omitempty"`
 	Parent string   `yaml:"parent" json:"parent,omitempty"`
+	// Type and Size are a split child's (spec 7.6): code writes them into the
+	// table of its body.
+	Type string `yaml:"type" json:"type,omitempty"`
+	Size string `yaml:"size" json:"size,omitempty"`
 }
 
 // ParsePlan reads a plan file.
