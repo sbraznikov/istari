@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -79,6 +78,10 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		return journal.Entry{}, &core.Error{Code: core.CodeInvalidState, Message: "nothing changed since the last checkpoint"}
 	}
 	entry.Commit = head[:min(12, len(head))]
+	checks, err := c.ws.checks(ctx, ws.Repo)
+	if err != nil {
+		return journal.Entry{}, err
+	}
 	var tests, gone []string // the slice's tests, as they are now; the test files it removed
 	if out, err := gitOut(ctx, run.Dir, "diff", "--name-status", "-M", prev, head); err == nil && out != "" {
 		for _, line := range strings.Split(out, "\n") {
@@ -87,13 +90,13 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Files = append(entry.Files, paths[len(paths)-1])
 			switch {
 			case status == "D":
-				if isTestFile(paths[0]) {
+				if checks.IsTest(paths[0]) {
 					gone = append(gone, paths[0])
 				}
-			case strings.HasPrefix(status, "R") && isTestFile(paths[0]):
+			case strings.HasPrefix(status, "R") && checks.IsTest(paths[0]):
 				gone = append(gone, paths[0])
 			}
-			if status != "D" && isTestFile(paths[len(paths)-1]) {
+			if status != "D" && checks.IsTest(paths[len(paths)-1]) {
 				tests = append(tests, paths[len(paths)-1])
 			}
 		}
@@ -108,10 +111,6 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		entry.Notes = append(entry.Notes, "no test change in this slice")
 	}
 
-	checks, err := c.ws.checks(ctx, ws.Repo)
-	if err != nil {
-		return journal.Entry{}, err
-	}
 	for _, name := range []string{"typecheck", "test"} {
 		if _, ok := checks.Get(name); !ok {
 			entry.Notes = append(entry.Notes, name+": no command in the main branch's "+pipeline.Path)
@@ -309,16 +308,4 @@ func checkEnv() []string {
 		}
 	}
 	return env
-}
-
-// isTestFile tells whether a path is a test by the usual conventions.
-func isTestFile(p string) bool {
-	base := path.Base(p)
-	for _, part := range strings.Split(path.Dir(p), "/") {
-		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" {
-			return true
-		}
-	}
-	return strings.Contains(base, "_test.") || strings.HasPrefix(base, "test_") || strings.Contains(base, ".test.") ||
-		strings.Contains(base, ".spec.") || strings.Contains(base, "_spec.")
 }

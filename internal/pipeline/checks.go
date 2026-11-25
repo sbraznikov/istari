@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 )
@@ -38,6 +39,54 @@ func (c Checks) Get(name string) (Check, bool) {
 		return Check{}, false
 	}
 	return c.List[i], true
+}
+
+// IsTest tells whether a path from the repository root is a test file: one
+// that matches a pattern of test_files, or without them one by the usual
+// conventions (spec section 12).
+func (c Checks) IsTest(p string) bool {
+	if len(c.TestFiles) == 0 {
+		return conventionalTest(p)
+	}
+	for _, pattern := range c.TestFiles {
+		if globMatch(strings.Split(pattern, "/"), strings.Split(p, "/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// conventionalTest tells whether a path is a test by the usual conventions.
+func conventionalTest(p string) bool {
+	base := path.Base(p)
+	for _, part := range strings.Split(path.Dir(p), "/") {
+		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" {
+			return true
+		}
+	}
+	return strings.Contains(base, "_test.") || strings.HasPrefix(base, "test_") || strings.Contains(base, ".test.") ||
+		strings.Contains(base, ".spec.") || strings.Contains(base, "_spec.")
+}
+
+// globMatch matches path segments against pattern segments: "**" matches any
+// number of segments, any other segment as path.Match does.
+func globMatch(pattern, segments []string) bool {
+	if len(pattern) == 0 {
+		return len(segments) == 0
+	}
+	if pattern[0] == "**" {
+		for i := 0; i <= len(segments); i++ {
+			if globMatch(pattern[1:], segments[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(segments) == 0 {
+		return false
+	}
+	ok, err := path.Match(pattern[0], segments[0])
+	return ok && err == nil && globMatch(pattern[1:], segments[1:])
 }
 
 // builtin are the checks code knows by name, in order, with when they run

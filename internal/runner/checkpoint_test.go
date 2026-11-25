@@ -347,6 +347,38 @@ func TestACheckAtPRDoesNotRunAtACheckpoint(t *testing.T) {
 	}
 }
 
+func TestTestFilesDecideWhatCountsAsATest(t *testing.T) {
+	t.Parallel()
+	const checks = `[checks]
+typecheck = "true"
+test = "for t in $(find . -name '*.check.ts'); do sh $t || exit 1; done"
+test_files = ["**/*.check.ts"]
+`
+	f := newCheckpointsWith(t, checks)
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "feature\n")
+	write(t, filepath.Join(f.ws.Dir, "src", "a.check.ts"), "test -f feature.txt\n")
+	write(t, filepath.Join(f.ws.Dir, "tests", "helper.sh"), "true\n") // no test by test_files
+	c := f.checkpoint(t, "A check.ts test")
+	if notes := strings.Join(c.Notes, " "); strings.Contains(notes, "no test change") || c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v notes %v, want a.check.ts counted and verify_red green", c.Checks, c.Notes)
+	}
+	write(t, filepath.Join(f.ws.Dir, "src", "b.check.ts"), "true\n")
+	c = f.checkpoint(t, "A vacuous check.ts test")
+	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "not counted") || !strings.Contains(notes, "src/b.check.ts") {
+		t.Fatalf("notes = %v, want verify_red to have run b.check.ts on the previous code", c.Notes)
+	}
+	write(t, filepath.Join(f.ws.Dir, "tests", "other.sh"), "true\n")
+	if c := f.checkpoint(t, "Not a test here"); !strings.Contains(strings.Join(c.Notes, " "), "no test change") {
+		t.Fatalf("notes = %v, want tests/other.sh not counted as a test", c.Notes)
+	}
+
+	plain := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nverify_red = false\n")
+	write(t, filepath.Join(plain.ws.Dir, "foo_test.go"), "package foo\n")
+	if c := plain.checkpoint(t, "A Go test"); strings.Contains(strings.Join(c.Notes, " "), "no test change") {
+		t.Fatalf("notes = %v, want foo_test.go counted without test_files", c.Notes)
+	}
+}
+
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
 	t.Parallel()
 	f := newCheckpoints(t)
