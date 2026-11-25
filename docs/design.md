@@ -322,10 +322,15 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 **Admission.** Meeting the standard is not yet permission to work: otherwise anyone who can create an issue would be launching agents. Transition T2 requires one of the following conditions:
 
 - the ticket author is a trusted member of the project;
-- the ticket was created by an agent while working on an already admitted ticket; it inherits the parent's admission and budget;
+- the ticket was created by an agent while working on an already admitted ticket, as a child of a split (T5) or filed during the work; it inherits the parent's admission, and its budget as below;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
+
+**Which tickets inherit the budget.** Admission is always inherited; the budget is not:
+
+- A child of a split has a budget of its own, by its own size from `budget_usd` (section 4.7). The parent was split because it is too large to work on, and `XL` has no budget. What the planner spent on the parent stays on the parent and does not count against the children.
+- A ticket an agent files while working on another ticket (a dependency, a problem found on the way) shares the budget of the ticket it was filed from: the runs of both count against one budget, of that ticket's size. An agent cannot escape its budget by filing tickets. A ticket filed while working on a child of a split shares that child's budget.
 
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
@@ -767,7 +772,8 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 ### 7.5 Budgets and loop protection
 
 - Per-run limits: time, tokens, cost. Per ticket: total cost (budget by size, section 4.7), number of attempts, number of review rounds.
-- Exceeding a limit moves the task to `blocked --kind budget_exceeded` and requires a human decision.
+- Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
+- Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - Global concurrency limits: per project, per role, for the whole installation.
 - `istari pause --all` stops handing out tasks; running runs finish gracefully.
 
