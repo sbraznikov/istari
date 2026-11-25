@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -865,6 +866,160 @@ func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
 	}
 	if tk.State != core.TicketInReview || tk.Hold != "" {
 		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review, no verdict and no hold", tk.State, tk.Hold)
+	}
+}
+
+// conflictFixture is an engine whose PR watch reports the pull requests in
+// dirty (ticket → head) in conflict with main, with its ticket in_review.
+type conflictFixture struct {
+	*engineFixture
+	dirty   map[string]string
+	ci      map[string]string
+	reports reports
+	journal *journal.Journal
+}
+
+func inReviewWithConflicts(t *testing.T, defaults config.Defaults) *conflictFixture {
+	t.Helper()
+	c := &conflictFixture{dirty: map[string]string{}, ci: map[string]string{}, reports: reports{}}
+	c.engineFixture = newEngine(t, defaults, nil)
+	c.journal = journal.New(nil, c.store, nil)
+	checks := func(_ context.Context, ref string) (string, bool) { s, ok := c.ci[ref]; return s, ok }
+	conflict := func(_ context.Context, ref string) (string, bool, error) { h, ok := c.dirty[ref]; return h, ok, nil }
+	c.engine = pipeline.NewEngine(c.tasks, c.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Review: c.reports.of, Journal: c.journal, Conflict: conflict})
+	c.readyTicket(t, ref)
+	c.reconcile(t)
+	c.finish(t, ref, "plan", "agent:planner-1")
+	c.reconcile(t)
+	c.finish(t, ref, "implement", "agent:implementer-1")
+	c.ci[ref] = "success"
+	c.reconcile(t)
+	if st := c.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("the ticket is %s, want in_review", st)
+	}
+	return c
+}
+
+// review completes the latest review with findings and reconciles.
+func (c *conflictFixture) review(t *testing.T, findings int) {
+	t.Helper()
+	c.reports[c.stage(t, ref, "review").ID] = findings
+	c.finish(t, ref, "review", "agent:reviewer-1")
+	c.reconcile(t)
+}
+
+// lastTrigger returns the trigger of the ticket's latest transition.
+func (c *conflictFixture) lastTrigger(t *testing.T) string {
+	t.Helper()
+	events, err := c.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: "ticket.transitioned"}, 0)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("transitions: %v, %v", events, err)
+	}
+	var p struct{ Trigger string }
+	if err := json.Unmarshal(events[len(events)-1].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Trigger
+}
+
+// notesNaming returns the ticket's journal notes that contain text.
+func (c *conflictFixture) notesNaming(t *testing.T, text string) []string {
+	t.Helper()
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := c.journal.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, en := range entries {
+		if en.Kind == journal.Note && strings.Contains(en.Text, text) {
+			out = append(out, en.Text)
+		}
+	}
+	return out
+}
+
+func (c *conflictFixture) taskCount(t *testing.T) int {
+	t.Helper()
+	all, err := c.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(all)
+}
+
+// assertConflictRound checks that the ticket returned by merge_failed with
+// a ready implement in round 2 after the completed one, a journal note that
+// names the head once, and that reconciling again changes nothing.
+func (c *conflictFixture) assertConflictRound(t *testing.T, head string) {
+	t.Helper()
+	if st, tr := c.state(t, ref), c.lastTrigger(t); st != core.TicketInProgress || tr != "merge_failed" {
+		t.Fatalf("with a conflict the ticket is %s by %s, want in_progress by merge_failed (T10)", st, tr)
+	}
+	impl := c.stage(t, ref, "implement")
+	if pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady || len(impl.Needs) != 1 || pipeline.RoundOf(core.Task{ID: impl.Needs[0]}) != 1 {
+		t.Fatalf("implement = %+v (round %d), want a ready round 2 after round 1's", impl, pipeline.RoundOf(impl))
+	}
+	if notes := c.notesNaming(t, head); len(notes) != 1 {
+		t.Fatalf("notes naming %s = %q, want one", head, notes)
+	}
+	tasks := c.taskCount(t)
+	c.reconcile(t)
+	if st, n, notes := c.state(t, ref), c.taskCount(t), c.notesNaming(t, head); st != core.TicketInProgress || n != tasks || len(notes) != 1 {
+		t.Fatalf("a second reconcile: %s, %d tasks (was %d), %d notes; want nothing new", st, n, tasks, len(notes))
+	}
+}
+
+func TestAPullRequestInConflictReturnsAnAwaitingApprovalTicketForRework(t *testing.T) {
+	t.Parallel()
+	c := inReviewWithConflicts(t, config.Defaults{})
+	c.review(t, 0)
+	if st := c.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("the ticket is %s without a conflict, want awaiting_approval", st)
+	}
+	approve, merge := c.stage(t, ref, "approve"), c.stage(t, ref, "merge")
+	c.dirty[ref] = "h1"
+	c.reconcile(t)
+	for _, id := range []string{approve.ID, merge.ID} {
+		if task, _ := c.tasks.Get(ctx, id); task.State != core.TaskCanceled {
+			t.Fatalf("%s is %s, want canceled", id, task.State)
+		}
+	}
+	c.assertConflictRound(t, "h1")
+}
+
+func TestAPullRequestInConflictReturnsAnInReviewTicketAndEndsItsReview(t *testing.T) {
+	t.Parallel()
+	c := inReviewWithConflicts(t, config.Defaults{})
+	review := c.stage(t, ref, "review")
+	c.dirty[ref] = "h1"
+	c.reconcile(t)
+	if task, _ := c.tasks.Get(ctx, review.ID); task.State != core.TaskCanceled {
+		t.Fatalf("the open review is %s, want canceled", task.State)
+	}
+	c.assertConflictRound(t, "h1")
+}
+
+func TestAConflictRoundDoesNotCountAgainstMaxReviewRounds(t *testing.T) {
+	t.Parallel()
+	c := inReviewWithConflicts(t, config.Defaults{MaxReviewRounds: 2})
+	c.dirty[ref] = "h1"
+	c.reconcile(t) // round 2, a conflict round
+	delete(c.dirty, ref)
+	c.finish(t, ref, "implement", "agent:implementer-1") // the conflict is resolved and pushed
+	c.reconcile(t)
+	if st := c.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("after the conflict round the ticket is %s, want in_review", st)
+	}
+	c.review(t, 1)
+	if st, hold := c.state(t, ref), c.hold(t, ref); st != core.TicketInProgress || hold != "" {
+		t.Fatalf("findings in the first review round after a conflict round: %s, hold %q; want in_progress for rework", st, hold)
+	}
+	if impl := c.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 3 {
+		t.Fatalf("the rework is round %d, want 3", pipeline.RoundOf(impl))
 	}
 }
 
