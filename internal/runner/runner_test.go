@@ -15,6 +15,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/harness/claudecode"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -588,6 +589,45 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 	}
 	if slices.Contains(got, "Bash(curl *)") {
 		t.Errorf("allowed tools = %q, want no command from the ticket's branch", got)
+	}
+}
+
+func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
+	for i, role := range []string{"refiner", "planner", "implementer", "reviewer"} {
+		t.Run(role, func(t *testing.T) {
+			f := newRunner(t, runner.RunnerOptions{})
+			seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./... -short\"\n")
+			profile := claudecode.DefaultProfiles()[role]
+			profile.Harness = f.h.name
+			f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
+				runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Slots: []runner.Slot{{Profile: role + "-1", Role: role, Harness: profile}}})
+			tk := f.ticket(t, 20+i, "Brief me")
+			if role != "refiner" {
+				f.fire(t, tk.Ref, "accept", "start")
+			}
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: role}); err != nil {
+				t.Fatal(err)
+			}
+			f.start(t)
+			s := f.session(t)
+			commands := 0
+			for _, tool := range s.spec.AllowedTools {
+				cmd, ok := strings.CutPrefix(tool, "Bash(")
+				if !ok {
+					continue
+				}
+				commands++
+				if want := "- `" + strings.TrimSuffix(cmd, ")") + "`\n"; !strings.Contains(s.spec.Brief, want) {
+					t.Errorf("the brief does not list %s, which the harness allows", tool)
+				}
+			}
+			if commands == 0 {
+				t.Fatalf("allowed tools = %q, want shell commands to check", s.spec.AllowedTools)
+			}
+			if role == "implementer" && !strings.Contains(s.spec.Brief, "- `go test *`\n") {
+				t.Error("the implementer's brief does not list the check command go test")
+			}
+		})
 	}
 }
 
