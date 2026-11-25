@@ -120,12 +120,21 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 		}
 	}
 	out, _ := os.ReadFile(log)
+	// ended is how each run ended and the daemon's log, for a failure.
+	ended := func() string {
+		var runs []struct {
+			State  string `json:"state"`
+			Reason string `json:"reason"`
+		}
+		d.mustCLI(t, &runs, "run", "list")
+		return fmt.Sprintf("runs: %+v\ndaemon:\n%s", runs, d.stderr)
+	}
 	submits := strings.Split(string(out), "--- submit")
 	if len(submits) != 3 || !strings.Contains(submits[1], "child half") || !strings.Contains(submits[1], "no size") {
-		t.Fatalf("the first submission's answer:\n%s\nwant the child's key and its missing size", out)
+		t.Fatalf("the first submission's answer:\n%s\nwant the child's key and its missing size\n%s", out, ended())
 	}
 	if gh.IssueCount() != 2 || !strings.HasSuffix(gh.Issue(2).Body, "| feature | S | P2 | `"+githubtest.Repo+"` |\n") {
-		t.Fatalf("issues %d, the child %+v; want one child with its table", gh.IssueCount(), gh.Issue(2))
+		t.Fatalf("issues %d, the child %+v; want one child with its table\n%s", gh.IssueCount(), gh.Issue(2), ended())
 	}
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		var parent struct {
@@ -144,7 +153,7 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the parent is %s, want in_progress: the second plan split it\nagent log:\n%s", parent.State, out)
+			t.Fatalf("the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
 		}
 	}
 }
