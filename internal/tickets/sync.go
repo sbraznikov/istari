@@ -433,8 +433,13 @@ func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport
 }
 
 // closedState is the state of a closed issue without an istari state label,
-// from how it was closed.
+// from how it was closed: not planned or a duplicate is canceled; completed,
+// or no reason (an issue closed before trackers recorded one), is done.
 func closedState(closedAs string) core.TicketState {
+	switch closedAs {
+	case "not_planned", "duplicate":
+		return core.TicketCanceled
+	}
 	return core.TicketDone
 }
 

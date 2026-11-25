@@ -460,6 +460,8 @@ func TestAClosedNeedIstariNeverTrackedComesInFinished(t *testing.T) {
 		want   core.TicketState
 	}{
 		{"completed", core.TicketDone},
+		{"not_planned", core.TicketCanceled},
+		{"duplicate", core.TicketCanceled},
 	} {
 		t.Run(c.reason, func(t *testing.T) {
 			t.Parallel()
