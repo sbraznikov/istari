@@ -214,3 +214,22 @@ func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchem
 		t.Errorf("a file of the zone is marked outside it:\n%s", b)
 	}
 }
+
+func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T) {
+	in := briefInput()
+	in.Role = "reviewer"
+	in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go"}}
+	b := runner.Brief(in)
+	colon := false
+	for _, key := range []string{"standards", "spec"} {
+		_, rest, ok := strings.Cut(b, "\n"+key+": \"")
+		value, _, closed := strings.Cut(rest, "\"")
+		if !ok || !closed || strings.Contains(value, "\n") {
+			t.Errorf("the schema does not show %s: with a quoted value:\n%s", key, b)
+		}
+		colon = colon || strings.Contains(value, ": ")
+	}
+	if !colon {
+		t.Errorf("no quoted summary line of the schema contains \": \":\n%s", b)
+	}
+}

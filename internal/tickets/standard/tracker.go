@@ -40,7 +40,7 @@ func (f ForTracker) Check(ctx context.Context, repo string, t tickets.Ticket) (t
 	if err != nil {
 		return tickets.Conformance{}, err
 	}
-	conf := tickets.Conformance{Hash: Hash(std, t.Body)}
+	conf := tickets.Conformance{Hash: Hash(std, t.Body), Priority: res.TablePriority}
 	for _, d := range res.Deviations {
 		conf.Deviations = append(conf.Deviations, d.Rule+": "+d.Message)
 	}

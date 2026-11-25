@@ -1,6 +1,7 @@
 package tickets_test
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +108,41 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 	}
 	if tk := f.ticket(t, other); tk.State != "new" || tk.BudgetOf != "" {
 		t.Fatalf("a ticket without an admitted parent = %+v", tk)
+	}
+}
+
+func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t *testing.T) {
+	f := newSync(t)
+	parent := f.gh.Seed("Parent", withTablePriority("P0"), "alex")
+	f.run(t)
+	plain := f.gh.Seed("Child", withTablePriority(""), "alex")
+	own := f.gh.Seed("Child with its own", withTablePriority("P2"), "alex")
+	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: plain}, {Provider: "gh", Repo: githubtest.Repo, Number: own}}
+	if err := f.sync.Created(ctx, refs, ghRef(parent)); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	if tk := f.ticket(t, plain); tk.State != "ready" || tk.Priority != "P0" {
+		t.Fatalf("child without a table priority = %s %q, want ready and the parent's P0", tk.State, tk.Priority)
+	}
+	if !slices.Contains(f.gh.Issue(plain).Labels, "priority:P0") {
+		t.Fatalf("labels = %v, want priority:P0", f.gh.Issue(plain).Labels)
+	}
+	if tk := f.ticket(t, own); tk.Priority != "P2" {
+		t.Fatalf("child whose table says P2 = %q, want P2", tk.Priority)
+	}
+}
+
+func TestATicketIstariCreatesGetsItsTablesPriorityAtOnce(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Created by istari ticket create", conforming, "carol") // not trusted: it stays new
+	if err := f.sync.Created(ctx, []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: n}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, n); tk.State != "new" || tk.Priority != "P1" {
+		t.Fatalf("ticket = %s %q, want new and P1 from its table", tk.State, tk.Priority)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", f.gh.Issue(n).Labels)
 	}
 }
 
