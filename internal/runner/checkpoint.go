@@ -45,6 +45,38 @@ func NewCheckpoints(ws *Workspaces, j *journal.Journal, tokens vcs.Tokens) *Chec
 // must fail; the branch is pushed; the entry records the commit, the real
 // results, the changed files and what code found.
 func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journal.Entry, error) {
+	e, _, err := c.make(ctx, ctx, run, message)
+	return e, err
+}
+
+// make is Make with the commit and the checks under ctx and the push and the
+// journal entry under sending: once the push has begun, the remote may have
+// taken it, so the checkpoint is finished. pushing reports that it began.
+func (c *Checkpoints) make(ctx, sending context.Context, run Run, message string) (e journal.Entry, pushing bool, err error) {
+	e, err = c.check(ctx, run, message)
+	if err != nil {
+		return journal.Entry{}, false, err
+	}
+	ref, err := tickets.ParseRef(run.Ticket)
+	if err != nil {
+		return journal.Entry{}, false, err
+	}
+	ws, err := c.ws.Get(sending, run.Ticket)
+	if err != nil {
+		return journal.Entry{}, false, err
+	}
+	if err := c.push(sending, ws, run.Dir); err != nil {
+		return journal.Entry{}, true, err
+	}
+	if err := c.journal.Append(sending, ref, e); err != nil {
+		return journal.Entry{}, true, err
+	}
+	return e, true, nil
+}
+
+// check commits the leftovers, runs the checks and returns the entry to
+// record once the commit is pushed.
+func (c *Checkpoints) check(ctx context.Context, run Run, message string) (journal.Entry, error) {
 	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
 		return journal.Entry{}, err
@@ -145,21 +177,19 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
 		}
 	}
-
-	if err := c.push(ctx, ws, run.Dir); err != nil {
+	if err := ctx.Err(); err != nil {
+		// A check cut short by ctx is not a red one.
 		return journal.Entry{}, err
 	}
-	e := journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry}
-	if err := c.journal.Append(ctx, ref, e); err != nil {
-		return journal.Entry{}, err
-	}
-	return e, nil
+	return journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry}, nil
 }
 
 // MakeWithin makes a stopping run's checkpoint within limit (spec section
-// 4.2). Past the limit the checkpoint is abandoned: a commit it made of the
-// leftovers is undone, nothing is pushed, the work stays uncommitted in the
-// worktree, and a journal note names the limit.
+// 4.2). The limit bounds the commit and the checks: a checkpoint whose push
+// has begun is finished, since the remote may have taken it. Past the limit
+// before that, the checkpoint is abandoned: a commit it made of the leftovers
+// is undone, nothing is pushed, the work stays uncommitted in the worktree,
+// and a journal note names the limit.
 func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run Run, message string) (journal.Entry, error) {
 	before, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
 	if err != nil {
@@ -167,8 +197,8 @@ func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run R
 	}
 	limited, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	e, err := c.Make(limited, run, message)
-	if err == nil || !errors.Is(limited.Err(), context.DeadlineExceeded) {
+	e, pushing, err := c.make(limited, ctx, run, message)
+	if err == nil || pushing || !errors.Is(limited.Err(), context.DeadlineExceeded) {
 		return e, err
 	}
 	if head, herr := gitOut(ctx, run.Dir, "rev-parse", "HEAD"); herr == nil && head != before {

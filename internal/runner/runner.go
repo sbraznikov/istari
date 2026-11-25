@@ -510,11 +510,17 @@ loop:
 	}
 	<-streamed
 
-	// The task stays this run's until its checkpoint and its end are
-	// recorded: a stop checkpoint may outlast the lease (spec section 4.2).
-	ended, unheld := r.holdLease(bg, lease)
-	defer unheld()
-	if end != nil && end.save && r.opts.Checkpoints != nil && slot.Role == "implementer" {
+	// A stopping run's task stays this run's until its checkpoint and its
+	// end are recorded: a stop checkpoint may outlast the lease (spec
+	// section 4.2).
+	stopping := end != nil && end.save
+	ended := func() (core.Lease, error) { return lease, nil }
+	if stopping {
+		held, unheld := r.holdLease(bg, lease)
+		defer unheld()
+		ended = held
+	}
+	if stopping && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
 		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, run, end.reason+"; continue from here"); err != nil {
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)

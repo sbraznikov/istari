@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -436,12 +435,20 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 }
 
 // pausedWithSlowChecks starts a run of ticket #n whose main branch's
-// typecheck is check, writes a file in its worktree and pauses the ticket. It
-// returns the session and the task.
-func pausedWithSlowChecks(t *testing.T, n int, check string, opts runner.RunnerOptions) (*runFixture, fakeSession, core.Task) {
+// typecheck is check, writes a file in its worktree and pauses the ticket.
+// received, when not "", is the remote's post-receive hook: it runs after
+// the remote took the push and before the push returns. It returns the
+// session and the task.
+func pausedWithSlowChecks(t *testing.T, n int, check, received string, opts runner.RunnerOptions) (*runFixture, fakeSession, core.Task) {
 	t.Helper()
 	f := newRunner(t, runner.RunnerOptions{Lease: opts.Lease})
 	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntypecheck = \""+check+"\"\ntest = \"true\"\nverify_red = false\n")
+	if received != "" {
+		hook := filepath.Join(f.root, "remotes", "acme", "web.git", "hooks", "post-receive")
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\n"+received+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	opts.DataDir, opts.Projects = f.data, []string{"web"}
 	opts.Slots = []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}}
@@ -460,7 +467,7 @@ func pausedWithSlowChecks(t *testing.T, n int, check string, opts runner.RunnerO
 }
 
 func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
-	f, s, task := pausedWithSlowChecks(t, 17, "sleep 1", runner.RunnerOptions{Lease: 300 * time.Millisecond})
+	f, s, task := pausedWithSlowChecks(t, 17, "sleep 1", "", runner.RunnerOptions{Lease: 300 * time.Millisecond})
 	// The scheduler expires leases on its ticks; here the test does.
 	for deadline := time.Now().Add(10 * time.Second); len(f.events(t, "task.released")) == 0; {
 		if time.Now().After(deadline) {
@@ -486,7 +493,7 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 }
 
 func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
-	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", runner.RunnerOptions{Lease: 300 * time.Millisecond, StopCheckpoint: time.Second})
+	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", "", runner.RunnerOptions{Lease: 300 * time.Millisecond, StopCheckpoint: time.Second})
 	head := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"))
 	paused := time.Now()
 	f.waitTask(t, task.ID, core.TaskReady)
@@ -502,8 +509,12 @@ func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *t
 	}
 	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
 	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
-	if files, _ := exec.Command("git", "-C", remote, "ls-tree", "--name-only", branch).Output(); strings.Contains(string(files), "paused-work.txt") {
-		t.Errorf("the remote branch has %q, want nothing pushed", files)
+	// for-each-ref lists nothing, and does not fail, when nothing ever
+	// pushed the branch.
+	if pushed := gitIn(t, remote, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch); pushed != "" {
+		if files := gitIn(t, remote, "ls-tree", "--name-only", "refs/heads/"+branch); strings.Contains(files, "paused-work.txt") {
+			t.Errorf("the remote branch has %q, want nothing pushed", files)
+		}
 	}
 	if events := f.events(t, "journal.checkpoint"); len(events) != 0 {
 		t.Errorf("checkpoints = %d, want none for an abandoned one", len(events))
@@ -522,6 +533,25 @@ func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *t
 	}
 	if !noted {
 		t.Fatalf("journal = %+v, want a note naming the limit and the uncommitted work", entries)
+	}
+}
+
+func TestAStopCheckpointWhosePushOutlastsItsLimitIsKept(t *testing.T) {
+	// The remote takes the push at once and answers after the limit: what
+	// it took is the checkpoint, not abandoned work.
+	f, s, task := pausedWithSlowChecks(t, 19, "true", "sleep 4", runner.RunnerOptions{Lease: 300 * time.Millisecond, StopCheckpoint: 2 * time.Second})
+	f.waitTask(t, task.ID, core.TaskReady)
+	f.waitEvent(t, "run.exited")
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
+		t.Fatalf("checkpoints = %d, want the pushed one", len(events))
+	}
+	if status := gitIn(t, s.spec.Workdir, "status", "--porcelain"); status != "" {
+		t.Errorf("git status = %q, want the work committed", status)
+	}
+	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
+	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
+	if head, pushed := gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"), gitIn(t, remote, "rev-parse", "refs/heads/"+branch); head != pushed {
+		t.Errorf("remote branch = %s, want the worktree's HEAD %s", pushed, head)
 	}
 }
 
