@@ -912,8 +912,8 @@ func (s *Syncer) conformance(ctx context.Context, repo SyncRepo, t Ticket) (Conf
 
 // admission admits a new ticket that meets the standard (T2) when a trusted
 // member asked to, it inherits an admitted ticket's admission, or its author
-// admits it (see authorAdmits), and returns a ready ticket whose required sections
-// changed to new (T15).
+// admits it (see authorAdmits), and returns a ready ticket whose required
+// sections changed to new (T15).
 func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	if s.opts.Standards == nil || x.tk.Hold != "" {
 		return nil
