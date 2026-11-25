@@ -119,6 +119,7 @@ func (d *daemon) call(t *testing.T, op string, req, resp any) {
 }
 
 func TestDaemonSocketIsPrivate(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	info, err := os.Stat(d.socket)
 	if err != nil {
@@ -130,6 +131,7 @@ func TestDaemonSocketIsPrivate(t *testing.T) {
 }
 
 func TestASecondDaemonOnTheSameDataDirRefusesToStart(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	_, stderr, code := run(t, "daemon", "--config", d.config)
 	if code != 1 {
@@ -219,6 +221,7 @@ func createTicket(t *testing.T, d *daemon, ref string) {
 }
 
 func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	createTicket(t, d, "gh:acme/web#1")
 	first := readSSE(t, d.client, "http://istari/v1/events/stream", "", 1)
@@ -261,6 +264,7 @@ func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 }
 
 func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	// One connection: a first request proves the daemon accepted it, then a
 	// second request is still sending its body when SIGTERM arrives.
@@ -307,6 +311,7 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 }
 
 func TestDaemonInstallWritesTheUnitAndOnlyPrintsHowToEnableIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ kind, path, enable, contains string }{
 		{"launchd", "Library/LaunchAgents/dev.istari.daemon.plist", "launchctl", "<string>daemon</string>"},
 		{"systemd", ".config/systemd/user/istari.service", "systemctl --user enable", "ExecStart="},
@@ -333,6 +338,7 @@ func TestDaemonInstallWritesTheUnitAndOnlyPrintsHowToEnableIt(t *testing.T) {
 }
 
 func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	post := func(op, body string) (int, string) {
 		resp, err := d.client.Post("http://istari/v1/"+op, "application/json", strings.NewReader(body))
@@ -364,6 +370,7 @@ func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
 }
 
 func TestABadCursorIsABadRequest(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	for _, url := range []string{"http://istari/v1/events?after=garbage", "http://istari/v1/events/stream?after=garbage"} {
 		resp, err := d.client.Get(url)
@@ -378,6 +385,7 @@ func TestABadCursorIsABadRequest(t *testing.T) {
 }
 
 func TestWithoutAConfigFileTheDaemonUsesTheDefaultDataDir(t *testing.T) {
+	t.Parallel()
 	home := newDataDir(t)
 	cmd := exec.Command(binary, "daemon")
 	cmd.Env = append(os.Environ(), "HOME="+home)
@@ -399,6 +407,7 @@ func TestWithoutAConfigFileTheDaemonUsesTheDefaultDataDir(t *testing.T) {
 }
 
 func TestTheSystemdUnitEscapesSpecifiersAndVariables(t *testing.T) {
+	t.Parallel()
 	home := filepath.Join(t.TempDir(), "home")
 	cmd := exec.Command(binary, "daemon", "install", "--kind", "systemd", "--config", "/etc/100% $X.toml")
 	cmd.Env = append(os.Environ(), "HOME="+home)
@@ -412,6 +421,7 @@ func TestTheSystemdUnitEscapesSpecifiersAndVariables(t *testing.T) {
 }
 
 func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
@@ -436,6 +446,7 @@ func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
 }
 
 func TestTheUnitCarriesThePathOfTheShellThatInstalledIt(t *testing.T) {
+	t.Parallel()
 	path := "/opt/my tools/bin:/usr/bin:/bin" // where gh and claude are found
 	for _, tc := range []struct{ kind, file, want string }{
 		{"launchd", "Library/LaunchAgents/dev.istari.daemon.plist", "<key>PATH</key>\n      <string>" + path + "</string>"},

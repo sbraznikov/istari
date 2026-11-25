@@ -41,6 +41,7 @@ Limits protect the API.
 `
 
 func TestTicketCheckPrintsDeviationsAndExitsByThem(t *testing.T) {
+	t.Parallel()
 	repo := gitRepo(t, "git@github.com:acme/web.git", map[string]string{"go.mod": "module x\n"})
 	config := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(config, nil, 0o600); err != nil { // an installation with the defaults
@@ -68,6 +69,7 @@ func TestTicketCheckPrintsDeviationsAndExitsByThem(t *testing.T) {
 }
 
 func TestTicketCheckOfATrackerTicketWritesNothing(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "type:feature", "size:S", "priority:P1")
 	repo := gitRepo(t, "git@github.com:acme/web.git", map[string]string{"go.mod": "module x\n"})

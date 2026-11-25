@@ -882,7 +882,9 @@ The principle: less model, more deterministic code. The model is non-determinist
 | `istari pr open` | full suite | the PR is not opened |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
 
-The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter; it doubles the checkpoint time.
+The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter.
+
+That the previous code passes on its own is taken from the journal: the previous checkpoint's `test` result. Only when there is none, on the first slice of a branch or after a checkpoint without a `test` result, is the `test` command run on the previous code without the new tests first; if it fails there, red first cannot be judged and the entry says so. `verify_red` runs in a worktree of its own, one per ticket, at a fixed path next to the ticket's worktree, so the test caches of the toolchain, keyed by the path, stay warm between slices. Each use resets it to the previous checkpoint's commit and removes untracked files; it is removed together with the ticket's worktree. When the `test` command carries `{files}` or `{dirs}`, the run with the new tests fills them with the slice's test files, so only the new tests are judged; without them red first is judged on the exit code of the whole command, and the entry notes this.
 
 **Working with git.** The principle applies to the result, not to the commands. Git operations come in two kinds:
 

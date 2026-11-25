@@ -25,6 +25,7 @@ func tree(t *testing.T, files map[string]string) string {
 }
 
 func TestDetectLink(t *testing.T) {
+	t.Parallel()
 	component := map[string]map[string]string{
 		"go":     {"go.mod": "module github.com/acme/component\n\ngo 1.27\n"},
 		"npm":    {"package.json": `{"name": "@acme/component", "version": "1.4.0"}`},
@@ -50,6 +51,7 @@ func TestDetectLink(t *testing.T) {
 		{"nothing", "bare", map[string]string{"README.md": "a service\n"}, "acme/component", project.LinkNone, "merged", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			p := project.DetectLink(tree(t, tc.service), tree(t, component[tc.component]), "acme/service", tc.repo)
 			if p.Link != tc.link || p.DoneWhen != tc.doneWhen || p.SoftAvailable() != tc.softUsable || p.Evidence == "" && tc.link != project.LinkNone {
 				t.Fatalf("DetectLink = %+v (soft %v), want link %s, done_when %s, soft %v", p, p.SoftAvailable(), tc.link, tc.doneWhen, tc.softUsable)
@@ -59,6 +61,7 @@ func TestDetectLink(t *testing.T) {
 }
 
 func TestDetectLinkLooksBothWays(t *testing.T) {
+	t.Parallel()
 	// The component depends on the service: still a published package.
 	service := tree(t, map[string]string{"go.mod": "module github.com/acme/service\n"})
 	component := tree(t, map[string]string{"go.mod": "module github.com/acme/component\n\nrequire github.com/acme/service v2.0.1\n"})
@@ -68,6 +71,7 @@ func TestDetectLinkLooksBothWays(t *testing.T) {
 }
 
 func TestParseRemote(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"git@github.com:acme/web.git":           "acme/web",
 		"https://github.com/acme/web.git":       "acme/web",
@@ -85,6 +89,7 @@ func TestParseRemote(t *testing.T) {
 }
 
 func TestDetectLinkEdgeCases(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		primary, added map[string]string
@@ -107,6 +112,7 @@ func TestDetectLinkEdgeCases(t *testing.T) {
 			map[string]string{".gitmodules": "[submodule \"s\"]\n\turl = git@github.com:acme/service.git\n"}, project.LinkSubmodule, "merged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			p := project.DetectLink(tree(t, tc.primary), tree(t, tc.added), "acme/service", "acme/component")
 			if p.Link != tc.link || p.DoneWhen != tc.doneWhen {
 				t.Fatalf("DetectLink = %+v, want %s / %s", p, tc.link, tc.doneWhen)
@@ -116,6 +122,7 @@ func TestDetectLinkEdgeCases(t *testing.T) {
 }
 
 func TestParseRemoteRejectsLocalPaths(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"mirrors/acme/web", "../component.git", "acme/web"} {
 		if got, err := project.ParseRemote(path); err == nil {
 			t.Errorf("ParseRemote(%q) = %q, want an error", path, got)
