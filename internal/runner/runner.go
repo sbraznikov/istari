@@ -284,8 +284,9 @@ type ending struct {
 	save     bool // checkpoint the work before the task ends
 }
 
-// execute runs one claimed task to its end.
-func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
+// execute runs one claimed task to its end. startErr is why its harness did
+// not start, if it did not.
+func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (startErr error) {
 	// The task's fate is settled even when ctx ends meanwhile.
 	bg := context.WithoutCancel(ctx)
 	fail := func(reason string) {
@@ -418,9 +419,17 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	lease = renewed
 	sess, err := h.Start(bg, spec)
 	if err != nil {
+		// No agent ran: the task goes back without spending an attempt, after
+		// a wait for a binary being replaced to come back (spec section 4.2).
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
-		fail("the harness did not start: " + err.Error())
-		return
+		select {
+		case <-ctx.Done():
+		case <-time.After(r.opts.StartRetry):
+		}
+		if err := r.tasks.Release(bg, lease); err != nil {
+			log.Printf("istari: runner %s: release %s: %v", slot.Profile, lease.Task, err)
+		}
+		return err
 	}
 
 	stop := make(chan string, 1)
@@ -514,6 +523,7 @@ loop:
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
+	return nil
 }
 
 // outcome decides by the exit and istari complete (spec section 7.3): the
