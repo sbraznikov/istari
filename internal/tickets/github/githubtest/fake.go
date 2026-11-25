@@ -553,6 +553,17 @@ func (s *Server) HumanReopen(n int, login string) {
 	s.setState(s.issues[n], login, "open", "reopened")
 }
 
+// HumanMerge merges pull request pr as login on github.com. GitHub also
+// closes the issue the pull request names with `Closes #n`: a test does that
+// with HumanClose(n, login, "completed"), when its order needs it.
+func (s *Server) HumanMerge(pr int, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.issues[pr]
+	p.Merged, p.MergeMethod = true, "merge"
+	s.setState(p, login, "closed", "")
+}
+
 // HumanComment comments on an issue as login.
 func (s *Server) HumanComment(n int, login, body string) {
 	s.mu.Lock()

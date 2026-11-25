@@ -227,7 +227,8 @@ func reviewSection(r *ReviewInput) string {
 		}
 	}
 	b.WriteString("## Your result\n\nSubmit the report with `istari review submit --file - <<'EOF'` … `EOF` before `istari complete`:\n\n" +
-		"```yaml\nstandards: one line, the number of findings and the most serious one\nspec: one line, the number of findings and the most serious one\n" +
+		"```yaml\nstandards: \"1 finding; most serious: duplicated code\"  # one quoted line: the number of findings and the most serious one\n" +
+		"spec: \"0 findings\"  # the same for the spec; quote every value that contains \": \"\n" +
 		"findings:\n  - axis: standards | spec\n    kind: standard | smell  # standards; spec: missing | partial | wrong | extra\n" +
 		"    file: a path of the diff\n    line: a line of the new version the diff shows\n" +
 		"    source: ticket | instructions | the standard's path  # spec: ticket; standard: its standards file; smell: instructions\n" +

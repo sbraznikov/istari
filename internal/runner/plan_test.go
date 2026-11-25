@@ -64,6 +64,12 @@ func TestAPlanWithoutSeamsOrZoneIsRejected(t *testing.T) {
 	}
 }
 
+func TestAPlanWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	plan := "slices: [a]\nsummary: A cache: in front of the store\n"
+	_, err := runner.ParsePlanResult([]byte(plan))
+	refusesUnquotedColon(t, err, 2)
+}
+
 func TestAZonePathThatDoesNotExistAndIsNotNewIsRejected(t *testing.T) {
 	f := newPlans(t)
 	res, err := runner.ParsePlanResult([]byte(strings.Replace(goodPlan, "cache/cache.go,", "cache/missing.go,", 1)))
