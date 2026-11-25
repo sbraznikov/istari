@@ -111,6 +111,10 @@ var transitions = func() []transition {
 		{"T8", TicketInReview, "review_passed", TicketAwaitingApproval},
 		{"T9", TicketAwaitingApproval, "changes_requested", TicketInProgress},
 		{"T10", TicketAwaitingApproval, "merge_failed", TicketInProgress},
+		// T10 also returns a ticket in review whose PR is in conflict (spec
+		// 4.8). After T7, so that TriggerTo(in_review, in_progress) stays
+		// changes_requested.
+		{"T10", TicketInReview, "merge_failed", TicketInProgress},
 		{"T11", TicketAwaitingApproval, "merged", TicketDone},
 		{"T12", TicketInProgress, "children_done", TicketDone},
 		// T11 also finishes a ticket whose PR a human merged before the
