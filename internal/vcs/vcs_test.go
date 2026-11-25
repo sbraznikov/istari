@@ -209,6 +209,30 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	}
 }
 
+func TestAForcedPushAcceptsARemoteBranchItsCommitContains(t *testing.T) {
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	// Someone else moves the branch forward; the agent merges it in.
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
+	git(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	git(t, other, "push", "-q", "origin", own)
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "mine")
+	git(t, work, "fetch", "-q", "origin")
+	git(t, work, "merge", "-q", "--no-edit", "origin/"+own)
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("a forced push of a commit that contains the remote branch: %v", err)
+	}
+	if head, remoteHead := git(t, work, "rev-parse", "HEAD"), git(t, remote, "rev-parse", own); head != remoteHead {
+		t.Fatalf("remote %s, want %s", remoteHead, head)
+	}
+}
+
 func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	root, remote, work, spec := pushFixture(t)
 	elsewhere := filepath.Join(root, "elsewhere.git")

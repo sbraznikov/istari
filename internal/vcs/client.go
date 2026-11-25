@@ -371,7 +371,7 @@ type PushSpec struct {
 	Private  string // istari's private bare repository the push is made from
 	Own      string // the ticket's branch
 	Target   string // the branch asked for
-	Force    bool   // with a lease on what istari last pushed or saw
+	Force    bool   // with a lease on what istari last pushed or saw, or on a remote branch the pushed commit contains
 	Token    string
 }
 
@@ -381,8 +381,9 @@ type PushSpec struct {
 // made from it: istari fetches the commits into a private repository of its
 // own and pushes from there to the repository's URL, with no hooks and the
 // token in git's environment, not its arguments. A forced push leases on what
-// istari itself last pushed or saw, so work pushed by someone else is never
-// overwritten.
+// istari itself last pushed or saw, or on the remote branch as it is now when
+// the pushed commit already contains it, so work pushed by someone else is
+// never overwritten.
 func Push(ctx context.Context, p PushSpec) error {
 	refuse := func(format string, args ...any) error {
 		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf(format, args...)}
@@ -420,12 +421,20 @@ func Push(ctx context.Context, p PushSpec) error {
 	auth := authEnv(p.Token)
 	args := []string{"push", "--porcelain"}
 	if p.Force {
+		var current string
+		if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
+			current, _, _ = strings.Cut(out, "\t")
+		}
 		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
 		if err != nil {
 			// Nothing pushed from here yet: lease on the branch as it is now.
-			expected = ""
-			if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
-				expected, _, _ = strings.Cut(out, "\t")
+			expected = current
+		}
+		if current != "" && current != expected {
+			// Someone else moved the branch. A commit that contains it
+			// overwrites nothing; a commit missing here is not contained.
+			if _, err := run(nil, "merge-base", "--is-ancestor", current, work); err == nil {
+				expected = current
 			}
 		}
 		args = append(args, "--force-with-lease=refs/heads/"+p.Own+":"+expected)
