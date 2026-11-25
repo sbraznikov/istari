@@ -138,6 +138,33 @@ func TestASyncOfUnchangedIssuesMakesNoRequestThatCounts(t *testing.T) {
 	}
 }
 
+func TestATicketThatIsDoneIsNotReadAgain(t *testing.T) {
+	t.Parallel()
+	for _, state := range []core.TicketState{core.TicketDone, core.TicketCanceled} {
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			f := newSync(t)
+			n := f.gh.Seed("Finished work", "", "bob")
+			if _, err := f.tickets.Recover(ctx, "system", core.NewTicket{Ref: ghRef(n), Project: "web", Title: "Finished work", Author: "bob"}, state, ""); err != nil {
+				t.Fatal(err)
+			}
+			f.run(t) // closes the issue
+			if got := f.gh.Issue(n).State; got != "closed" {
+				t.Fatalf("issue state after the sync = %s, want closed", got)
+			}
+			before := len(f.gh.Counted())
+			f.run(t)
+			f.run(t)
+			issue := fmt.Sprintf("GET /repos/%s/issues/%d", githubtest.Repo, n)
+			for _, r := range f.gh.Counted()[before:] {
+				if strings.HasPrefix(r, issue) {
+					t.Errorf("a later sync asked %s, want no read of a %s ticket", r, state)
+				}
+			}
+		})
+	}
+}
+
 func TestIstarisOwnWritesDoNotCauseASecondTransition(t *testing.T) {
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob")
