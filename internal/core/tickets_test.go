@@ -477,7 +477,7 @@ func TestATicketThatIsMergedCancelsItsOpenTasks(t *testing.T) {
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.endingTicket(t, tickets)
-	for _, trigger := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+	for _, trigger := range toDone {
 		if _, err := tickets.Fire(ctx, "system", "gh:acme/web#1", trigger); err != nil {
 			t.Fatalf("%s: %v", trigger, err)
 		}

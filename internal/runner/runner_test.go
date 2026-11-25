@@ -434,6 +434,7 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 }
 
 func TestCancelingTheTicketStopsItsRunWithACheckpointAndTheTaskStaysCanceled(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
