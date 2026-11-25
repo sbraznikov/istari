@@ -154,7 +154,7 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 		if t.SHA != "" {
 			t.Replaced = t.SHA
 		}
-		t.Head, t.Checks, t.SHA = head, "", ""
+		t.Head, t.Checks, t.SHA, t.Pushed = head, "", "", w.clock().UTC()
 		data, _ := json.Marshal(t)
 		raw, _ := json.Marshal(map[string]any{"number": t.Number, "head": head})
 		_, err = w.store.Append(ctx, store.Event{Type: "vcs.pushed", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},

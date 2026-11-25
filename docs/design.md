@@ -209,7 +209,7 @@ any unfinished state ──► canceled ──► new (reopen)
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
-| `needs_input` | an agent asked a question and stopped | human, by replying in the thread |
+| `needs_input` | an agent asked a question and stopped, or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
@@ -259,6 +259,7 @@ Rules:
 
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
+- A PR without CI: when the PR's head commit still has no checks (no check runs, no commit statuses) 10 minutes after istari's last push to it, the repository is read as having no CI, and the ticket gets the hold `needs_input` in `in_progress` instead of waiting silently. The full suite that `istari pr open` runs is not taken as the CI result: auto-merge (section 4.8) is tied to CI. A human adds CI (checks that appear later replace "no checks", and verify goes on once the hold is cleared), merges by hand (T11), or cancels; a hold cleared while there are still no checks is set again.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 

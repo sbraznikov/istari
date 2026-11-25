@@ -462,6 +462,7 @@ func checksEvents(t *testing.T, s store.Store, ticket string) string {
 }
 
 func TestAPullRequestWithoutChecksTenMinutesAfterItsPushHasNoCI(t *testing.T) {
+	t.Parallel()
 	gh, s, w, ticket, pr, now := noCIFixture(t)
 	gh.SetHeadSHA(pr.Number, "abc123") // no check runs, no statuses
 	*now = now.Add(9*time.Minute + 59*time.Second)
@@ -482,6 +483,43 @@ func TestAPullRequestWithoutChecksTenMinutesAfterItsPushHasNoCI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := checksEvents(t, s, ticket), "none@abc123"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPushRestartsTheNoCIWindowAndLaterChecksReplaceNone(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "old111")
+	*now = now.Add(10 * time.Minute)
+	if err := w.Poll(ctx); err != nil { // old111 has no CI
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Hour)
+	if err := w.Pushed(ctx, ticket, "new222"); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "new222")
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the push: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "in_progress"}) // CI was added
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@old111 none@new222 pending@new222 success@new222"; got != want {
 		t.Fatalf("checks events = %s, want %s", got, want)
 	}
 }

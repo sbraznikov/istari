@@ -34,8 +34,10 @@ type EngineOptions struct {
 	// "the plan is published in the ticket"); nil: the plan task's
 	// completion is enough.
 	HasPlan func(ctx context.Context, ref string) (bool, error)
-	// Checks tells the CI state of a ticket's pull request (pending, success
-	// or failure); ok is false while it has none. nil: CI is not watched.
+	// Checks tells the CI state of a ticket's pull request (pending, success,
+	// failure, or none: its head has had no checks for 10 minutes after
+	// istari's last push, spec 4.3); ok is false while it has no state yet.
+	// nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
@@ -459,7 +461,7 @@ func exhausted(ref string, all []core.Task) bool {
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):
 // green ends the pull request's draft, completes the verify task and fires
-// T6; red starts a rework round.
+// T6; red starts a rework round; no CI holds the ticket needs_input.
 func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state string) error {
 	v, ok := r.tasks[StageVerify]
 	if !ok || v.State != core.TaskReady { // the implementer is not done, or it was handled
@@ -490,6 +492,11 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
 			return nil // the ticket is held for a human
 		}
+		return err
+	case "none":
+		// No CI: a human adds it, merges by hand or cancels; the ticket
+		// does not wait silently.
+		_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 		return err
 	}
 	return nil
