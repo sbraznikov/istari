@@ -772,4 +772,23 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicket(t *testing.T) {
 	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
 		t.Fatalf("hold = %q after the last failed attempt, want attempts_exhausted", hold)
 	}
+	f.reconcile(t) // idempotent: a held ticket is not held again
+	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after a second reconcile, want attempts_exhausted", hold)
+	}
+}
+
+func TestATaskFailedBelowItsLimitDoesNotHoldTheTicket(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts-1)
+	f.reconcile(t)
+	if hold := f.hold(t, ref); hold != "" {
+		t.Fatalf("hold = %q after a failed attempt below the limit, want none", hold)
+	}
+	if plan := f.stage(t, ref, "plan"); plan.State != core.TaskReady {
+		t.Fatalf("plan is %s, want ready for its next attempt", plan.State)
+	}
 }
