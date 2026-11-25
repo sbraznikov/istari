@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func prFixture(t *testing.T, pipelineToml string) (*cpFixture, *githubtest.Serve
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, nil))
+	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, nil), f.tickets)
 }
 
 func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
@@ -51,6 +52,121 @@ func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"echo FULL SUITE BROKE; exit 1\"\n")
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
 		t.Fatalf("pr open with red full checks: %v", err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
+// loggedPrFixture runs full as the full check, logging the directory of each
+// run; runs returns the directories logged since its last call.
+func loggedPrFixture(t *testing.T, full string) (f *cpFixture, gh *githubtest.Server, prs *runner.PullRequests, runs func() []string) {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "runs.log")
+	f, gh, prs = prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"pwd -P >> "+log+"; "+full+"\"\n")
+	runs = func() []string {
+		data, _ := os.ReadFile(log)
+		os.Remove(log)
+		return strings.Fields(string(data))
+	}
+	return f, gh, prs, runs
+}
+
+func TestASecondPrOpenOnTheSameHeadAfterARedFullIsRefusedWithoutRunningAnyCheck(t *testing.T) {
+	t.Parallel()
+	f, gh, prs, runs := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil {
+		t.Fatal("pr open with red full checks was accepted")
+	}
+	runs()
+	head := strings.TrimSpace(gitIn(t, f.ws.Dir, "rev-parse", "--short=12", "HEAD"))
+	_, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err == nil || !strings.Contains(err.Error(), head) || !strings.Contains(err.Error(), "change the code") || !strings.Contains(err.Error(), "merge") {
+		t.Fatalf("a second pr open on %s: %v", head, err)
+	}
+	if got := runs(); len(got) != 0 {
+		t.Fatalf("the second pr open ran the full check in %v", got)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
+func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
+	t.Parallel()
+	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
+		t.Fatalf("pr open with red full checks: %v", err)
+	}
+	if got := f.elsewhere(t, runs()); len(got) != 1 {
+		t.Fatalf("the full check ran %d times outside the ticket's worktree (%v), want once on main", len(got), got)
+	}
+	main := strings.TrimSpace(gitIn(t, filepath.Join(f.root, "remotes", "acme", "web.git"), "rev-parse", "--short=12", "main"))
+	entries := prJournal(t, f)
+	last := entries[len(entries)-1].Checkpoint
+	if last == nil || last.Main == nil || last.Main.Commit != main || last.Main.Result != "green" {
+		t.Fatalf("the entry = %+v, want main %s green", last, main)
+	}
+	if tk, err := f.tickets.Get(ctx, f.tk.Ref); err != nil || tk.Hold != "" {
+		t.Fatalf("ticket = %+v, %v; want it not held", tk, err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
+func TestTheFullCheckRunsOnMainOncePerMainCommit(t *testing.T) {
+	t.Parallel()
+	f, _, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+	for _, attempt := range []string{"break it", "try again"} {
+		write(t, filepath.Join(f.ws.Dir, "broken"), attempt+"\n")
+		gitIn(t, f.ws.Dir, "add", ".")
+		gitIn(t, f.ws.Dir, "commit", "-q", "-m", attempt)
+		if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
+			t.Fatalf("%s: pr open: %v", attempt, err)
+		}
+	}
+	all := runs()
+	if got := f.elsewhere(t, all); len(got) != 1 || len(all) != 3 {
+		t.Fatalf("runs = %v; want two on the branch and one on main", all)
+	}
+	entries := prJournal(t, f)
+	if last := entries[len(entries)-1].Checkpoint; last == nil || last.Main == nil || last.Main.Result != "green" {
+		t.Fatalf("the second entry = %+v, want main's result again", last)
+	}
+}
+
+func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
+	t.Parallel()
+	f, gh, prs, _ := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
+	_, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err == nil || !strings.Contains(err.Error(), "end your run") {
+		t.Fatalf("pr open with a full check red on main too: %v", err)
+	}
+	main := strings.TrimSpace(gitIn(t, filepath.Join(f.root, "remotes", "acme", "web.git"), "rev-parse", "--short=12", "main"))
+	entries := prJournal(t, f)
+	var cp *journal.CheckpointEntry
+	var question string
+	for _, e := range entries {
+		if e.Checkpoint != nil {
+			cp = e.Checkpoint
+		}
+		if e.Kind == journal.Question {
+			question = e.Text
+		}
+	}
+	if cp == nil || cp.Main == nil || cp.Main.Commit != main || cp.Main.Result != "red" || !strings.Contains(cp.Main.Output, "FULL SUITE BROKE") ||
+		!strings.Contains(strings.Join(cp.Notes, "\n"), main) {
+		t.Fatalf("the entry = %+v, want main %s red with its output", cp, main)
+	}
+	if question != "main fails `full` at "+main {
+		t.Fatalf("question = %q", question)
+	}
+	if tk, err := f.tickets.Get(ctx, f.tk.Ref); err != nil || tk.Hold != "needs_input" {
+		t.Fatalf("ticket = %+v, %v; want it held needs_input", tk, err)
 	}
 	if gh.IssueCount() != 0 {
 		t.Fatal("a pull request was opened")
@@ -95,7 +211,7 @@ func TestPrOpenJournalsTheFullChecksItRan(t *testing.T) {
 		t.Fatal("pr open with red full checks was accepted")
 	}
 	entries := prJournal(t, f)
-	if len(entries) != 1 || entries[0].Checkpoint == nil || entries[0].Checkpoint.Checks["full"] != "red" || !strings.Contains(entries[0].Checkpoint.Failures["full"], "FULL SUITE BROKE") {
+	if len(entries) == 0 || entries[0].Checkpoint == nil || entries[0].Checkpoint.Checks["full"] != "red" || !strings.Contains(entries[0].Checkpoint.Failures["full"], "FULL SUITE BROKE") {
 		t.Fatalf("journal = %+v", entries)
 	}
 }
