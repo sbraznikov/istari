@@ -61,6 +61,7 @@ func lastMessage(t *testing.T, dir string) string {
 }
 
 func TestACommitInATicketWorktreeGetsTheTicketTrailerOnce(t *testing.T) {
+	t.Parallel()
 	main, wt := repoWithWorktree(t)
 	if err := runner.InstallTicketHook(context.Background(), wt, "gh:acme/web#7"); err != nil {
 		t.Fatalf("InstallTicketHook: %v", err)
@@ -90,6 +91,7 @@ func TestACommitInATicketWorktreeGetsTheTicketTrailerOnce(t *testing.T) {
 }
 
 func TestInstallingTheHookAgainKeepsOneTrailerAndTheRepositorysHooks(t *testing.T) {
+	t.Parallel()
 	main, wt := repoWithWorktree(t)
 	for range 2 { // a resumed ticket installs it again
 		if err := runner.InstallTicketHook(context.Background(), wt, "gh:acme/web#7"); err != nil {

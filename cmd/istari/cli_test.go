@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sbraznikov/istari/internal/core"
 )
 
 // cli runs istari against the daemon d.
@@ -195,6 +197,53 @@ func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 	d.mustCLI(t, &ticket, "ticket", "show", ref)
 	if ticket.Hold != "" {
 		t.Fatalf("after retry the hold is %s", ticket.Hold)
+	}
+}
+
+func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
+	t.Parallel()
+	ref := "gh:acme/web#5"
+	d := startPipelineDaemon(t, ref, nil) // the pipeline gives the ticket its tasks
+	hold := func() string {
+		var tk struct{ Hold string }
+		d.mustCLI(t, &tk, "ticket", "show", ref)
+		return tk.Hold
+	}
+	eventually := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(15 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s\nstderr: %s", what, d.stderr)
+			}
+		}
+	}
+
+	var l lease
+	for range core.DefaultMaxAttempts {
+		eventually("the plan task does not become ready", func() bool {
+			out, _, code := d.cli(t, "--json", "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
+			return code == 0 && json.Unmarshal([]byte(out), &l) == nil
+		})
+		if h := hold(); h != "" {
+			t.Fatalf("hold = %q below the attempt limit, want none", h)
+		}
+		d.mustCLI(t, nil, "task", "fail", l.Task, "--actor", l.Owner, "--token", l.Token, "--reason", "red")
+	}
+	eventually("the ticket is not held attempts_exhausted after the last failed attempt", func() bool { return hold() == "attempts_exhausted" })
+
+	d.mustCLI(t, nil, "ticket", "retry", ref)
+	var task struct{ State string }
+	d.mustCLI(t, &task, "task", "show", l.Task)
+	if task.State != "ready" {
+		t.Fatalf("after retry the plan task is %s, want ready", task.State)
+	}
+	if h := hold(); h != "" {
+		t.Fatalf("after retry the hold is %q", h)
+	}
+	// The ticket goes on: its planner can claim the plan task again.
+	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
+	if h := hold(); h != "" {
+		t.Fatalf("after the retried task was claimed the hold is %q", h)
 	}
 }
 

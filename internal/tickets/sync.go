@@ -42,6 +42,19 @@ type SyncRepo struct {
 	// Trusted are the logins admitted without a human, who may also admit
 	// others' tickets; empty means everyone with write access (spec 4.5).
 	Trusted []string
+	// LabelOnly reports whether the project admits tickets only by a trusted
+	// member's manual admission or by inheritance from an admitted ticket, so
+	// that a trusted author alone is not enough (admission = "label", spec 4.5).
+	LabelOnly bool
+}
+
+// authorAdmits tells whether the ticket's author alone admits it: the
+// project admits by author and the author is trusted.
+func (s *Syncer) authorAdmits(ctx context.Context, repo SyncRepo, author string) (bool, error) {
+	if repo.LabelOnly {
+		return false, nil
+	}
+	return s.trusted(ctx, repo, author)
 }
 
 // Standards checks tickets against their repository's ticket standard.
@@ -172,7 +185,11 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 	seen := map[string]bool{}
 	for _, t := range open {
 		seen[t.Ref.String()] = true
-		if err := s.reconcile(ctx, repo, t, report); err != nil {
+		err := s.reconcile(ctx, repo, t, report)
+		if err == nil {
+			err = s.closedNeeds(ctx, t.Ref.String(), report)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", t.Ref, err))
 		}
 	}
@@ -247,7 +264,7 @@ func (s *Syncer) Refinable(ctx context.Context, refText string) (bool, error) {
 	if sponsored, err := s.sponsored(ctx, repo, base); err != nil || sponsored {
 		return sponsored, err
 	}
-	return s.trusted(ctx, repo, tk.Author)
+	return s.authorAdmits(ctx, repo, tk.Author)
 }
 
 // sponsored tells whether a trusted member asked to admit the ticket and is
@@ -393,33 +410,50 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 	if err := s.reconcile(ctx, repo, t, report); err != nil {
 		return err
 	}
-	tk, err := s.tickets.Get(ctx, t.Ref.String())
+	return s.closedNeeds(ctx, t.Ref.String(), report)
+}
+
+// closedNeeds takes in the closed tickets that ticket ref needs and istari
+// does not have: an issue closed before istari was set up, or lost with its
+// database. Each comes in as done or canceled, so the hold waiting_dependency
+// on ref can end (spec section 4.1, T3); an open need is synced on its own.
+// A ticket istari does not have is skipped.
+func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport) error {
+	tk, err := s.tickets.Get(ctx, ref)
+	var coreErr *core.Error
+	if errors.As(err, &coreErr) && coreErr.Code == core.CodeNotFound {
+		return nil // left for recover
+	}
 	if err != nil {
 		return err
 	}
 	for _, need := range tk.Needs {
-		ref, err := ParseRef(need)
+		needRef, err := ParseRef(need)
 		if err != nil {
 			continue
 		}
 		if _, err := s.tickets.Get(ctx, need); err == nil {
 			continue
 		}
-		c, err := s.provider.Get(ctx, ref)
+		c, err := s.provider.Get(ctx, needRef)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if !c.Closed || !finished(c.State.State) {
+		if !c.Closed {
 			continue // an open need is recovered or synced on its own
 		}
-		cr, ok := s.repoOf(ref)
+		cr, ok := s.repoOf(needRef)
 		if !ok {
 			continue
 		}
-		if _, err := s.tickets.Recover(ctx, "system", core.NewTicket{Ref: need, Project: cr.Project, Title: c.Title, Author: c.Author, URL: c.URL}, c.State.State, ""); err != nil {
+		state := c.State.State
+		if !finished(state) {
+			state = closedState(c.ClosedAs)
+		}
+		if _, err := s.tickets.Recover(ctx, "system", core.NewTicket{Ref: need, Project: cr.Project, Title: c.Title, Author: c.Author, URL: c.URL}, state, ""); err != nil {
 			return err
 		}
 		if err := s.reconcile(ctx, cr, c, report); err != nil {
@@ -427,6 +461,19 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 		}
 	}
 	return nil
+}
+
+// closedState is the state of a closed issue without an istari state label,
+// from how it was closed, the reverse of spec section 4.1 (done closes as
+// completed, canceled as not planned): not planned or a duplicate is
+// canceled; completed, or no reason (an issue closed before trackers recorded
+// one), is done.
+func closedState(closedAs string) core.TicketState {
+	switch closedAs {
+	case "not_planned", "duplicate":
+		return core.TicketCanceled
+	}
+	return core.TicketDone
 }
 
 // parentOf is the ticket t's text names as its parent, or "".
@@ -971,9 +1018,10 @@ func (s *Syncer) conformance(ctx context.Context, repo SyncRepo, t Ticket) (Conf
 	return s.opts.Standards.Check(ctx, repo.Repo, t)
 }
 
-// admission admits a new ticket of a trusted author that meets the standard
-// (T2 by the system), and returns a ready ticket whose required sections
-// changed to new (T15).
+// admission admits a new ticket that meets the standard (T2) when a trusted
+// member asked to, it inherits an admitted ticket's admission, or its author
+// admits it (see authorAdmits), and returns a ready ticket whose required
+// sections changed to new (T15).
 func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	if s.opts.Standards == nil || x.tk.Hold != "" {
 		return nil
@@ -985,10 +1033,15 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil {
 			return err
 		}
-		if sponsored {
+		switch {
+		case sponsored:
 			actor = "human:" + x.base.Sponsor
-		} else if trusted, err := s.trusted(ctx, x.repo, x.t.Author); err != nil || !trusted {
-			return err
+		case x.tk.BudgetOf != "":
+			// an agent created it for an admitted ticket: it inherits that admission
+		default:
+			if admits, err := s.authorAdmits(ctx, x.repo, x.t.Author); err != nil || !admits {
+				return err
+			}
 		}
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil || len(conf.Deviations) > 0 {
