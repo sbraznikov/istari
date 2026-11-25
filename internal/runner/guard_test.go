@@ -11,6 +11,7 @@ import (
 )
 
 func TestGitInTheOwnWorktreeIsFreeAndWhatReachesBeyondItIsDenied(t *testing.T) {
+	t.Parallel()
 	const wt = "/data/workspaces/web/web/7"
 	for _, command := range []string{
 		"git rebase -i HEAD~3",
@@ -104,13 +105,14 @@ func TestGitInTheOwnWorktreeIsFreeAndWhatReachesBeyondItIsDenied(t *testing.T) {
 		"/data/repos/acme/web.git/worktrees/7/config.worktree": true,
 		"/home/me/web/.git/config":                             true,
 	} {
-		if err := runner.FileGuard(path); (err != nil) != denied {
+		if err := runner.FileGuard(path, ""); (err != nil) != denied {
 			t.Errorf("writing %s: %v, denied want %v", path, err, denied)
 		}
 	}
 }
 
 func TestEveryRunGetsTheGitGuardForItsOwnWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Guard: "/usr/local/bin/istari hook git-guard"})
 	f.readyTask(t, 3)
 	f.start(t)
@@ -122,6 +124,7 @@ func TestEveryRunGetsTheGitGuardForItsOwnWorktree(t *testing.T) {
 }
 
 func TestACheckpointOnAnotherBranchIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	gitIn(t, f.ws.Dir, "checkout", "-q", "-b", "elsewhere")
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
@@ -134,6 +137,7 @@ func TestACheckpointOnAnotherBranchIsRefused(t *testing.T) {
 }
 
 func TestPrOpenNeedsTheTicketBranchBasedOnTheCurrentMain(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
 	f.moveMain(t, map[string]string{"other.txt": "main moved\n"})
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "main") {
@@ -151,6 +155,7 @@ func TestPrOpenNeedsTheTicketBranchBasedOnTheCurrentMain(t *testing.T) {
 }
 
 func TestACheckpointBehindTheMainBranchSaysSo(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	f.moveMain(t, map[string]string{"other.txt": "main moved\n"})
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
@@ -161,6 +166,7 @@ func TestACheckpointBehindTheMainBranchSaysSo(t *testing.T) {
 }
 
 func TestTheAgentsGitAndGhSeeNoneOfTheUsersCredentials(t *testing.T) {
+	// Not parallel: sets the process environment's HOME.
 	home := t.TempDir()
 	write(t, filepath.Join(home, ".gitconfig"), "[credential]\n\thelper = store\n[url \"https://evil.example/\"]\n\tinsteadOf = https://github.com/\n")
 	t.Setenv("HOME", home)

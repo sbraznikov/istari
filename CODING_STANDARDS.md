@@ -83,6 +83,7 @@ Each rule says where it comes from: **[repo]** is a convention of this code base
 - **S7.9** A table test only when the cases share the same logic; cases are named, not indexed. [TC] [GSD]
 - **S7.10** In-process concurrency is tested without sleeping (`testing/synctest`, or by waiting on the event). A test across processes may poll, with a deadline and a message that shows the state. [SYNC] [GO125] [repo]
 - **S7.11** Output that istari does not own (JSON of a library, GitHub's) is parsed and compared, not compared byte for byte. [TC] [GSD] [GO127]
+- **S7.12** Every test and subtest calls `t.Parallel()` as its first statement. A test that changes process state (`t.Setenv`, `t.Chdir`) cannot be parallel; it says which state in a one-line comment instead (`// Not parallel: sets the process environment's HOME.`). [TESTING] (`T.Parallel`, `T.Setenv`)
 
 ## 8. Modern Go
 
@@ -110,4 +111,5 @@ Places where today's code does not meet a rule. New code follows the rule; fixin
 - **S4.6** Background loops log with `log.Printf`; structured logging (`log/slog`) is not used.
 - **S5.6** Goroutines start with `wg.Add(1); go func(){ defer wg.Done() … }()` (`internal/api/daemon.go`).
 - **S7.10** Some end-to-end tests wait with fixed sleeps rather than a deadline loop (`cmd/istari/daemon_test.go`).
+- **S7.12** The tests of some packages do not call `t.Parallel()` yet; the sibling tickets of #149 bring them in line.
 - **S8.1** One `sort.Strings` (`internal/harness/claudecode/claudecode.go`) and a few counting loops remain.

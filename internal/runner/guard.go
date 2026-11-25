@@ -23,7 +23,16 @@ func GitGuard(command, worktree, cwd string) error {
 
 // FileGuard decides whether a file tool may write path: never into a git
 // directory, where the remote, the credentials and the hooks are configured.
-func FileGuard(path string) error {
+// result is the run's result file, ISTARI_RESULT, or empty: a run that has
+// one writes that file and no other (spec section 7.3), whatever a settings
+// file in the repository allows.
+func FileGuard(path, result string) error {
+	if result != "" {
+		if filepath.Clean(path) == filepath.Clean(result) || real(path) == real(result) {
+			return nil
+		}
+		return fmt.Errorf("%s is not your result file: you may write only $ISTARI_RESULT, %s", path, result)
+	}
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Clean(path)), "/") {
 		if part == ".git" || strings.HasSuffix(part, ".git") {
 			return fmt.Errorf("%s is inside a git directory, which only istari changes", path)
