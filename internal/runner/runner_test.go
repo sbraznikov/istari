@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
@@ -471,6 +473,46 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
 	if files := gitIn(t, remote, "ls-tree", "--name-only", branch); !strings.Contains(files, "paused-work.txt") {
 		t.Fatalf("the remote branch has %q, want the work of the paused run", files)
+	}
+}
+
+func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
+	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", runner.RunnerOptions{Lease: 300 * time.Millisecond, StopCheckpoint: time.Second})
+	head := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"))
+	paused := time.Now()
+	f.waitTask(t, task.ID, core.TaskReady)
+	if took := time.Since(paused); took > 4*time.Second { // the check alone takes 5s
+		t.Fatalf("the paused run ended after %s, want the checkpoint abandoned at its limit", took)
+	}
+	f.waitEvent(t, "run.exited")
+	if got := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD")); got != head {
+		t.Errorf("HEAD = %s, want %s as before the checkpoint", got, head)
+	}
+	if status := gitIn(t, s.spec.Workdir, "status", "--porcelain"); !strings.Contains(status, "paused-work.txt") {
+		t.Errorf("git status = %q, want the work uncommitted in the worktree", status)
+	}
+	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
+	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
+	if files, _ := exec.Command("git", "-C", remote, "ls-tree", "--name-only", branch).Output(); strings.Contains(string(files), "paused-work.txt") {
+		t.Errorf("the remote branch has %q, want nothing pushed", files)
+	}
+	if events := f.events(t, "journal.checkpoint"); len(events) != 0 {
+		t.Errorf("checkpoints = %d, want none for an abandoned one", len(events))
+	}
+	ref, err := tickets.ParseRef(task.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noted := false
+	for _, e := range entries {
+		noted = noted || e.Kind == journal.Note && strings.Contains(e.Text, "limit of 1s") && strings.Contains(e.Text, "stop_checkpoint_timeout") && strings.Contains(e.Text, "uncommitted")
+	}
+	if !noted {
+		t.Fatalf("journal = %+v, want a note naming the limit and the uncommitted work", entries)
 	}
 }
 

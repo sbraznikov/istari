@@ -23,8 +23,9 @@ import (
 
 // Defaults of the runner.
 const (
-	DefaultRunTimeout    = time.Hour
-	DefaultPoll          = 2 * time.Second
+	DefaultRunTimeout     = time.Hour
+	DefaultStopCheckpoint = 15 * time.Minute // the limit of a stopping run's checkpoint
+	DefaultPoll           = 2 * time.Second
 	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
 	stopGrace            = 10 * time.Second
 )
@@ -68,6 +69,9 @@ type RunnerOptions struct {
 	// Checkpoints, when set, saves the work of a run stopped on its timeout,
 	// its budget or by a human (spec section 7.2, step 6).
 	Checkpoints *Checkpoints
+	// StopCheckpoint limits that checkpoint ([daemon]
+	// stop_checkpoint_timeout, spec section 4.2); 0: DefaultStopCheckpoint.
+	StopCheckpoint time.Duration
 	// Skill is the agent skill installed into every workspace as
 	// .istari/skill.md when the repository has none (spec section 7.4);
 	// "": istari's own.
@@ -99,6 +103,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultRunTimeout
+	}
+	if opts.StopCheckpoint <= 0 {
+		opts.StopCheckpoint = DefaultStopCheckpoint
 	}
 	if opts.Poll <= 0 {
 		opts.Poll = DefaultPoll
@@ -496,7 +503,7 @@ loop:
 	defer unheld()
 	if end != nil && end.save && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
-		if _, err := r.opts.Checkpoints.Make(bg, run, end.reason+"; continue from here"); err != nil {
+		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, run, end.reason+"; continue from here"); err != nil {
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}

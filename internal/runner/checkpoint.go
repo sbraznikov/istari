@@ -156,6 +156,38 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 	return e, nil
 }
 
+// MakeWithin makes a stopping run's checkpoint within limit (spec section
+// 4.2). Past the limit the checkpoint is abandoned: a commit it made of the
+// leftovers is undone, nothing is pushed, the work stays uncommitted in the
+// worktree, and a journal note names the limit.
+func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run Run, message string) (journal.Entry, error) {
+	before, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
+	if err != nil {
+		return journal.Entry{}, err
+	}
+	limited, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	e, err := c.Make(limited, run, message)
+	if err == nil || !errors.Is(limited.Err(), context.DeadlineExceeded) {
+		return e, err
+	}
+	if head, herr := gitOut(ctx, run.Dir, "rev-parse", "HEAD"); herr == nil && head != before {
+		if _, rerr := gitOut(ctx, run.Dir, "reset", "-q", "--soft", before); rerr != nil {
+			return journal.Entry{}, rerr
+		}
+	}
+	ref, perr := tickets.ParseRef(run.Ticket)
+	if perr != nil {
+		return journal.Entry{}, perr
+	}
+	note := journal.Entry{Kind: journal.Note, Actor: "system", ID: run.Task, Text: fmt.Sprintf(
+		"The stop checkpoint was abandoned at its limit of %s ([daemon] stop_checkpoint_timeout): nothing was committed or pushed, and the work is uncommitted in the worktree.", limit)}
+	if jerr := c.journal.Append(ctx, ref, note); jerr != nil {
+		return journal.Entry{}, jerr
+	}
+	return journal.Entry{}, fmt.Errorf("checkpoint abandoned after %s: %w", limit, err)
+}
+
 // push pushes a worktree's branch to the ticket's remote branch.
 func (c *Checkpoints) push(ctx context.Context, ws Workspace, dir string) error {
 	url, private := c.ws.PushTarget(ws.Repo)
