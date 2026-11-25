@@ -154,3 +154,56 @@ func TestAMergeThatCannotStartLeavesTheWorktreeAsItWas(t *testing.T) {
 		t.Fatalf("README.md = %q: the uncommitted work is gone", body)
 	}
 }
+
+func TestWhenTheRemoteCannotBeReachedTheJournalSaysMainWasNotMergedAndWhy(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{})
+	tk, task := f.readyTask(t, 12)
+	if _, err := f.ws.Ensure(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Join(f.data, "repos", "acme", "web.git"), "remote", "set-url", "origin", filepath.Join(f.root, "nowhere.git"))
+	f.start(t)
+	f.waitEvent(t, journal.EventPrefix+string(journal.Note))
+	ref, _ := tickets.ParseRef(tk.Ref)
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind == journal.Note && e.ID == task.ID && strings.Contains(e.Text, "main branch was not merged") && strings.Contains(e.Text, "nowhere.git") {
+			return
+		}
+	}
+	t.Fatalf("journal = %+v; want a note that the main branch was not merged, and why", entries)
+}
+
+// failFirstFetch makes the remote refuse the clone's next fetch, and only
+// that one, as a remote that is briefly out of reach would.
+func (f *wsFixture) failFirstFetch(t *testing.T) {
+	t.Helper()
+	script := filepath.Join(f.root, "upload-pack")
+	write(t, script, "#!/bin/sh\n"+
+		"if [ -e \""+script+".failed\" ]; then exec git-upload-pack \"$@\"; fi\n"+
+		"touch \""+script+".failed\"\n"+
+		"echo 'the remote is out of reach' >&2\nexit 1\n")
+	gitIn(t, filepath.Join(f.data, "repos", "acme", "web.git"), "config", "remote.origin.uploadpack", script)
+}
+
+func TestAFetchThatFailsOnceIsTriedAgainBeforeTheMerge(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaces(t)
+	tk := f.ticket(t, 11, "Merge despite a blip")
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.moveMain(t, map[string]string{"other.go": "package other\n"})
+	f.failFirstFetch(t)
+	if conflicts, err := f.ws.MergeMain(ctx, tk.Ref); err != nil || len(conflicts) != 0 {
+		t.Fatalf("MergeMain after one failed fetch = %v, %v", conflicts, err)
+	}
+	if !exists(filepath.Join(w.Dir, "other.go")) {
+		t.Fatal("main's new file is not in the worktree")
+	}
+}

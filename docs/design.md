@@ -421,7 +421,7 @@ Directly, without confirmation, the agent records only assumptions (`istari assu
 **Resuming.** The agent crashed, the lease expired, the machine rebooted, the ticket sat paused for a month, the istari database was lost — the sequence is the same:
 
 1. istari reads the ticket state and the summary from the tracker.
-2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step.
+2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step. A failed fetch of the remote is tried once more; when it fails again, the run starts on the branch as it is, and the journal records that the main branch was not merged and why.
 3. It assembles the brief from the ticket text, the journal and the PR using a template. If the journal is long, code takes all decisions and assumptions, the last plan and the latest checkpoints; the model is not used to compress the journal.
 4. The new run continues from the next step of the last checkpoint.
 
