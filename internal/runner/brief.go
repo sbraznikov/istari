@@ -246,6 +246,13 @@ func reviewSection(r *ReviewInput) string {
 		} else {
 			b.WriteString("`" + strings.Join(r.Standards, "`, `") + "`.\n\n")
 		}
+		if len(r.Checks) > 0 {
+			b.WriteString("The checks istari runs on this repository, from the main branch's `.istari/pipeline.toml`; what they enforce is not a finding:\n\n")
+			for _, c := range r.Checks {
+				b.WriteString("- `" + c.Name + "`: `" + c.Run + "`\n")
+			}
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("## Your result\n\n" + submitText("istari review submit", "report") + "\n\n" +
 		"```yaml\nstandards: \"1 finding; most serious: duplicated code\"  # one quoted line: the number of findings and the most serious one\n" +
