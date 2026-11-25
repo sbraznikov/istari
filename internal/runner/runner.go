@@ -514,8 +514,17 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		return nil
 	}
 	lease = renewed
+	// The run is live before its harness starts: the agent may call back at
+	// once, and Working and Stop must already know the run.
+	stop := make(chan string, 1)
+	r.mu.Lock()
+	r.active[run.ID] = stop
+	r.mu.Unlock()
+	gone := func() { r.mu.Lock(); delete(r.active, run.ID); r.mu.Unlock() }
+	defer gone()
 	sess, err := h.Start(bg, spec)
 	if err != nil {
+		gone()
 		// No agent ran: the task goes back without spending an attempt, after
 		// a wait for a binary being replaced to come back (spec section 4.2).
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
@@ -525,12 +534,6 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		}
 		return err
 	}
-
-	stop := make(chan string, 1)
-	r.mu.Lock()
-	r.active[run.ID] = stop
-	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.active, run.ID); r.mu.Unlock() }()
 
 	over := make(chan struct{}, 1) // the run budget is spent
 	var usage harness.Usage
