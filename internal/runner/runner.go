@@ -118,9 +118,9 @@ func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
 
-// holdLease renews a lease in the background while a run is prepared.
-// started stops that and renews it once more for the run to start with;
-// abandon only stops it, for a run that does not start.
+// holdLease renews a lease in the background while no harness runs: while a
+// run is prepared, and while it stops. started stops that and renews it once
+// more, for the run to start or its task to end with; abandon only stops it.
 func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func() (core.Lease, error), abandon func()) {
 	stop, done := make(chan struct{}), make(chan struct{})
 	current := lease // written by the goroutine; read after done
@@ -459,8 +459,8 @@ loop:
 			if held, err := r.tickets.Get(bg, task.Ticket); err == nil && held.Hold != "" {
 				// The ticket was put on hold (paused): the run stops, its work
 				// is saved, and the task waits until the hold is lifted.
+				// The lease is still renewed while the agent stops.
 				stopWith(ending{reason: "the ticket is on hold (" + held.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
-				continue
 			}
 			l, err := r.tasks.Renew(bg, lease)
 			var e *core.Error
@@ -490,6 +490,10 @@ loop:
 	}
 	<-streamed
 
+	// The task stays this run's until its checkpoint and its end are
+	// recorded: a stop checkpoint may outlast the lease (spec section 4.2).
+	ended, unheld := r.holdLease(bg, lease)
+	defer unheld()
 	if end != nil && end.save && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
 		if _, err := r.opts.Checkpoints.Make(bg, run, end.reason+"; continue from here"); err != nil {
@@ -503,6 +507,9 @@ loop:
 		reason, outcome = end.reason, end.outcome
 	}
 	r.end(bg, run, res, usage, reason)
+	if held, err := ended(); err == nil {
+		lease = held
+	}
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
