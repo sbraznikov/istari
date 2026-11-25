@@ -141,6 +141,9 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		default:
 			entry.Checks["verify_red"] = "green"
 		}
+		if judged {
+			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
+		}
 	}
 
 	if err := c.push(ctx, ws, run.Dir); err != nil {

@@ -306,3 +306,15 @@ func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 		t.Fatalf("second checkpoint ran on the previous code as %v, want once in %s and nothing left over", second, red)
 	}
 }
+
+func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
+	f := newCheckpoints(t)
+	f.slice(t, "first")
+	c := f.checkpoint(t, "First slice")
+	if c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v, want verify_red green", c.Checks)
+	}
+	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "judged on the whole test command") {
+		t.Fatalf("notes = %v, want red first noted as judged on the whole test command", c.Notes)
+	}
+}
