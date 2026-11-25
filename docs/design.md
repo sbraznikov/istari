@@ -197,11 +197,13 @@ any unfinished state ──► canceled ──► new (reopen)
 | T10 | `awaiting_approval` | `merge_failed` | `in_progress` | system | a conflict or red CI after the branch is updated. The repeat review is limited to the conflict resolution (section 4.9) |
 | T11 | `awaiting_approval` | `merged` | `done` | system or human, depending on the merge mode (section 4.8) | required checks have passed; human approval, if the mode requires it |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
-| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed |
+| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
 | T14 | `canceled` | `reopen` | `new` | human | — |
 | T15 | `ready` | `edited` | `new` | system | the text of the ticket's mandatory sections has changed (compared by hash); editing labels and fixing typos outside these sections does not trigger the check |
 
 `done` is not reopened: a regression is filed as a new ticket with a link to the original one.
+
+**A finished ticket has no open tasks.** The transition to `done` (T11, T12) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
 
 **Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
 
@@ -239,6 +241,7 @@ canceled — from any open state
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
+- A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
 
 ### 4.3 Default pipeline
 
