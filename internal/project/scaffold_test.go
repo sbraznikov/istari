@@ -12,6 +12,7 @@ import (
 )
 
 func TestScaffoldWritesValidTOMLAndKeepsExistingFiles(t *testing.T) {
+	t.Parallel()
 	for _, lang := range []map[string]string{{"go.mod": "module x\n"}, {}} {
 		root := tree(t, lang)
 		os.MkdirAll(filepath.Join(root, ".istari"), 0o755)
