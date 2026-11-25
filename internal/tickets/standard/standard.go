@@ -128,11 +128,11 @@ type Result struct {
 	Type       string      `json:"type,omitempty"`
 	Size       string      `json:"size,omitempty"`
 	Priority   string      `json:"priority,omitempty"`
+	Repository string      `json:"repository,omitempty"`
+	Needs      []string    `json:"needs,omitempty"`
 	// TablePriority is the priority the ticket's table states, "" when it
 	// states none or one the standard does not allow.
 	TablePriority string `json:"table_priority,omitempty"`
-	Repository string      `json:"repository,omitempty"`
-	Needs      []string    `json:"needs,omitempty"`
 }
 
 // OK tells whether the ticket meets the structural standard.
