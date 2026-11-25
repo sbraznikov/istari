@@ -41,7 +41,7 @@ func ParsePlanResult(data []byte) (PlanResult, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&r); err != nil {
-		return PlanResult{}, fmt.Errorf("plan: %w", err)
+		return PlanResult{}, yamlError("plan", data, err)
 	}
 	bad := func(format string, args ...any) error { return fmt.Errorf("plan: "+format, args...) }
 	switch {
