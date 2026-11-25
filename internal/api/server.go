@@ -234,7 +234,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		})
 	}
 	if srv.saves != nil && srv.vcs != nil {
-		srv.prs = runner.NewPullRequests(srv.saves, srv.vcs, srv.watch)
+		srv.prs = runner.NewPullRequests(srv.saves, srv.vcs, srv.watch, srv.tickets)
 	}
 	if srv.spaces != nil {
 		var jt journal.Tracker
