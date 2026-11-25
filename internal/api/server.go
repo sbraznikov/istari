@@ -196,8 +196,16 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var merged func(ctx context.Context, ref string) (bool, error)
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
+	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
+		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
+			pr, err := srv.watch.PullRequestOf(ctx, ref)
+			if errors.Is(err, store.ErrNotFound) {
+				return pipeline.PRConflict{}, false, nil
+			}
+			return pipeline.PRConflict{PR: pr.Number, Head: pr.MergeHead}, err == nil && pr.Mergeable == vcs.MergeableDirty, err
+		}
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if err != nil || pr.Checks == "" {
@@ -218,7 +226,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	if t, ok := opts.Tracker.(journal.Tracker); ok {
 		jt = t
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Journal: journal.New(jt, ns, opts.Clock)})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: journal.New(jt, ns, opts.Clock)})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)

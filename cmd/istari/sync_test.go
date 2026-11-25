@@ -215,8 +215,9 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	}
 }
 
-// humanMerge is a ticket in awaiting_approval whose pull request istari
-// watches, as istari recover leaves it, served by a fake GitHub.
+// humanMerge is a ticket, in awaiting_approval unless made otherwise, whose
+// pull request istari watches, as istari recover leaves it, served by a fake
+// GitHub.
 type humanMerge struct {
 	gh        *githubtest.Server
 	d         *daemon
@@ -229,8 +230,15 @@ type humanMerge struct {
 
 func newHumanMerge(t *testing.T) *humanMerge {
 	t.Helper()
+	return recoveredWithPullRequest(t, "awaiting_approval")
+}
+
+// recoveredWithPullRequest is a ticket in state whose pull request istari
+// watches, as istari recover leaves it.
+func recoveredWithPullRequest(t *testing.T, state string) *humanMerge {
+	t.Helper()
 	h := &humanMerge{gh: githubtest.New(t), dataDir: newDataDir(t)}
-	h.issue = h.gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", "istari:awaiting_approval")
+	h.issue = h.gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", "istari:"+state)
 	h.pr = h.gh.SeedPull(fmt.Sprintf("istari/%d/limits", h.issue))
 	h.ref = fmt.Sprintf("gh:%s#%d", githubtest.Repo, h.issue)
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: h.issue}
@@ -250,8 +258,8 @@ func newHumanMerge(t *testing.T) *humanMerge {
 	h.env = []string{"PATH=" + fakeGH(t, h.gh.Token), "GITHUB_API_URL=" + h.gh.URL}
 	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
 	h.d.mustCLI(t, nil, "recover")
-	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("the recovered ticket is %s, want awaiting_approval", st)
+	if st := h.state(t); st != state {
+		t.Fatalf("the recovered ticket is %s, want %s", st, state)
 	}
 	return h
 }

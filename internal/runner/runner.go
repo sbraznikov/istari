@@ -150,6 +150,25 @@ func (r *Runner) mainNotMerged(ctx context.Context, task core.Task, cause error)
 	}
 }
 
+// mergeConflicted records in the ticket's journal the files where merging
+// the main branch at the start of the run met conflicts, once per task: a
+// run started again finds the same ones (spec sections 4.6 and 4.8).
+func (r *Runner) mergeConflicted(ctx context.Context, task core.Task, files []string) {
+	text := "Merging the main branch into the branch met conflicts in: " + strings.Join(files, ", ")
+	ref, err := tickets.ParseRef(task.Ticket)
+	if err == nil {
+		var entries []journal.Entry
+		if entries, err = r.opts.Journal.Stored(ctx, ref); err == nil && !slices.ContainsFunc(entries, func(e journal.Entry) bool {
+			return e.Kind == journal.Note && e.ID == task.ID && e.Text == text
+		}) {
+			err = r.opts.Journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", ID: task.ID, Text: text})
+		}
+	}
+	if err != nil {
+		log.Printf("istari: run of %s: journaling the merge conflicts: %v", task.Ticket, err)
+	}
+}
+
 // SetSelfReview sets how the runner learns a repository's self_review.
 func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { r.opts.SelfReview = f }
 
@@ -435,6 +454,8 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		if slot.Role == "implementer" {
 			if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
 				r.mainNotMerged(bg, task, err)
+			} else if len(conflicts) > 0 {
+				r.mergeConflicted(bg, task, conflicts)
 			}
 		}
 	}

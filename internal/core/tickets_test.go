@@ -43,6 +43,7 @@ var transitionTable = []struct {
 	{"T8", core.TicketInReview, "review_passed", core.TicketAwaitingApproval},
 	{"T9", core.TicketAwaitingApproval, "changes_requested", core.TicketInProgress},
 	{"T10", core.TicketAwaitingApproval, "merge_failed", core.TicketInProgress},
+	{"T10", core.TicketInReview, "merge_failed", core.TicketInProgress},
 	{"T11", core.TicketAwaitingApproval, "merged", core.TicketDone},
 	{"T11", core.TicketInProgress, "merged", core.TicketDone},
 	{"T11", core.TicketInReview, "merged", core.TicketDone},
@@ -111,6 +112,17 @@ func TestEveryRowOfTheTransitionTable(t *testing.T) {
 				t.Fatalf("event = %s %s %+v", e.Type, e.Ticket, p)
 			}
 		})
+	}
+}
+
+// Two rows lead from in_review and from awaiting_approval to in_progress; a
+// tracker label edit reads them as changes_requested, not merge_failed.
+func TestTriggerToReturnsToInProgressByChangesRequested(t *testing.T) {
+	t.Parallel()
+	for _, from := range []core.TicketState{core.TicketInReview, core.TicketAwaitingApproval} {
+		if got, ok := core.TriggerTo(from, core.TicketInProgress); !ok || got != "changes_requested" {
+			t.Fatalf("TriggerTo(%s, in_progress) = %q, %v; want changes_requested", from, got, ok)
+		}
 	}
 }
 
