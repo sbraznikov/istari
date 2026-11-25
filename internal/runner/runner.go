@@ -454,10 +454,18 @@ loop:
 		case res = <-waited:
 			break loop
 		case <-renew.C:
-			if held, err := r.tickets.Get(bg, task.Ticket); err == nil && held.Hold != "" {
+			current, err := r.tickets.Get(bg, task.Ticket)
+			switch {
+			case err == nil && current.State.Finished():
+				// The ticket ended and canceled its tasks with it (spec 4.1):
+				// the run stops, its work is saved, and the task stays
+				// canceled.
+				stopWith(ending{reason: "the ticket is " + string(current.State), outcome: func(context.Context, core.Lease) error { return nil }, save: true})
+				continue
+			case err == nil && current.Hold != "":
 				// The ticket was put on hold (paused): the run stops, its work
 				// is saved, and the task waits until the hold is lifted.
-				stopWith(ending{reason: "the ticket is on hold (" + held.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
+				stopWith(ending{reason: "the ticket is on hold (" + current.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
 				continue
 			}
 			l, err := r.tasks.Renew(bg, lease)
