@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -198,8 +199,12 @@ func checkChild(ctx context.Context, std standard.Standard, dir, parentRepo stri
 	for _, d := range got.Deviations {
 		deviations = append(deviations, d.Message)
 	}
-	return fmt.Errorf("plan: child %s does not meet the ticket standard: %s", pt.Key, strings.Join(deviations, "; "))
+	return fmt.Errorf("plan: child %s does not meet the ticket standard: %s: %w", pt.Key, strings.Join(deviations, "; "), ErrChildStandard)
 }
+
+// ErrChildStandard is a split refused for a child that misses the ticket
+// standard: the planner fixes it and submits again in the same run.
+var ErrChildStandard = errors.New("fix the child and submit the plan again")
 
 // withTable is a split child's body with the table of the ticket standard
 // at its end (spec 4.3): its type and size, the parent's priority and

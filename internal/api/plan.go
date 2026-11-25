@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -89,7 +90,8 @@ type PlanAnswer struct {
 }
 
 // submitPlan checks, records and, for a split, carries out the planner's
-// plan. What code rejects fails the run.
+// plan. What code rejects fails the run, except a split child that misses
+// the ticket standard: the planner fixes it in the same run (spec 4.3).
 func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, error) {
 	run, isAgent := runOf(ctx)
 	switch {
@@ -102,6 +104,9 @@ func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, erro
 	}
 	answer, err := s.applyPlan(ctx, run, r.Plan)
 	if err != nil {
+		if errors.Is(err, runner.ErrChildStandard) {
+			return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+		}
 		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
 			return nil, rerr
 		}
