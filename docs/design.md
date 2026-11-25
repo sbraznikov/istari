@@ -327,6 +327,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 
+The project key `admission` (section 12) says whether the first condition applies. `"trusted"`, the default, admits a trusted author's ticket on its own. `"label"` admits a ticket only by a trusted member's manual admission or by inheritance from an admitted ticket: a trusted author is not enough, and until a trusted member admits it the ticket is checked against the standard and waits in `new` without a refiner run. Tickets already admitted when the mode changes stay as they are.
+
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
 **Checking in advance.** `istari ticket check` shows the deviations from the standard without changing anything. An agent with which a human is writing a specification can call it before creating the ticket.
@@ -1146,6 +1148,7 @@ repo    = "acme/web"
 tickets = { provider = "github" }     # by default — issues of the same repository
 slack   = { work = "#web-agents", decisions = "#web-decisions", owner = "@alex" }
 trusted = ["alex"]                    # admitted without a human (section 4.5); absent — everyone with write access
+admission = "trusted"                 # "trusted" | "label" (section 4.5): "label" — only a trusted member's manual admission; absent — "trusted"
 max_concurrent_runs = 2               # claimed tasks at once in this project; absent — no own limit
 
 [[project]]                           # a service made of two repositories
