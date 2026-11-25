@@ -72,6 +72,11 @@ type SyncOptions struct {
 	Parent func(body, repo string) string
 	// Note adds a note to the ticket's journal; nil: the sync notes nothing.
 	Note func(ctx context.Context, ref Ref, text string) error
+	// Merged tells whether a ticket's pull request is merged (spec 4.8): an
+	// issue its merge closed is not a cancel. fresh asks the code host when
+	// the PR watch has not seen the pull request closed yet; otherwise only
+	// what the watch recorded counts. nil: no pull request is ever merged.
+	Merged func(ctx context.Context, ref string, fresh bool) (bool, error)
 }
 
 // CodeNotTrusted refuses an admission by someone who is not trusted.
@@ -188,7 +193,14 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			continue
 		}
 		if base.side.Closed && finished(tk.State) {
-			continue // closed on both sides
+			repaired, err := s.repairMerged(ctx, tk)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
+			}
+			if !repaired {
+				continue // closed on both sides
+			}
+			report.Transitioned++
 		}
 		t, err := s.provider.Get(ctx, ref)
 		if errors.Is(err, ErrNotFound) {
@@ -600,9 +612,12 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 	case tracker.State == "" && tracker.Closed && !local.Closed:
 		// Closed before istari labelled it: a request to cancel.
 		return s.request(ctx, x, tracker)
-	case tracker == x.base.side || tracker.State == "" || tracker == local:
+	case tracker == x.base.side || tracker.State == "" || tracker == local,
+		tracker.Closed && local.State == core.TicketDone && tracker.State == x.base.side.State:
 		// The tracker still has what istari last wrote, or no state yet, or
-		// only stray extra labels: istari's state goes out.
+		// only stray extra labels, or only the close of the issue that the
+		// merge of its PR made after istari finished the ticket (spec 4.8):
+		// istari's state goes out.
 		if err := s.push(ctx, x, x.tk); err != nil {
 			return err
 		}
@@ -771,6 +786,15 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	default:
 		target, kind, label, c.what = local, "labeled", "istari:hold:"+tracker.Hold, "the hold label"
 	}
+	if kind == "closed" {
+		merged, err := s.merged(ctx, x.tk.Ref, true)
+		if err != nil {
+			return err
+		}
+		if merged {
+			return s.finishMerged(ctx, x)
+		}
+	}
 	who, err := s.provider.LastActor(ctx, x.t.Ref, kind, label)
 	if err != nil {
 		return err
@@ -827,6 +851,45 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	if errors.As(err, new(*core.Error)) {
 		return s.revert(ctx, x, c, err.Error())
 	}
+	if err != nil {
+		return err
+	}
+	x.report.Transitioned++
+	if err := s.push(ctx, x, next); err != nil {
+		return err
+	}
+	x.report.Pushed++
+	return nil
+}
+
+// merged tells whether the ticket's pull request is merged (SyncOptions.Merged).
+func (s *Syncer) merged(ctx context.Context, ref string, fresh bool) (bool, error) {
+	if s.opts.Merged == nil {
+		return false, nil
+	}
+	return s.opts.Merged(ctx, ref, fresh)
+}
+
+// repairMerged moves a canceled ticket whose pull request the PR watch saw
+// merged to done (T11 from canceled, spec 4.8): an earlier sync read the
+// issue that merge closed as a cancel. It reports whether it did; the
+// tracker then gets done on the reconcile that follows.
+func (s *Syncer) repairMerged(ctx context.Context, tk core.Ticket) (bool, error) {
+	if tk.State != core.TicketCanceled {
+		return false, nil
+	}
+	merged, err := s.merged(ctx, tk.Ref, false)
+	if err != nil || !merged {
+		return false, err
+	}
+	_, err = s.tickets.Fire(ctx, "system", tk.Ref, "merged")
+	return err == nil, err
+}
+
+// finishMerged moves a ticket whose pull request a human merged to done
+// (T11, spec 4.8): the issue that merge closed is not a cancel.
+func (s *Syncer) finishMerged(ctx context.Context, x *syncing) error {
+	next, err := s.tickets.Fire(ctx, "system", x.tk.Ref, "merged")
 	if err != nil {
 		return err
 	}
