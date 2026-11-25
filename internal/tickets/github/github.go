@@ -589,7 +589,7 @@ func (p *Provider) raw(ctx context.Context, path, accept string) ([]byte, error)
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(data))}
+		return nil, errorOf(res, strings.TrimSpace(string(data)))
 	}
 	return data, nil
 }
@@ -734,15 +734,29 @@ func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []strin
 
 // apiError is a non-2xx answer of the API.
 type apiError struct {
-	Status  int
-	Message string
+	Status      int
+	Message     string
+	RateLimited bool // GitHub refused for its rate limit: ask again later
 }
 
 func (e *apiError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Message) }
 
+// errorOf is the apiError of a non-2xx answer with its message.
+func errorOf(res *http.Response, message string) *apiError {
+	e := &apiError{Status: res.StatusCode, Message: message, RateLimited: ratelimit.RateLimited(res)}
+	if e.RateLimited {
+		e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
+	}
+	return e
+}
+
 // Is makes 404 (missing), 410 (deleted) and 301 (transferred to another
-// repository) match tickets.ErrNotFound: the ticket is not at its ref.
+// repository) match tickets.ErrNotFound: the ticket is not at its ref; and a
+// refusal for the rate limit match ratelimit.ErrRateLimited.
 func (e *apiError) Is(target error) bool {
+	if target == ratelimit.ErrRateLimited {
+		return e.RateLimited
+	}
 	if target != tickets.ErrNotFound {
 		return false
 	}
@@ -818,10 +832,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		if e.Message == "" {
 			e.Message = strconv.Quote(string(data))
 		}
-		if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
-			e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
-		}
-		return nil, &apiError{Status: res.StatusCode, Message: e.Message}
+		return nil, errorOf(res, e.Message)
 	}
 	if out != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {

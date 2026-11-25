@@ -3,10 +3,13 @@ package ratelimit_test
 import (
 	"context"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +147,93 @@ func TestTheCacheOfOneTokenIsNotUsedForAnother(t *testing.T) {
 	get(t, c, ctx, srv.URL+"/x", ratelimit.KindSync, "Authorization", "Bearer two")
 	if want := []string{"", ""}; !slices.Equal(fake.matched, want) {
 		t.Errorf("If-None-Match sent = %q, want %q", fake.matched, want)
+	}
+}
+
+// Not parallel: sets the output of the standard logger.
+func TestALowQuotaHoldsTheLoopsUntilTheResetAndIsLoggedOnce(t *testing.T) {
+	reset := time.Unix(1795638000, 0).UTC()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "50")
+		w.Header().Set("X-RateLimit-Reset", "1795638000")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	clk := &clock{now: reset.Add(-30 * time.Millisecond)}
+	tr := ratelimit.New(ratelimit.Options{Clock: clk.Now})
+	get(t, &http.Client{Transport: tr}, context.Background(), srv.URL+"/x", ratelimit.KindSync)
+
+	for _, loop := range []string{"the ticket sync", "the PR watch"} {
+		began := time.Now()
+		if err := tr.Hold(context.Background(), loop); err != nil {
+			t.Fatalf("Hold(%s): %v", loop, err)
+		}
+		if waited := time.Since(began); waited < 30*time.Millisecond {
+			t.Errorf("Hold(%s) waited %v, want until the reset 30ms away", loop, waited)
+		}
+	}
+	if got := strings.Count(logged.String(), "\n"); got != 1 {
+		t.Errorf("log = %q, want one line", logged.String())
+	}
+	if !strings.Contains(logged.String(), "50") || !strings.Contains(logged.String(), "20:20:00") {
+		t.Errorf("log = %q, want the remaining 50 and the reset 20:20:00", logged.String())
+	}
+}
+
+func TestEnoughQuotaDoesNotHold(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "4000")
+		w.Header().Set("X-RateLimit-Reset", "1795638000")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // a hold would end at once with ctx's error
+	tr := ratelimit.New(ratelimit.Options{Clock: (&clock{now: start}).Now})
+	get(t, &http.Client{Transport: tr}, context.Background(), srv.URL+"/x", ratelimit.KindSync)
+	if err := tr.Hold(ctx, "the ticket sync"); err != nil {
+		t.Errorf("Hold with 4000 left = %v, want no hold", err)
+	}
+}
+
+func TestAnAnswerRefusedForTheRateLimitIsToldFromOtherRefusals(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		status int
+		header []string
+		want   bool
+	}{
+		{"429", http.StatusTooManyRequests, nil, true},
+		{"403 with the quota spent", http.StatusForbidden, []string{"X-RateLimit-Remaining", "0"}, true},
+		{"403 of the secondary limit", http.StatusForbidden, []string{"Retry-After", "60"}, true},
+		{"403 without the right", http.StatusForbidden, []string{"X-RateLimit-Remaining", "4000"}, false},
+		{"404", http.StatusNotFound, nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for i := 0; i+1 < len(c.header); i += 2 {
+					w.Header().Set(c.header[i], c.header[i+1])
+				}
+				w.WriteHeader(c.status)
+			}))
+			defer srv.Close()
+			res, err := http.Get(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if got := ratelimit.RateLimited(res); got != c.want {
+				t.Errorf("RateLimited = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

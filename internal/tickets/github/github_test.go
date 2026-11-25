@@ -6,8 +6,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -22,6 +24,21 @@ func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 }
 
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
+
+func TestARefusalForTheRateLimitIsLaterNotNotFound(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	n := fake.Seed("t", "", "bob")
+	fake.SetFile(".istari/pipeline.toml", "x")
+	fake.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	_, getErr := p.Get(ctx, ref(n))
+	_, readErr := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml")
+	for what, err := range map[string]error{"Get": getErr, "ReadFile": readErr} {
+		if !errors.Is(err, ratelimit.ErrRateLimited) || errors.Is(err, tickets.ErrNotFound) {
+			t.Errorf("%s while the quota is spent: %v, want ErrRateLimited and not ErrNotFound", what, err)
+		}
+	}
+}
 
 func TestAFileOfMainIsReadOncePerMainCommit(t *testing.T) {
 	t.Parallel()

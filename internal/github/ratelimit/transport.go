@@ -9,7 +9,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -60,8 +62,9 @@ type Transport struct {
 
 	mu    sync.Mutex // serializes the fields below
 	sent  []sent     // oldest first, within Window
-	quota quota
-	cache cache
+	quota  quota
+	logged time.Time // the reset whose wait Hold logged
+	cache  cache
 }
 
 // The ETag cache is bounded: at most maxCached answers of at most
@@ -241,6 +244,55 @@ func (t *Transport) Stats() Stats {
 		s.Requests[r.kind]++
 	}
 	return s
+}
+
+// Low is the remaining quota below which the background loops wait for the
+// reset (#208): what is left stays for the operator and for agents' work.
+const Low = 100
+
+// Hold waits while the last answer left fewer than Low requests of the
+// quota, until its reset, and returns ctx's error if ctx ends first. loop
+// names the waiting loop in the log, which says so once per reset. The wait
+// is measured with the Transport's clock.
+func (t *Transport) Hold(ctx context.Context, loop string) error {
+	t.mu.Lock()
+	q, now := t.quota, t.clock()
+	first := !q.reset.Equal(t.logged)
+	if q.remaining < Low && q.reset.After(now) && first {
+		t.logged = q.reset
+	}
+	t.mu.Unlock()
+	if q.remaining >= Low || !q.reset.After(now) {
+		return nil
+	}
+	if first {
+		log.Printf("istari: GitHub requests: %d of the hour's quota left; %s and the other background loops wait until %s", q.remaining, loop, q.reset.Format("15:04:05 UTC"))
+	}
+	timer := time.NewTimer(q.reset.Sub(now))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// ErrRateLimited matches an answer of GitHub that refused a request for its
+// rate limit: a 429, or a 403 that spent the quota or asks to retry later.
+// It means "later", not a fault of the caller (#208).
+var ErrRateLimited = errors.New("github: rate limit exceeded")
+
+// RateLimited reports whether the answer is GitHub refusing for its rate
+// limit.
+func RateLimited(res *http.Response) bool {
+	switch res.StatusCode {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return res.Header.Get("X-RateLimit-Remaining") == "0" || res.Header.Get("Retry-After") != ""
+	}
+	return false
 }
 
 // prune drops the requests older than Window; t.mu is held.

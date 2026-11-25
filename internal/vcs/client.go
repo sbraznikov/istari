@@ -352,6 +352,9 @@ func (c *Client) request(ctx context.Context, repo, method, url string, body, ou
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
+		if ratelimit.RateLimited(res) {
+			return fmt.Errorf("github: %s %s: %d %s: %w", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message, ratelimit.ErrRateLimited)
+		}
 		return fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
 	}
 	if out != nil && len(data) > 0 {

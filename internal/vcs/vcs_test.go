@@ -7,12 +7,15 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/vcs"
@@ -292,6 +295,20 @@ func TestAPollOfAnUnchangedOrMergedPullRequestMakesNoRequestThatCounts(t *testin
 	poll("an unchanged pull request")
 	gh.HumanMerge(pr.Number, "alex")
 	poll("a merged pull request")
+}
+
+func TestAPollRefusedForTheRateLimitSaysLater(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	if _, err := c.Status(ctx, githubtest.Repo, pr.Number); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Errorf("Status while the quota is spent: %v, want ErrRateLimited", err)
+	}
 }
 
 func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {

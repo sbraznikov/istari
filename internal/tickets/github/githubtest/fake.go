@@ -57,6 +57,8 @@ type Server struct {
 	statuses        map[string]string    // commit → combined status
 	deletedBranches []string
 	counted         []string // "METHOD path" of the requests that count against the quota
+	remaining       int       // the quota the answers report, with reset
+	reset           time.Time // zero: no X-RateLimit-* headers
 }
 
 // Label is a repository label.
@@ -182,6 +184,15 @@ func New(t testing.TB, opts ...Option) *Server {
 // answer it would get is answered 304 and does not count against the quota.
 // Every other answer is counted.
 func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	if !s.reset.IsZero() {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(s.remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(s.reset.Unix(), 10))
+		if s.remaining == 0 {
+			s.write(w, http.StatusForbidden, map[string]string{"message": "API rate limit exceeded for user ID 1."})
+			return
+		}
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	res := rec.Result()
@@ -200,6 +211,15 @@ func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, h http
 	maps.Copy(w.Header(), res.Header)
 	w.WriteHeader(res.StatusCode)
 	w.Write(body)
+}
+
+// SetRateLimit makes every answer carry X-RateLimit-Remaining and
+// X-RateLimit-Reset; with remaining 0 every request is refused with 403, as
+// GitHub refuses once the quota is spent. The fake does not count down.
+func (s *Server) SetRateLimit(remaining int, reset time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remaining, s.reset = remaining, reset
 }
 
 // Counted returns the requests that counted against the quota, as "METHOD
