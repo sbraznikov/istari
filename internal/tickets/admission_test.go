@@ -272,3 +272,56 @@ func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
 		t.Fatalf("comments = %+v, want one naming the missing section", comments)
 	}
 }
+
+func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", strings.Replace(conforming, "| P1 |", "| P0 |", 1), "alex")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P0" {
+		t.Fatalf("ticket = %s %q, want ready and P0 from its table", tk.State, tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0] != (prioritized{"P0", "human:alex"}) {
+		t.Fatalf("prioritized events = %+v, want one P0 by the author human:alex", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P0") {
+		t.Fatalf("labels = %v, want priority:P0", f.gh.Issue(n).Labels)
+	}
+}
+
+func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
+	f.run(t)
+	f.gh.HumanSetLabels(n, "alex", "istari:ready")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P1" {
+		t.Fatalf("ticket = %s %q, want ready and P1 from its table", tk.State, tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0].Actor != "human:carol" {
+		t.Fatalf("prioritized events = %+v, want one by the author human:carol", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", f.gh.Issue(n).Labels)
+	}
+}
+
+func TestATicketAdmittedByHandGetsItsTablesPriority(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
+	f.run(t)
+	if tk := f.ticket(t, n); tk.Priority != "" {
+		t.Fatalf("priority = %q before admission, want none", tk.Priority)
+	}
+	if err := f.sync.Ready(ctx, "alex", ref(n)); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, n); tk.Priority != "P1" {
+		t.Fatalf("priority = %q, want P1 from its table", tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0].Actor != "human:carol" {
+		t.Fatalf("prioritized events = %+v, want one by the author human:carol", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", f.gh.Issue(n).Labels)
+	}
+}

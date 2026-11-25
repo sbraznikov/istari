@@ -51,6 +51,22 @@ func TestNoRunStartsWhenTheTicketsBudgetIsSpent(t *testing.T) {
 	}
 }
 
+func TestATaskBlockedForBudgetLeavesItsTicketHeld(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 4)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	held, err := f.tickets.Get(ctx, tk.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Hold != "budget_exceeded" {
+		t.Fatalf("hold = %q, want budget_exceeded", held.Hold)
+	}
+}
+
 func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	parent, task := f.readyTask(t, 3)
@@ -62,7 +78,9 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 	}
 	s.finish <- harness.Result{ExitCode: 0}
 	f.waitTask(t, task.ID, core.TaskCompleted)
-	child, err := f.tickets.CreateWith(ctx, "agent:planner-1", core.NewTicket{Ref: "gh:acme/web#30", Project: "web", Title: "Child", BudgetOf: parent.Ref})
+	// The parent's implementer files a ticket (istari ticket create): not a
+	// child of a split, so it shares the parent's budget.
+	child, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: "gh:acme/web#30", Project: "web", Title: "Found", BudgetOf: parent.Ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,5 +131,82 @@ func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
 	defer g.Stop(0)
 	if g.spec.MaxBudgetUSD != 26 {
 		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30 less the child's $4", g.spec.MaxBudgetUSD)
+	}
+}
+
+// spendAndFinish lets a ticket's task run once, spend what the harness
+// reports and complete.
+func spendAndFinish(t *testing.T, f *runFixture, taskID string) {
+	t.Helper()
+	s := f.session(t)
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, taskID, core.TaskCompleted)
+}
+
+// split splits parent into a child with the given number and size, as the
+// planner does (T5), and starts the child.
+func split(t *testing.T, f *runFixture, parent string, n int, size string) core.Ticket {
+	t.Helper()
+	child, err := f.tickets.CreateWith(ctx, "agent:planner-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", n), Project: "web", Title: "Child", BudgetOf: parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", parent, []string{child.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, child.Ref, size)
+	f.fire(t, child.Ref, "accept", "start")
+	return child
+}
+
+func implement(t *testing.T, f *runFixture, ref string) core.Task {
+	t.Helper()
+	task, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: ref, Project: "web", Role: "implementer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	parent, task := f.readyTask(t, 50)
+	sized(t, f, parent.Ref, "M")
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // the planner spends $4 on the parent
+	sized(t, f, parent.Ref, "XL")  // too large: the planner splits it
+	child := split(t, f, parent.Ref, 51, "S")
+	implement(t, f, child.Ref)
+	c := f.session(t)
+	defer c.Stop(0)
+	if c.spec.MaxBudgetUSD != 5 {
+		t.Fatalf("the split child's run is capped at $%v, want its own S budget of $5", c.spec.MaxBudgetUSD)
+	}
+}
+
+func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	parent, task := f.readyTask(t, 60)
+	sized(t, f, parent.Ref, "M")
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // the planner spends $4 on the parent
+	sized(t, f, parent.Ref, "XL")
+	child := split(t, f, parent.Ref, 61, "S")
+	spendAndFinish(t, f, implement(t, f, child.Ref).ID) // the child spends $4 of its $5
+	// The child's implementer files a ticket (istari ticket create).
+	filed, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: "gh:acme/web#62", Project: "web", Title: "Found", BudgetOf: child.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, filed.Ref, "L")
+	f.fire(t, filed.Ref, "accept", "start")
+	implement(t, f, filed.Ref)
+	g := f.session(t)
+	defer g.Stop(0)
+	if g.spec.MaxBudgetUSD != 1 {
+		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
 	}
 }
