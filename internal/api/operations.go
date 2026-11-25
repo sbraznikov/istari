@@ -360,7 +360,8 @@ func (s *Server) operations() map[string]operation {
 		// findings and records the report; the verdict is the pipeline's.
 		"review.submit": write(okAgain, func(ctx context.Context, r ReviewSubmitRequest) (any, error) { return s.submitReview(ctx, r) }),
 		// refine.submit is the refiner's structured result (spec 4.5): code
-		// checks and applies it; what it rejects fails the run.
+		// checks and applies it; what it rejects fails the run, unless a later
+		// result of the run is accepted.
 		"refine.submit": write(okAgain, func(ctx context.Context, r RefineSubmitRequest) (any, error) {
 			run, isAgent := runOf(ctx)
 			switch {
@@ -380,6 +381,9 @@ func (s *Server) operations() map[string]operation {
 					return nil, rerr
 				}
 				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+			}
+			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
+				return nil, err
 			}
 			return OK{OK: true}, nil
 		}),
