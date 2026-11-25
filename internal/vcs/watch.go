@@ -22,6 +22,15 @@ const (
 
 const prKind = "pull_request"
 
+// ChecksNone is the checks state of a pull request whose head commit still
+// has no check runs and no commit statuses NoCIWindow after istari's last
+// push to it: the repository has no CI (spec section 4.3).
+const ChecksNone = "none"
+
+// NoCIWindow is how long a pushed head may go without checks before the
+// pull request is read as having no CI.
+const NoCIWindow = 10 * time.Minute
+
 // Tracked is a ticket's pull request as istari last saw it.
 type Tracked struct {
 	Ticket string `json:"ticket"`
@@ -32,8 +41,11 @@ type Tracked struct {
 	// Replaced is the commit that push replaced: its checks are no longer
 	// news, even while GitHub still shows it as the head.
 	Replaced string `json:"replaced,omitempty"`
-	Checks   string `json:"checks,omitempty"`
-	SHA      string `json:"sha,omitempty"` // the head commit the checks are of
+	Checks   string `json:"checks,omitempty"` // as Status.Checks, or ChecksNone
+	SHA      string `json:"sha,omitempty"`    // the head commit the checks are of
+	// Pushed is when istari last pushed to the pull request (Track or
+	// Pushed): the no-CI window runs from here.
+	Pushed time.Time `json:"pushed"`
 	Review   string `json:"review,omitempty"`
 	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
 
@@ -58,9 +70,10 @@ func NewWatcher(c *Client, s store.Store, clock func() time.Time) *Watcher {
 
 // Track starts watching a ticket's pull request.
 func (w *Watcher) Track(ctx context.Context, ticket, repo string, pr Opened) error {
-	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: pr.Number, URL: pr.URL})
+	now := w.clock().UTC()
+	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: pr.Number, URL: pr.URL, Pushed: now})
 	raw, _ := json.Marshal(map[string]any{"repo": repo, "number": pr.Number})
-	_, err := w.store.Append(ctx, store.Event{Type: "vcs.tracked", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+	_, err := w.store.Append(ctx, store.Event{Type: "vcs.tracked", At: now, Actor: "system", Ticket: ticket, Payload: raw},
 		store.Change{Kind: prKind, ID: ticket, Data: data})
 	if errors.Is(err, store.ErrConflict) {
 		return fmt.Errorf("vcs: %s already has a tracked pull request", ticket)
@@ -187,9 +200,13 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 	}
 	var changes []change
 	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
-	if s.Checks != "" && !stale && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
-		t.Checks, t.SHA = s.Checks, s.HeadSHA
-		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
+	checks := s.Checks
+	if checks == "" && s.HeadSHA != "" && !w.clock().Before(t.Pushed.Add(NoCIWindow)) {
+		checks = ChecksNone
+	}
+	if checks != "" && !stale && (checks != t.Checks || s.HeadSHA != t.SHA) {
+		t.Checks, t.SHA = checks, s.HeadSHA
+		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": checks, "sha": s.HeadSHA}})
 	}
 	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {
 		t.Review = s.Review

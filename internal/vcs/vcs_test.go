@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -416,5 +417,71 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	}
 	if !strings.Contains(body[standards:spec], "cache.go:3: Get has no doc comment") || !strings.Contains(body[spec:], "0 findings") {
 		t.Fatalf("body = %q, want each axis with its own findings", body)
+	}
+}
+
+// noCIFixture is a tracked pull request in a repository without CI, watched
+// with a clock the test moves.
+func noCIFixture(t *testing.T) (gh *githubtest.Server, s store.Store, w *vcs.Watcher, ticket string, pr vcs.Opened, now *time.Time) {
+	t.Helper()
+	gh = githubtest.New(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	clock := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	now = &clock
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w = vcs.NewWatcher(c, db, func() time.Time { return *now })
+	ticket = "gh:" + githubtest.Repo + "#3"
+	pr, err = c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	return gh, db, w, ticket, pr, now
+}
+
+// checksEvents lists the ticket's vcs.checks events as checks@sha.
+func checksEvents(t *testing.T, s store.Store, ticket string) string {
+	t.Helper()
+	events, err := s.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: vcs.EventChecks}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		var p struct{ Checks, SHA string }
+		json.Unmarshal(e.Payload, &p)
+		got = append(got, p.Checks+"@"+p.SHA)
+	}
+	return strings.Join(got, " ")
+}
+
+func TestAPullRequestWithoutChecksTenMinutesAfterItsPushHasNoCI(t *testing.T) {
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "abc123") // no check runs, no statuses
+	*now = now.Add(9*time.Minute + 59*time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("before 10 minutes: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "none" || tr.SHA != "abc123" {
+		t.Fatalf("after 10 minutes: %+v, want checks none of abc123", tr)
+	}
+	if err := w.Poll(ctx); err != nil { // nothing new
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@abc123"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
 	}
 }
