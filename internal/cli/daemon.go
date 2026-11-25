@@ -52,6 +52,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			// One transport under every GitHub client: istari doctor counts
 			// all requests, and one quota slows them all down (#208).
 			transport := ratelimit.New(ratelimit.Options{})
+			daemonOpts.GitHub = transport
 			if len(daemonOpts.Repos) > 0 {
 				tracker, err := github.FromEnvironmentWith(ctx, &http.Client{Timeout: 30 * time.Second, Transport: transport})
 				if err != nil {

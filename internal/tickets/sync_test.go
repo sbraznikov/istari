@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
@@ -135,6 +138,42 @@ func TestASyncOfUnchangedIssuesMakesNoRequestThatCounts(t *testing.T) {
 	f.run(t)
 	if got := f.gh.Counted()[before:]; len(got) != 0 {
 		t.Errorf("counted requests of a sync of unchanged issues = %v, want none", got)
+	}
+}
+
+func TestWithFewRequestsLeftTheSyncWaitsUntilTheReset(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	transport := ratelimit.New(ratelimit.Options{})
+	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token, HTTPClient: &http.Client{Transport: transport}})
+	syncer := tickets.NewSyncer(adapter, core.NewTickets(s, core.TicketOptions{}), s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Hold: transport.Hold})
+	gh.Seed("t", "", "bob")
+	reset := time.Now().Truncate(time.Second).Add(2 * time.Second)
+	gh.SetRateLimit(50, reset)
+	lists := func() int {
+		return len(slices.DeleteFunc(gh.Counted(), func(r string) bool { return r != "GET /repos/"+githubtest.Repo+"/issues" }))
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { syncer.Run(ctx, 10*time.Millisecond) })
+	defer wg.Wait()
+	defer cancel()
+	deadline := reset.Add(5 * time.Second)
+	for lists() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	second := time.Now()
+	if lists() < 2 {
+		t.Fatalf("lists of the issues by %v = %d, want a second sync after the reset", deadline, lists())
+	}
+	if second.Before(reset) {
+		t.Errorf("the second sync came at %v, want not before the reset %v", second, reset)
 	}
 }
 

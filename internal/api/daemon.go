@@ -15,6 +15,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -66,6 +67,8 @@ type DaemonOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side; nil turns pushes and pull requests off.
 	VCS *vcs.Client
+	// GitHub is the transport under Tracker and VCS (ServerOptions.GitHub).
+	GitHub *ratelimit.Transport
 	// PausedBy, when set, pauses the hand-out of tasks for all projects in
 	// this actor's name before the first sync and claim, as
 	// istari pause --all does.
@@ -105,7 +108,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	defer os.Remove(socket)
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
-		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS})
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS, GitHub: opts.GitHub})
 	// A store from before a finished ticket canceled its tasks is repaired
 	// once, before anything hands them out (spec 4.2).
 	if _, err := srv.Tasks().CancelOfFinished(ctx, "system"); err != nil {
