@@ -227,6 +227,21 @@ func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchem
 	}
 }
 
+func TestTheRolesThatSubmitAResultNameTheResultFileAndTheHeredocForShortResults(t *testing.T) {
+	for role, submit := range map[string]string{"planner": "istari plan submit", "refiner": "istari refine submit", "reviewer": "istari review submit"} {
+		in := briefInput()
+		in.Role = role
+		if role == "reviewer" {
+			in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go"}}
+		}
+		b := runner.Brief(in)
+		file, heredoc := strings.Index(b, "$ISTARI_RESULT"), strings.Index(b, "<<'EOF'")
+		if file < 0 || heredoc < 0 || file > heredoc || !strings.Contains(b, "`"+submit+"`") || !strings.Contains(b, "short") {
+			t.Errorf("the %s's brief does not name the result file first and the heredoc for short results:\n%s", role, b)
+		}
+	}
+}
+
 func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T) {
 	t.Parallel()
 	in := briefInput()

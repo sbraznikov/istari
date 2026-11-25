@@ -568,6 +568,45 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 	}
 }
 
+func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		DataDir: f.data, Projects: []string{"web"},
+		Slots: []runner.Slot{{Profile: "planner-1", Role: "planner", Harness: harness.Profile{Harness: f.h.name, AllowedTools: []string{"Read", "Bash(istari *)"}}}},
+	})
+	tk := f.ticket(t, 17, "Plan me")
+	f.fire(t, tk.Ref, "accept", "start")
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "planner"}); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	spec := f.session(t).spec
+	result := spec.Env["ISTARI_RESULT"]
+	if want := filepath.Join(f.data, "runs", spec.Env["ISTARI_RUN"], "result.yaml"); result != want {
+		t.Fatalf("ISTARI_RESULT = %q, want %q in the run's directory", result, want)
+	}
+	want := []string{"Read", "Bash(istari *)", "Write(/" + result + ")", "Edit(/" + result + ")"}
+	if !slices.Equal(spec.AllowedTools, want) {
+		t.Fatalf("a planner's allowed tools = %q, want %q: its profile and the result file", spec.AllowedTools, want)
+	}
+}
+
+func TestTheImplementerGetsNoResultFile(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	f.readyTask(t, 18)
+	f.start(t)
+	spec := f.session(t).spec
+	if v, ok := spec.Env["ISTARI_RESULT"]; ok {
+		t.Fatalf("the implementer's ISTARI_RESULT = %q, want none", v)
+	}
+	for _, tool := range spec.AllowedTools {
+		if strings.HasPrefix(tool, "Write(") || strings.HasPrefix(tool, "Edit(") {
+			t.Fatalf("the implementer's allowed tools = %q, want no rule for a single file", spec.AllowedTools)
+		}
+	}
+}
+
 func TestOtherRolesDoNotGetTheCheckCommands(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
