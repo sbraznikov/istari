@@ -496,6 +496,8 @@ func (w *Workspaces) redCheckout(ctx context.Context, ws Workspace, commit strin
 	dir := redDir(ws)
 	if !isWorktree(ctx, dir) {
 		clone := w.clonePath(ws.Repo)
+		// Whatever is left of a broken one only holds previous code; if it
+		// cannot be cleared, worktree add below fails and says why.
 		os.RemoveAll(dir)
 		gitOut(ctx, clone, "worktree", "prune")
 		_, err := gitOut(ctx, clone, "worktree", "add", "--detach", dir, commit)
