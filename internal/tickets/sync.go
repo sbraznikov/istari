@@ -172,7 +172,11 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 	seen := map[string]bool{}
 	for _, t := range open {
 		seen[t.Ref.String()] = true
-		if err := s.reconcile(ctx, repo, t, report); err != nil {
+		err := s.reconcile(ctx, repo, t, report)
+		if err == nil {
+			err = s.closedNeeds(ctx, t.Ref.String(), report)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", t.Ref, err))
 		}
 	}
@@ -393,33 +397,50 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 	if err := s.reconcile(ctx, repo, t, report); err != nil {
 		return err
 	}
-	tk, err := s.tickets.Get(ctx, t.Ref.String())
+	return s.closedNeeds(ctx, t.Ref.String(), report)
+}
+
+// closedNeeds takes in the closed tickets that ticket ref needs and istari
+// does not have: an issue closed before istari was set up, or lost with its
+// database. Each comes in as done or canceled, so the hold waiting_dependency
+// on ref can end (spec section 4.1, T3); an open need is synced on its own.
+// A ticket istari does not have is skipped.
+func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport) error {
+	tk, err := s.tickets.Get(ctx, ref)
+	var coreErr *core.Error
+	if errors.As(err, &coreErr) && coreErr.Code == core.CodeNotFound {
+		return nil // left for recover
+	}
 	if err != nil {
 		return err
 	}
 	for _, need := range tk.Needs {
-		ref, err := ParseRef(need)
+		needRef, err := ParseRef(need)
 		if err != nil {
 			continue
 		}
 		if _, err := s.tickets.Get(ctx, need); err == nil {
 			continue
 		}
-		c, err := s.provider.Get(ctx, ref)
+		c, err := s.provider.Get(ctx, needRef)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if !c.Closed || !finished(c.State.State) {
+		if !c.Closed {
 			continue // an open need is recovered or synced on its own
 		}
-		cr, ok := s.repoOf(ref)
+		cr, ok := s.repoOf(needRef)
 		if !ok {
 			continue
 		}
-		if _, err := s.tickets.Recover(ctx, "system", core.NewTicket{Ref: need, Project: cr.Project, Title: c.Title, Author: c.Author, URL: c.URL}, c.State.State, ""); err != nil {
+		state := c.State.State
+		if !finished(state) {
+			state = closedState(c.ClosedAs)
+		}
+		if _, err := s.tickets.Recover(ctx, "system", core.NewTicket{Ref: need, Project: cr.Project, Title: c.Title, Author: c.Author, URL: c.URL}, state, ""); err != nil {
 			return err
 		}
 		if err := s.reconcile(ctx, cr, c, report); err != nil {
@@ -427,6 +448,19 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 		}
 	}
 	return nil
+}
+
+// closedState is the state of a closed issue without an istari state label,
+// from how it was closed, the reverse of spec section 4.1 (done closes as
+// completed, canceled as not planned): not planned or a duplicate is
+// canceled; completed, or no reason (an issue closed before trackers recorded
+// one), is done.
+func closedState(closedAs string) core.TicketState {
+	switch closedAs {
+	case "not_planned", "duplicate":
+		return core.TicketCanceled
+	}
+	return core.TicketDone
 }
 
 // parentOf is the ticket t's text names as its parent, or "".
