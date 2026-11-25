@@ -113,19 +113,22 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		return journal.Entry{}, err
 	}
 	for _, name := range []string{"typecheck", "test"} {
-		check, ok := checks.Get(name)
-		if !ok {
+		if _, ok := checks.Get(name); !ok {
 			entry.Notes = append(entry.Notes, name+": no command in the main branch's "+pipeline.Path)
+		}
+	}
+	for _, check := range checks.List {
+		if !check.RunsAt(pipeline.AtCheckpoint) {
 			continue
 		}
 		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
-			entry.Checks[name] = "green"
+			entry.Checks[check.Name] = "green"
 		} else {
-			entry.Checks[name], entry.Red = "red", true
+			entry.Checks[check.Name], entry.Red = "red", true
 			if entry.Failures == nil {
 				entry.Failures = map[string]string{}
 			}
-			entry.Failures[name] = output
+			entry.Failures[check.Name] = output
 		}
 	}
 	if test, ok := checks.Get("test"); ok && checks.VerifyRed && len(tests) > 0 {

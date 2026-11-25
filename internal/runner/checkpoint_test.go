@@ -320,6 +320,33 @@ func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 	}
 }
 
+func TestAProjectsOwnCheckRunsAtACheckpointByItsName(t *testing.T) {
+	t.Parallel()
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"sh run-tests.sh\"\nformat = \"! grep -l '  $' *.txt\"\nlint = \"true\"\n")
+	f.slice(t, "tidy")
+	if c := f.checkpoint(t, "Formatted"); c.Red || c.Checks["format"] != "green" || c.Checks["lint"] != "green" {
+		t.Fatalf("checks = %v red %v, want format and lint green", c.Checks, c.Red)
+	}
+	write(t, filepath.Join(f.ws.Dir, "messy.txt"), "trailing  \n")
+	c := f.checkpoint(t, "Messy")
+	if !c.Red || c.Checks["format"] != "red" || c.Checks["lint"] != "green" {
+		t.Fatalf("checks = %v red %v, want format red", c.Checks, c.Red)
+	}
+	if !strings.Contains(c.Failures["format"], "messy.txt") {
+		t.Fatalf("failures = %v, want the format check's output", c.Failures)
+	}
+}
+
+func TestACheckAtPRDoesNotRunAtACheckpoint(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "ran")
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"sh run-tests.sh\"\ntidy = { run = \"touch "+marker+"; exit 1\", at = [\"pr\"] }\n")
+	f.slice(t, "first")
+	if c := f.checkpoint(t, "First"); c.Red || c.Checks["tidy"] != "" || exists(marker) {
+		t.Fatalf("checks = %v red %v ran %v, want tidy left for the pull request", c.Checks, c.Red, exists(marker))
+	}
+}
+
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
 	t.Parallel()
 	f := newCheckpoints(t)
