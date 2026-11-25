@@ -193,3 +193,57 @@ func TestARedPreviousCheckpointCannotJudgeRedFirst(t *testing.T) {
 		t.Fatalf("notes = %v, want verify_red reported as not judged", c.Notes)
 	}
 }
+
+// newLoggedCheckpoints makes a fixture whose test command writes the
+// directory of each of its runs to a log outside the repository.
+func newLoggedCheckpoints(t *testing.T) (*cpFixture, func() []string) {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "runs.log")
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"pwd -P >> "+log+"; sh run-tests.sh\"\nverify_red = true\n")
+	runs := func() []string {
+		data, _ := os.ReadFile(log)
+		os.Remove(log)
+		return strings.Fields(string(data))
+	}
+	return f, runs
+}
+
+// elsewhere returns the runs that were not in the ticket's worktree.
+func (f *cpFixture) elsewhere(t *testing.T, runs []string) []string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(f.ws.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, r := range runs {
+		if r != dir {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// slice writes a code change and a test that fails without it.
+func (f *cpFixture) slice(t *testing.T, name string) {
+	t.Helper()
+	write(t, filepath.Join(f.ws.Dir, name+".txt"), name+"\n")
+	write(t, filepath.Join(f.ws.Dir, "tests", name+".sh"), "test -f "+name+".txt\n")
+}
+
+func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
+	f, runs := newLoggedCheckpoints(t)
+	f.slice(t, "first")
+	if c := f.checkpoint(t, "First slice"); c.Checks["test"] != "green" || c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v, want green", c.Checks)
+	}
+	runs()
+	f.slice(t, "second")
+	c := f.checkpoint(t, "Second slice")
+	if c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v notes %v, want verify_red green", c.Checks, c.Notes)
+	}
+	if got := f.elsewhere(t, runs()); len(got) != 1 {
+		t.Fatalf("the test command ran %d times on the previous code (%v), want once", len(got), got)
+	}
+}
