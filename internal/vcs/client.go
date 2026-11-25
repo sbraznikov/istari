@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -390,20 +391,7 @@ func Push(ctx context.Context, p PushSpec) error {
 	if p.Target != p.Own {
 		return refuse("an agent pushes only to its ticket branch %s, not %s", p.Own, p.Target)
 	}
-	run := func(env []string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
-		cmd.Dir = p.Private
-		cmd.Env = append(cleanEnv(), env...)
-		out, err := cmd.CombinedOutput()
-		msg := strings.TrimSpace(string(out))
-		if p.Token != "" {
-			msg = strings.ReplaceAll(msg, p.Token, "***")
-		}
-		if err != nil {
-			return msg, refuse("git %s: %s", args[0], msg)
-		}
-		return msg, nil
-	}
+	run := func(env []string, args ...string) (string, error) { return pushGit(ctx, p, env, args...) }
 	if _, err := os.Stat(p.Private); err != nil {
 		if err := os.MkdirAll(p.Private, 0o700); err != nil {
 			return err
@@ -422,11 +410,7 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	auth := authEnv(p.Token)
 	remoteHead := func() string {
-		out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own)
-		if err != nil {
-			return ""
-		}
-		head, _, _ := strings.Cut(out, "\t")
+		head, _ := RemoteHead(ctx, p) // "" when the branch is unknown or the remote does not answer
 		return head
 	}
 	args := []string{"push", "--porcelain"}
@@ -448,6 +432,38 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	_, err := run(nil, "update-ref", seen, work)
 	return err
+}
+
+// RemoteHead returns the commit of the ticket's branch on the remote, ""
+// when the remote has no such branch.
+func RemoteHead(ctx context.Context, p PushSpec) (string, error) {
+	out, err := pushGit(ctx, p, authEnv(p.Token), "ls-remote", p.URL, "refs/heads/"+p.Own)
+	if err != nil {
+		return "", err
+	}
+	head, _, _ := strings.Cut(out, "\t")
+	return head, nil
+}
+
+// pushGit runs git in istari's private repository of a push, without hooks
+// and with the token kept out of what it reports. When ctx ends, git ends
+// with the helpers it started (a remote helper, a local receive-pack).
+func pushGit(ctx context.Context, p PushSpec, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
+	cmd.Dir = p.Private
+	cmd.Env = append(cleanEnv(), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if p.Token != "" {
+		msg = strings.ReplaceAll(msg, p.Token, "***")
+	}
+	if err != nil {
+		return msg, &core.Error{Code: CodePushRefused, Message: fmt.Sprintf("git %s: %s", args[0], msg)}
+	}
+	return msg, nil
 }
 
 // authEnv gives git the token as a header through its environment.
