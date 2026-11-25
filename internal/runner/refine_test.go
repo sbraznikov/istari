@@ -67,6 +67,12 @@ func TestAMalformedRefinerResultIsRejected(t *testing.T) {
 	}
 }
 
+func TestARefinerResultWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	data := "verdict: meets\nsize: S\nsize_reason: one file: the limiter\n"
+	_, err := runner.ParseRefine([]byte(data))
+	refusesUnquotedColon(t, err, 3)
+}
+
 func TestARewriteMustKeepTheOriginalByteForByte(t *testing.T) {
 	f := newRefine(t)
 	changed := standardBody(strings.Replace(rawTicket, "rate limits", "limits", 1))
