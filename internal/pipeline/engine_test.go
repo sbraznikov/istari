@@ -1,12 +1,16 @@
 package pipeline_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
@@ -934,5 +938,34 @@ func TestATaskFailedBelowItsLimitDoesNotHoldTheTicket(t *testing.T) {
 	}
 	if plan := f.stage(t, ref, "plan"); plan.State != core.TaskReady {
 		t.Fatalf("plan is %s, want ready for its next attempt", plan.State)
+	}
+}
+
+// Not parallel: it reads the log, which every test of the package shares.
+func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
+	repos := []string{"acme/web", "acme/api"}
+	// A cache of a nanosecond: every Load reads the file again.
+	e := pipeline.NewEngine(core.NewTasks(s, core.TaskOptions{}), core.NewTickets(s, core.TicketOptions{}),
+		pipeline.EngineOptions{Files: files{repos[0]: early, repos[1]: early}, CacheFor: time.Nanosecond})
+	for range 3 {
+		for _, repo := range repos {
+			if _, err := e.Load(ctx, repo); err != nil {
+				t.Fatalf("%s: %v", repo, err)
+			}
+		}
+	}
+	for _, repo := range repos {
+		if n := strings.Count(logged.String(), repo+": .istari/pipeline.toml line 5"); n != 1 {
+			t.Errorf("%s: the warning was logged %d times, want once\n%s", repo, n, logged.String())
+		}
 	}
 }

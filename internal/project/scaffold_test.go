@@ -67,17 +67,12 @@ func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pipeline.toml (%v) does not load: %v", lang, err)
 		}
-		review := false
-		for _, task := range p.Expand(pipeline.Settings{}) {
-			if task.Stage == "review" {
-				review = true
-				if !slices.Contains(task.Needs, "verify") {
-					t.Fatalf("review needs %v, want verify among them", task.Needs)
-				}
-			}
+		// Warnings names a reviewer stage that does not need verify.
+		if !slices.ContainsFunc(p.Stages, func(s pipeline.Stage) bool { return s.Role == "reviewer" }) {
+			t.Fatalf("pipeline.toml (%v) has no reviewer stage, want one", lang)
 		}
-		if !review {
-			t.Fatalf("pipeline.toml (%v) has no review task, want one", lang)
+		if w := p.Warnings(); len(w) != 0 {
+			t.Fatalf("pipeline.toml (%v) warns %q, want its review to wait for verify", lang, w)
 		}
 	}
 }
