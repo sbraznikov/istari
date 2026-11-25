@@ -13,6 +13,7 @@ import (
 // the blank import in the binary's main package that registers it. Tests may
 // mention it, e.g. to fake its binary.
 func TestNothingSpecificToOneHarnessLeaksOut(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..")
 	adapter := filepath.Join(root, "internal", "harness", "claudecode")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

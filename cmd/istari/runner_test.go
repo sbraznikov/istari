@@ -46,6 +46,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
+	t.Parallel()
 	server := gitServer(t)
 	dataDir := newDataDir(t)
 	s, err := store.Open(filepath.Join(dataDir, api.DatabaseName))

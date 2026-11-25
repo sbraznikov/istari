@@ -91,6 +91,7 @@ func newReviewed(t *testing.T, agent string) reviewed {
 }
 
 func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) {
+	t.Parallel()
 	r := newReviewed(t, reviewAgent)
 	d, gh, ref, pr, log := r.d, r.gh, r.ref, r.pr, r.log
 
@@ -195,6 +196,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
+	t.Parallel()
 	r := newReviewed(t, silentReviewer)
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		var runs []struct{ Role, State, Reason string }
@@ -380,6 +382,7 @@ spec: 0 findings
 findings: []`
 
 func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
+	t.Parallel()
 	d, gh, n, log := earlyReview(t, validReport)
 	runs := endedReviews(t, d, log, 2)
 	out, _ := os.ReadFile(log)
@@ -409,6 +412,7 @@ func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
 }
 
 func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
+	t.Parallel()
 	d, _, _, log := earlyReview(t, "findings: [")
 	runs := endedReviews(t, d, log, 1)
 	if !strings.HasPrefix(runs[0].Reason, "rejected: ") {

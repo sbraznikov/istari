@@ -12,6 +12,7 @@ import (
 )
 
 func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	dataDir := newDataDir(t)
 	config := filepath.Join(t.TempDir(), "config.toml")
@@ -86,6 +87,7 @@ func TestAPlanCorrectedInTheSameRunCompletesThePlanTask(t *testing.T) {
 }
 
 func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	cmd := exec.Command(binary, "--config", d.config, "plan", "submit", "--file", "-")
 	cmd.Stdin = strings.NewReader("summary: s\n")

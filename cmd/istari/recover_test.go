@@ -18,6 +18,7 @@ import (
 )
 
 func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	held := gh.Seed("Add a cache", "## Context\n\nA cache.\n", "alex", "istari:in_progress", "istari:hold:needs_input", "priority:P1")
 	working := gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", "istari:in_progress")
@@ -94,6 +95,7 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 }
 
 func TestTicketResumeTakesBackATaskWhoseRunIsGone(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)

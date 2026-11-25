@@ -44,6 +44,7 @@ func (f *fixture) claimOrder(t *testing.T, n int) []string {
 }
 
 func TestClaimReadyTakesTheHighestPriorityAndTheOldestOnATie(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.ticketAt(t, tickets, 1, "P2")
@@ -56,6 +57,7 @@ func TestClaimReadyTakesTheHighestPriorityAndTheOldestOnATie(t *testing.T) {
 }
 
 func TestATaskNeededByAHigherPriorityTicketRunsAtThatPriority(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.ticketAt(t, tickets, 1, "P1")
@@ -67,6 +69,7 @@ func TestATaskNeededByAHigherPriorityTicketRunsAtThatPriority(t *testing.T) {
 }
 
 func TestOnlyAHumanChangesAPriority(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	ref := "gh:acme/web#1"
@@ -90,6 +93,7 @@ func TestOnlyAHumanChangesAPriority(t *testing.T) {
 }
 
 func TestAHigherPriorityDoesNotPreemptAClaimedTask(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	low := f.ticketAt(t, tickets, 1, "P3")
@@ -107,6 +111,7 @@ func TestAHigherPriorityDoesNotPreemptAClaimedTask(t *testing.T) {
 }
 
 func TestATicketWithoutAPriorityIsHandedOutAtTheConfiguredDefault(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.tasks = core.NewTasks(f.store, core.TaskOptions{Clock: f.clock.Now, DefaultPriority: "P1"})
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
@@ -118,6 +123,7 @@ func TestATicketWithoutAPriorityIsHandedOutAtTheConfiguredDefault(t *testing.T) 
 }
 
 func TestSettingTheSamePriorityAgainChangesNothing(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.ticketAt(t, tickets, 1, "P1")
@@ -130,6 +136,7 @@ func TestSettingTheSamePriorityAgainChangesNothing(t *testing.T) {
 }
 
 func TestClaimReadyInTakesOnlyTasksOfTheNamedProjects(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_api", Ticket: "gh:acme/api#1", Project: "api", Role: "implementer"}); err != nil {
 		t.Fatal(err)
@@ -143,6 +150,7 @@ func TestClaimReadyInTakesOnlyTasksOfTheNamedProjects(t *testing.T) {
 }
 
 func TestATaskOfAHeldTicketIsNotHandedOut(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.ticketAt(t, tickets, 1, "P0")
@@ -159,6 +167,7 @@ func TestATaskOfAHeldTicketIsNotHandedOut(t *testing.T) {
 }
 
 func TestATicketNeededByAMoreUrgentTicketRunsAtItsPriority(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
 	f.ticketAt(t, tickets, 1, "P1")
@@ -182,6 +191,7 @@ func TestATicketNeededByAMoreUrgentTicketRunsAtItsPriority(t *testing.T) {
 }
 
 func TestPriorityInheritanceThroughACycleDoesNotDependOnOrder(t *testing.T) {
+	t.Parallel()
 	for range 20 { // map order varies between runs
 		f := newFixture(t)
 		tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
