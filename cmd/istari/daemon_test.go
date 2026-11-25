@@ -16,6 +16,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sbraznikov/istari/internal/api"
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
 type daemon struct {
@@ -307,6 +312,74 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	again.call(t, "ticket.list", map[string]any{}, &tickets)
 	if len(tickets) != 1 || tickets[0].Ref != "gh:acme/web#1" {
 		t.Fatalf("tickets after restart = %v", tickets)
+	}
+}
+
+// sleepingAgent is a harness binary whose run lives until it is killed.
+const sleepingAgent = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+echo '{"type":"system","subtype":"init","session_id":"s1","model":"m","cwd":"/w","tools":[]}'
+exec sleep 30
+`
+
+func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
+	t.Parallel()
+	server := gitServer(t)
+	dataDir := newDataDir(t)
+	s, err := store.Open(filepath.Join(dataDir, api.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	k := core.NewTickets(s, core.TicketOptions{})
+	if _, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: "gh:acme/web#5", Project: "web", Title: "Add limits"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range []string{"accept", "start", "plan_accepted"} {
+		if _, err := k.Fire(ctx, "system", "gh:acme/web#5", tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := core.NewTasks(s, core.TaskOptions{}).Create(ctx, "system", core.NewTask{Ticket: "gh:acme/web#5", Project: "web", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(sleepingAgent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gh := githubtest.New(t)
+	for range 5 {
+		gh.HumanClose(gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob"), "bob", "completed")
+	}
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := startDaemonWithConfig(t, dataDir, config, env...)
+
+	type listed struct{ ID, State, Reason string }
+	var runs []listed
+	for deadline := time.Now().Add(20 * time.Second); len(runs) == 0 || runs[0].State != "running"; time.Sleep(50 * time.Millisecond) {
+		d.mustCLI(t, &runs, "run", "list")
+		if time.Now().After(deadline) {
+			t.Fatalf("no run started: %+v\nstderr: %s", runs, d.stderr)
+		}
+	}
+	left := runs[0].ID
+	d.cmd.Process.Kill() // the daemon dies with its run still recorded running
+	d.cmd.Wait()
+
+	again := startDaemonWithConfig(t, dataDir, config, env...)
+	again.mustCLI(t, &runs, "run", "list")
+	if len(runs) != 1 || runs[0].ID != left || runs[0].State != "ended" || runs[0].Reason != "the daemon restarted" {
+		t.Fatalf("runs after the restart = %+v, want %s ended because the daemon restarted", runs, left)
+	}
+	_, stderr, code := again.cli(t, "run", "stop", left)
+	if code == 0 || !strings.Contains(stderr, "run "+left+" has ended: the daemon restarted") {
+		t.Fatalf("run stop = exit %d, %q; want that the run has ended", code, stderr)
 	}
 }
 

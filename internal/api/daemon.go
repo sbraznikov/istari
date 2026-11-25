@@ -102,6 +102,10 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
 		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS})
+	// The lock proves no other daemon owns a run still recorded running.
+	if err := srv.EndRunsLeftRunning(ctx); err != nil {
+		return fmt.Errorf("ending runs left running: %w", err)
+	}
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)
