@@ -760,7 +760,7 @@ claude --print "$(cat brief.md)" \
 **What the brief says about allowed tools.** In a mode where nobody is asked (`dontAsk`), a command that no rule allows is denied, and a compound command (`a; b | c`) is denied whole when one of its parts is. So the brief has a section "Commands you may run" that lists every shell rule of the run's `--allowedTools` (`istari *`, `git log *`, …). The list is taken from the same allowed tools the harness gets, after the profile and the implementer's check rules are applied, so it cannot drift from the rules. The section also says:
 
 - run each `istari` command on its own, not chained with other commands;
-- a denied command denies only that command: the others, and `istari review submit` and `istari complete` above all, still work.
+- a denied command denies only that command: the others, and the `istari` commands that submit the result (`istari review submit`, …) and `istari complete` above all, still work.
 
 The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, `git show` and `istari`; the reviewer may also run `git fetch origin main`, so it can see what the main branch has.
 

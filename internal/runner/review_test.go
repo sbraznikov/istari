@@ -1,11 +1,16 @@
 package runner_test
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/harness/claudecode"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -224,6 +229,67 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 	}
 	if strings.Join(in.Standards, " ") != "CODING_STANDARDS.md" {
 		t.Fatalf("standards = %v, want the one standards file on main", in.Standards)
+	}
+}
+
+func TestAReviewerWhoseFirstCompoundCommandIsDeniedStillSubmitsItsReview(t *testing.T) {
+	// The scripted session opens as the runs of #159 did: one chain with a
+	// command the reviewer may not run, which Claude Code denies whole.
+	denied, err := json.Marshal(map[string]string{"command": "cat .istari/skill.md | head -80; istari whoami; git fetch -q origin main; git log --oneline -3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newRunner(t, runner.RunnerOptions{}, harness.Event{Kind: harness.EventToolCall, Tool: "Bash", ToolInput: denied})
+	profile := claudecode.DefaultProfiles()["reviewer"]
+	profile.Harness = f.h.name
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws,
+		runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Slots: []runner.Slot{{Profile: "reviewer-1", Role: "reviewer", Harness: profile}}})
+	tk := f.ticket(t, 40, "Review me")
+	f.fire(t, tk.Ref, "accept", "start")
+	task, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	s := f.session(t)
+	for _, want := range []string{"Run each `istari` command on its own", "A denied command denies only that command", "- `git fetch origin main`\n"} {
+		if !strings.Contains(s.spec.Brief, want) {
+			t.Errorf("the reviewer's brief lacks %q", want)
+		}
+	}
+	// After the denial the agent runs each istari command on its own.
+	run, err := f.runner.Runs().Get(ctx, s.spec.Env["ISTARI_RUN"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.ParseReviewResult([]byte("standards: \"0 findings\"\nspec: \"0 findings\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := runner.NewReviews(ws, journal.New(nil, f.store, nil))
+	checked, err := reviews.Check(ctx, run, res, "")
+	if err != nil {
+		t.Fatalf("istari review submit: %v", err)
+	}
+	if err := reviews.Record(ctx, run, checked); err != nil {
+		t.Fatalf("istari review submit: %v", err)
+	}
+	if _, err := f.runner.Runs().Complete(ctx, run.ID, "reviewed"); err != nil {
+		t.Fatalf("istari complete: %v", err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	ref, err := tickets.ParseRef(tk.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Review }) {
+		t.Fatalf("journal = %+v, want the review recorded", entries)
 	}
 }
 

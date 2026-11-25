@@ -214,7 +214,7 @@ func commandsSection(tools []string) string {
 	}
 	return "## Commands you may run\n\nThe shell runs only these commands; any other is denied:\n\n- `" + strings.Join(cmds, "`\n- `") + "`\n\n" +
 		"Run each `istari` command on its own, not chained with other commands by `;`, `&&` or `|`: a chain is denied whole when one of its parts is. " +
-		"A denied command denies only that command: the others, and `istari complete` above all, still work.\n\n"
+		"A denied command denies only that command: the others, and the `istari` commands that submit your result and `istari complete` above all, still work.\n\n"
 }
 
 var closing = regexp.MustCompile(`(?i)</untrusted`)
