@@ -33,6 +33,29 @@ func TestDoctorRejectsAPipelineWithAnUnknownRoleAtItsLine(t *testing.T) {
 	}
 }
 
+func TestDoctorWarnsOfAReviewThatDoesNotWaitForVerify(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(repo, ".istari"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
+	if err := os.WriteFile(filepath.Join(repo, ".istari", "pipeline.toml"), []byte(early), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, _ := istariEnv(t, repo, writeDaemonConfig(t, newDataDir(t)), []string{"PATH=/usr/bin:/bin"}, "doctor")
+	var row string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "pipeline ") {
+			row = line
+		}
+	}
+	if !strings.Contains(row, "warn") || !strings.Contains(row, "line 5") || !strings.Contains(row, `"verify"`) {
+		t.Fatalf("the pipeline row = %q, want a warning naming line 5 and the fix\n%s", row, out)
+	}
+}
+
 func TestAHumanApprovesThePlanGate(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t))

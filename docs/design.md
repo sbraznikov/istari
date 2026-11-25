@@ -197,13 +197,17 @@ any unfinished state ──► canceled ──► new (reopen)
 | T10 | `awaiting_approval` | `merge_failed` | `in_progress` | system | a conflict or red CI after the branch is updated. The repeat review is limited to the conflict resolution (section 4.9) |
 | T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
-| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed |
+| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
 | T14 | `canceled` | `reopen` | `new` | human | — |
 | T15 | `ready` | `edited` | `new` | system | the text of the ticket's mandatory sections has changed (compared by hash); editing labels and fixing typos outside these sections does not trigger the check |
 
 `done` is not reopened: a regression is filed as a new ticket with a link to the original one.
 
+**A finished ticket has no open tasks.** The transition to `done` (T11, T12) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
+
 **Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
+
+A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
@@ -211,7 +215,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
-| `waiting_dependency` | during the work it turned out that a ticket that is not yet completed is needed, usually in a neighboring repository | system, when the dependency ticket is completed |
+| `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
 
 **State machine rules.**
@@ -238,7 +242,9 @@ canceled — from any open state
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
+- A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
 
 ### 4.3 Default pipeline
 
@@ -413,7 +419,7 @@ Directly, without confirmation, the agent records only assumptions (`istari assu
 **Resuming.** The agent crashed, the lease expired, the machine rebooted, the ticket sat paused for a month, the istari database was lost — the sequence is the same:
 
 1. istari reads the ticket state and the summary from the tracker.
-2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step.
+2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step. A failed fetch of the remote is tried once more; when it fails again, the run starts on the branch as it is, and the journal records that the main branch was not merged and why.
 3. It assembles the brief from the ticket text, the journal and the PR using a template. If the journal is long, code takes all decisions and assumptions, the last plan and the latest checkpoints; the model is not used to compress the journal.
 4. The new run continues from the next step of the last checkpoint.
 
@@ -772,6 +778,14 @@ The result file exists because a heredoc does not carry a long result. Claude Co
 
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
 
+**When the harness does not start.** If `Start` returns an error (the program is missing, cannot be executed, or exits before the session begins), no agent has run. The Runner does not fail the task: it waits a few seconds and releases it to `ready` without spending an attempt (section 4.2). Each Runner slot counts its start failures in a row; a successful start resets the count. After three in a row the slot stops claiming tasks for a minute, so it does not hand the same tasks round in a loop, and the daemon log says so with the slot and the error:
+
+```
+runner implementer-2: paused for 1m: the harness did not start: claudecode: start claude: fork/exec /Users/pc/.local/bin/claude: no such file or directory
+```
+
+While a slot is paused, `istari doctor` shows a failing `runner slots` row with the slot, the error and the time it tries again. After the minute the slot claims again; if the harness starts, it works as before.
+
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
 
 ### 7.4 How the agent talks to istari
@@ -797,7 +811,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - Global concurrency limits: per project, per role, for the whole installation.
-- `istari pause --all` stops handing out tasks; running runs finish gracefully.
+- `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
 ### 7.6 How the implementer and the reviewer work
 
@@ -879,7 +893,7 @@ Any finding returns the ticket for rework. For a code smell the implementer eith
 The principle: less model, more deterministic code. The model is non-deterministic, costs money on every call and can be confidently wrong, so four rules apply.
 
 1. **The model does only what requires judgment.** Everything that can be expressed as a rule, a table or a check is done by code.
-2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A rejection fails the run. A submission refused only because the ticket is not yet in the state it belongs to fails nothing: code releases the run's task, and the refusal tells the agent to end its run without a result (section 4.2).
+2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A refusal is recorded in the journal and marks the run as rejected; the agent can correct its result and submit it again within the same run. A later submit of the same kind that code accepts clears the mark, and the run then ends as its `istari complete` says. A run whose mark is not cleared fails, with the reason of its last refusal. A submission refused only because the ticket is not yet in the state it belongs to fails nothing: code releases the run's task, and the refusal tells the agent to end its run without a result (section 4.2).
 3. **The model's claims are verified by code.** "The tests are green", "the change is reversible", "this is a quote from the ticket" are not taken on trust.
 4. **State transitions and irreversible actions are performed only by code**, according to its own rules. The model supplies the input data for them.
 
@@ -961,7 +975,7 @@ Event families: `ticket.*`, `task.*` (created, ready, claimed, renewed, released
 ```
 istari init                          # create a project from a repository, create .istari/
 istari repo add|remove|list          # project repositories
-istari daemon [--config]             # start the daemon; daemon install — as a system service
+istari daemon [--config] [--paused]  # start the daemon (--paused: hand-out paused); daemon install — as a system service
 istari whoami                        # role, ticket, task, permissions (for an agent)
 istari doctor                        # check Slack, tracker, VCS, harnesses
 istari slack setup                   # create the Slack app from a manifest, store the tokens

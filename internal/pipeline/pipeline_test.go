@@ -103,7 +103,7 @@ func TestAnUnknownRoleOrACycleIsRejectedWithItsLine(t *testing.T) {
 	}
 }
 
-func TestAReviewStageThatDoesNotNeedVerifyIsRefusedWithTheFix(t *testing.T) {
+func TestAReviewStageThatDoesNotNeedVerifyLoadsWithAWarningThatNamesTheFix(t *testing.T) {
 	t.Parallel()
 	p, err := pipeline.Parse([]byte(`[[stage]]
 name = "implement"
@@ -117,13 +117,28 @@ needs = ["implement"]
 	if err == nil {
 		err = p.Validate()
 	}
-	if err == nil {
-		t.Fatal("a review stage without verify loaded, want it refused")
+	if err != nil {
+		t.Fatalf("a review stage without verify is refused: %v; want it loaded with a warning", err)
+	}
+	w := p.Warnings()
+	if len(w) != 1 {
+		t.Fatalf("warnings = %q, want one", w)
 	}
 	for _, says := range []string{".istari/pipeline.toml line 5", `needs = ["implement", "verify"]`} {
-		if !strings.Contains(err.Error(), says) {
-			t.Errorf("error %q does not say %q", err, says)
+		if !strings.Contains(w[0], says) {
+			t.Errorf("warning %q does not say %q", w[0], says)
 		}
+	}
+}
+
+func TestAReviewStageThatNeedsVerifyHasNoWarning(t *testing.T) {
+	t.Parallel()
+	p, err := pipeline.Parse([]byte("[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := p.Warnings(); len(w) != 0 {
+		t.Fatalf("warnings = %q, want none", w)
 	}
 }
 

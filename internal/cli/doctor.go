@@ -113,6 +113,21 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				}
 				checks = append(checks, c)
 			}
+			// Slots whose harness did not start three times in a row
+			// (spec 7.3), as the running daemon sees them.
+			var paused []runner.PausedSlot
+			if err := opts.call(cmd, "runner.slots", "", api.Empty{}, &paused); err == nil {
+				c := check{Name: "runner slots", OK: len(paused) == 0}
+				if !c.OK {
+					var names []string
+					for _, p := range paused {
+						names = append(names, fmt.Sprintf("%s paused until %s: %s", p.Slot, p.Until.Local().Format("15:04:05"), p.Error))
+					}
+					c.Detail = strings.Join(names, "; ")
+					failed++
+				}
+				checks = append(checks, c)
+			}
 			rows := make([][]string, len(checks))
 			for i, c := range checks {
 				status := "ok"
@@ -166,6 +181,8 @@ func pipelineCheck() (doctorCheck, bool) {
 	}
 	if err != nil {
 		c.OK, c.Detail = false, err.Error()
+	} else if w := p.Warnings(); len(w) > 0 {
+		c.Warn, c.Detail = true, strings.Join(w, "; ")
 	}
 	return c, true
 }

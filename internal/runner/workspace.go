@@ -71,6 +71,20 @@ type Workspaces struct {
 	// checked is when a kept workspace was last checked for unsaved work;
 	// it is checked again at most once a minute, as each check fetches.
 	checked map[string]time.Time
+
+	fetches fetches
+}
+
+// fetches are the git fetches running, one per clone at most.
+type fetches struct {
+	mu      sync.Mutex        // serializes changes of running; not held while git runs
+	running map[string]*fetch // by the clone's git dir
+}
+
+// fetch is one git fetch of a clone; done is closed when err is set.
+type fetch struct {
+	done chan struct{}
+	err  error
 }
 
 // NewWorkspaces returns the ticket workspaces.
@@ -78,7 +92,7 @@ func NewWorkspaces(s store.Store, opts WorkspaceOptions) *Workspaces {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}}
+	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}, fetches: fetches{running: map[string]*fetch{}}}
 }
 
 // Ensure returns the ticket's worktree, creating it when it does not exist:
@@ -213,10 +227,10 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 	var reason string
 	switch {
 	case worktree:
-		reason, err = unsaved(ctx, ws.Dir, "HEAD")
+		reason, err = w.unsaved(ctx, ws.Dir, "HEAD")
 	case hasRef(ctx, clone, "refs/heads/"+ws.Branch):
 		// The directory is gone; the local branch may hold the only copy.
-		reason, err = unsaved(ctx, clone, "refs/heads/"+ws.Branch)
+		reason, err = w.unsaved(ctx, clone, "refs/heads/"+ws.Branch)
 	}
 	if err != nil {
 		return Workspace{}, err
@@ -256,7 +270,7 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 // unsaved says what removing would lose, or "": in dir, a worktree,
 // uncommitted changes; in dir, a worktree or the clone, commits of rev that
 // the remote has on no branch. The remote is fetched first.
-func unsaved(ctx context.Context, dir, rev string) (string, error) {
+func (w *Workspaces) unsaved(ctx context.Context, dir, rev string) (string, error) {
 	if rev == "HEAD" {
 		status, err := gitOut(ctx, dir, "status", "--porcelain")
 		if err != nil {
@@ -266,7 +280,7 @@ func unsaved(ctx context.Context, dir, rev string) (string, error) {
 			return "uncommitted changes", nil
 		}
 	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
+	if err := w.fetch(ctx, dir); err != nil {
 		return "", err
 	}
 	// Commits are safe once the remote has them on some branch: the ticket
@@ -406,7 +420,7 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 // removeUnrecorded removes a worktree directory istari has no record of,
 // unless it holds unsaved work. Its clone is the one git names for it.
 func (w *Workspaces) removeUnrecorded(ctx context.Context, o Workspace) (Workspace, error) {
-	reason, err := unsaved(ctx, o.Dir, "HEAD")
+	reason, err := w.unsaved(ctx, o.Dir, "HEAD")
 	if err != nil || reason != "" {
 		o.State, o.Reason = WorkspaceKept, reason
 		return o, err
@@ -622,10 +636,44 @@ func (w *Workspaces) clone(ctx context.Context, repo string) (string, error) {
 			}
 		}
 	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
+	if err := w.fetch(ctx, dir); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// fetch fetches the remote's branches into the clone of dir, the clone or
+// one of its worktrees. Two git fetches of one clone at once fail to lock
+// the refs they both update, so a caller that finds a fetch of the clone
+// running waits for it and takes its result instead of fetching again.
+func (w *Workspaces) fetch(ctx context.Context, dir string) error {
+	key, err := gitOut(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if real, err := filepath.EvalSymlinks(key); err == nil {
+		key = real
+	}
+	fe := &w.fetches
+	fe.mu.Lock()
+	if f, ok := fe.running[key]; ok {
+		fe.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f := &fetch{done: make(chan struct{})}
+	fe.running[key] = f
+	fe.mu.Unlock()
+	_, f.err = gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches)
+	fe.mu.Lock()
+	delete(fe.running, key)
+	fe.mu.Unlock()
+	close(f.done)
+	return f.err
 }
 
 func (w *Workspaces) remote(repo string) string {
@@ -691,7 +739,8 @@ func repoName(repo string) string {
 // MergeMain brings the main branch, fetched just now, into the ticket's
 // worktree (spec section 4.6, resuming: step 2). It returns the files in
 // conflict, left with their markers for the worker: resolving them is its
-// first step.
+// first step. A fetch that fails twice is an error, and the worktree is left
+// as it was.
 func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []string, err error) {
 	ws, err := w.get(ctx, ticket)
 	if err != nil {
@@ -700,7 +749,11 @@ func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []
 	if ws.State != WorkspaceActive || !isWorktree(ctx, ws.Dir) {
 		return nil, fmt.Errorf("merge main: %s has no worktree", ticket)
 	}
+	// A failed fetch is tried once more before the merge is given up.
 	clone, err := w.clone(ctx, ws.Repo)
+	if err != nil {
+		clone, err = w.clone(ctx, ws.Repo)
+	}
 	if err != nil {
 		return nil, err
 	}
