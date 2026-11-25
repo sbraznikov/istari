@@ -43,6 +43,19 @@ func CheckDescription(body string) error {
 	return nil
 }
 
+// prChecks are the checks that run before istari pr open: every check at pr,
+// and the tests when there is no full suite.
+func prChecks(checks pipeline.Checks) []pipeline.Check {
+	var out []pipeline.Check
+	_, full := checks.Get("full")
+	for _, c := range checks.List {
+		if c.RunsAt(pipeline.AtPR) || (c.Name == "test" && !full) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // PullRequests opens the pull requests of tickets (spec section 7.7: opening
 // is gated by the full check suite run by code).
 type PullRequests struct {
@@ -102,22 +115,29 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if err != nil {
 		return vcs.Opened{}, err
 	}
-	name := "full"
-	full, ok := checks.Get(name)
-	if !ok {
-		name = "test" // without a full suite, the tests
-		full, ok = checks.Get(name)
+	var red []string // the outputs of the red checks
+	for _, check := range prChecks(checks) {
+		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
+			entry.Checks[check.Name] = "green"
+		} else {
+			entry.Checks[check.Name], entry.Red = "red", true
+			if entry.Failures == nil {
+				entry.Failures = map[string]string{}
+			}
+			entry.Failures[check.Name] = output
+			red = append(red, check.Name+":\n"+output)
+		}
 	}
-	if !ok {
-		entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
-	} else if passed, output := runCheck(ctx, run.Dir, full.Run); passed {
-		entry.Checks[name] = "green"
-	} else {
-		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
+	if _, ok := entry.Checks["full"]; !ok {
+		if _, ok := entry.Checks["test"]; !ok {
+			entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
+		}
+	}
+	if len(red) > 0 {
 		if err := record("the full checks fail: the pull request is not opened"); err != nil {
 			return vcs.Opened{}, err
 		}
-		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
+		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", strings.Join(red, "\n\n"))
 	}
 	if err := p.cp.push(ctx, ws, run.Dir); err != nil {
 		return vcs.Opened{}, err

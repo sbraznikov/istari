@@ -114,6 +114,25 @@ func TestPrOpenWithoutAnyCheckSaysSoInTheJournal(t *testing.T) {
 	}
 }
 
+func TestARedCheckAtPRKeepsThePullRequestClosed(t *testing.T) {
+	t.Parallel()
+	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\nformat = \"true\"\ntidy = { run = \"echo GO.MOD NOT TIDY; exit 1\", at = [\"pr\"] }\n")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "GO.MOD NOT TIDY") {
+		t.Fatalf("pr open with a red tidy check: %v", err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+	entries := prJournal(t, f)
+	if len(entries) != 1 || entries[0].Checkpoint == nil {
+		t.Fatalf("journal = %+v", entries)
+	}
+	if c := entries[0].Checkpoint; c.Checks["tidy"] != "red" || c.Checks["full"] != "green" || c.Checks["format"] != "green" ||
+		!strings.Contains(c.Failures["tidy"], "GO.MOD NOT TIDY") {
+		t.Fatalf("checks = %v failures %v, want tidy red, full and format green", c.Checks, c.Failures)
+	}
+}
+
 func prJournal(t *testing.T, f *cpFixture) []journal.Entry {
 	t.Helper()
 	ref, err := tickets.ParseRef(f.tk.Ref)
