@@ -259,7 +259,7 @@ Rules:
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
-If a ticket is too large, planner splits it into child tickets (sub-issues). Each of them goes through the check against the standard and its own pipeline. The parent stays in `in_progress` and moves to `done` when all child tickets are completed (T5, T12).
+If a ticket is too large, planner splits it into child tickets (sub-issues). Each of them goes through the check against the standard and its own pipeline. A child carries a key, a title, a body, its type and size, its needs and, if it belongs to another repository, that repository (section 7.6). The planner writes the body; code writes the table at its end: the child's type and size, the parent's priority, and the parent's repository unless the child names another. Before any child is created, code checks every child's body against the structural standard, with the same check as `istari ticket check` (section 4.5); a child that fails refuses the whole plan, naming the child's key and its deviations, and the planner fixes it in the same run. The parent stays in `in_progress` and moves to `done` when all child tickets are completed (T5, T12).
 
 ### 4.4 Working across several repositories
 
@@ -774,6 +774,20 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 ### 7.6 How the implementer and the reviewer work
 
 The working rules of these two roles are written in istari's built-in instructions (`.istari/roles/implementer.md`, `.istari/roles/reviewer.md`). The reference for them is Matt Pocock's skills `implement`, `tdd`, `pr` and `code-review` (`github.com/mattpocock/skills`): the skills themselves are not installed into istari and are not a dependency, but the agents' behavior follows them as closely as possible.
+
+**Planner: the split.** A ticket larger than `max_size` gets a `split:` in its plan (`istari plan submit`): a list of child tickets with these fields.
+
+| Field | Content |
+|---|---|
+| `key` | lower-case letters, digits and dashes; `needs` and `#key` in a body refer to it |
+| `title` | the child's title |
+| `body` | the ticket text after the standard (section 4.5), without the table |
+| `type` | one of the standard's types |
+| `size` | one of the standard's sizes |
+| `needs` | keys of other children or existing tickets |
+| `repo` | `owner/repo`, only if the child belongs to another repository than the parent |
+
+Code writes the table at the end of each body (type, size, the parent's priority, the repository) and checks every child against the standard before it creates any (section 4.3).
 
 **Implementer: order of work** (after `implement`).
 
