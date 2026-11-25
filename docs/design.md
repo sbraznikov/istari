@@ -419,7 +419,7 @@ Directly, without confirmation, the agent records only assumptions (`istari assu
 **Resuming.** The agent crashed, the lease expired, the machine rebooted, the ticket sat paused for a month, the istari database was lost — the sequence is the same:
 
 1. istari reads the ticket state and the summary from the tracker.
-2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step.
+2. It creates a workspace from the ticket branch and pulls the main branch into it. Conflicts become the worker's first step. A failed fetch of the remote is tried once more; when it fails again, the run starts on the branch as it is, and the journal records that the main branch was not merged and why.
 3. It assembles the brief from the ticket text, the journal and the PR using a template. If the journal is long, code takes all decisions and assumptions, the last plan and the latest checkpoints; the model is not used to compress the journal.
 4. The new run continues from the next step of the last checkpoint.
 
@@ -813,7 +813,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - Global concurrency limits: per project, per role, for the whole installation.
-- `istari pause --all` stops handing out tasks; running runs finish gracefully.
+- `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
 ### 7.6 How the implementer and the reviewer work
 
@@ -977,7 +977,7 @@ Event families: `ticket.*`, `task.*` (created, ready, claimed, renewed, released
 ```
 istari init                          # create a project from a repository, create .istari/
 istari repo add|remove|list          # project repositories
-istari daemon [--config]             # start the daemon; daemon install — as a system service
+istari daemon [--config] [--paused]  # start the daemon (--paused: hand-out paused); daemon install — as a system service
 istari whoami                        # role, ticket, task, permissions (for an agent)
 istari doctor                        # check Slack, tracker, VCS, harnesses
 istari slack setup                   # create the Slack app from a manifest, store the tokens
