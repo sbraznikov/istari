@@ -385,8 +385,9 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 
 // closedNeeds takes in the closed tickets that ticket ref needs and istari
 // does not have: an issue closed before istari was set up, or lost with its
-// database. Each comes in as done or canceled, so a hold on it can end; an
-// open need is synced on its own. A ticket istari does not have is skipped.
+// database. Each comes in as done or canceled, so the hold waiting_dependency
+// on ref can end (spec section 4.1, T3); an open need is synced on its own.
+// A ticket istari does not have is skipped.
 func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport) error {
 	tk, err := s.tickets.Get(ctx, ref)
 	var coreErr *core.Error
@@ -433,8 +434,10 @@ func (s *Syncer) closedNeeds(ctx context.Context, ref string, report *SyncReport
 }
 
 // closedState is the state of a closed issue without an istari state label,
-// from how it was closed: not planned or a duplicate is canceled; completed,
-// or no reason (an issue closed before trackers recorded one), is done.
+// from how it was closed, the reverse of spec section 4.1 (done closes as
+// completed, canceled as not planned): not planned or a duplicate is
+// canceled; completed, or no reason (an issue closed before trackers recorded
+// one), is done.
 func closedState(closedAs string) core.TicketState {
 	switch closedAs {
 	case "not_planned", "duplicate":
