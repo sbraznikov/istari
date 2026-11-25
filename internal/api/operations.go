@@ -307,7 +307,7 @@ func (s *Server) operations() map[string]operation {
 		// The slots paused because their harness did not start (spec 7.3).
 		"runner.slots": read(func(context.Context, Empty) (any, error) {
 			if s.runner == nil {
-				return []runner.PausedSlot{}, nil
+				return nil, nil
 			}
 			return s.runner.Paused(), nil
 		}),

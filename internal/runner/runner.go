@@ -287,10 +287,15 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 		if !errors.As(err, &e) && ctx.Err() == nil {
 			log.Printf("istari: runner %s: %v", slot.Profile, err)
 		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(r.opts.Poll):
-		}
+		sleep(ctx, r.opts.Poll)
+	}
+}
+
+// sleep waits for d, or until ctx is done.
+func sleep(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
 	}
 }
 
@@ -306,7 +311,7 @@ type PausedSlot struct {
 func (r *Runner) Paused() []PausedSlot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]PausedSlot, 0, len(r.paused))
+	var out []PausedSlot
 	for _, p := range r.paused {
 		out = append(out, p)
 	}
@@ -322,10 +327,7 @@ func (r *Runner) pause(ctx context.Context, slot Slot, startErr error) {
 	r.paused[slot.Profile] = p
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.paused, slot.Profile); r.mu.Unlock() }()
-	select {
-	case <-ctx.Done():
-	case <-time.After(r.opts.StartPause):
-	}
+	sleep(ctx, r.opts.StartPause)
 }
 
 // shortDuration writes a whole number of minutes as "1m", not "1m0s".
@@ -496,10 +498,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		// No agent ran: the task goes back without spending an attempt, after
 		// a wait for a binary being replaced to come back (spec section 4.2).
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
-		select {
-		case <-ctx.Done():
-		case <-time.After(r.opts.StartRetry):
-		}
+		sleep(ctx, r.opts.StartRetry)
 		if rerr := r.tasks.Release(bg, lease); rerr != nil {
 			log.Printf("istari: runner %s: release %s: %v", slot.Profile, lease.Task, rerr)
 		}
