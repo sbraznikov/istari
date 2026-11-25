@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -133,7 +134,7 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	if len(submits) != 3 || !strings.Contains(submits[1], "child half") || !strings.Contains(submits[1], "no size") {
 		t.Fatalf("the first submission's answer:\n%s\nwant the child's key and its missing size\n%s", out, ended())
 	}
-	if gh.IssueCount() != 2 || !strings.HasSuffix(gh.Issue(2).Body, "| feature | S | P2 | `"+githubtest.Repo+"` |\n") {
+	if gh.IssueCount() != 2 || !strings.HasSuffix(gh.Issue(2).Body, "| feature | S | P1 | `"+githubtest.Repo+"` |\n") {
 		t.Fatalf("issues %d, the child %+v; want one child with its table\n%s", gh.IssueCount(), gh.Issue(2), ended())
 	}
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
@@ -155,6 +156,34 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
 		}
+	}
+}
+
+func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	md := filepath.Join(t.TempDir(), "ticket.md")
+	os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644)
+	var refs map[string]string
+	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
+	var ref string
+	for _, r := range refs {
+		ref = r
+	}
+	var tk struct{ Priority string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.Priority != "P1" {
+		t.Fatalf("priority of %s = %q, want P1 from its table", ref, tk.Priority)
+	}
+	if labels := gh.Issue(1).Labels; !slices.Contains(labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", labels)
 	}
 }
 

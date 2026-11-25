@@ -130,6 +130,9 @@ type Result struct {
 	Priority   string      `json:"priority,omitempty"`
 	Repository string      `json:"repository,omitempty"`
 	Needs      []string    `json:"needs,omitempty"`
+	// TablePriority is the priority the ticket's table states, "" when it
+	// states none or one the standard does not allow.
+	TablePriority string `json:"table_priority,omitempty"`
 }
 
 // OK tells whether the ticket meets the structural standard.
@@ -161,19 +164,9 @@ func (c Checker) Check(ctx context.Context, d Draft) (Result, error) {
 		}
 	}
 
-	// pick reads a field from its label (the tracker's truth) or the table,
-	// ignoring case, and returns the standard's spelling of it.
-	pick := func(field string, allowed []string) string {
-		rule := strings.ToLower(field)
-		label := labelValue(d.Labels, rule+":")
-		table := b.meta[rule]
-		if label != "" && table != "" && !strings.EqualFold(label, table) {
-			fail(rule, "the label %s:%s and the table's %s %q disagree", rule, label, field, table)
-		}
-		value := label
-		if value == "" {
-			value = table
-		}
+	// spell returns the standard's spelling of value, ignoring case, and
+	// fails when it is not allowed.
+	spell := func(rule, value string, allowed []string) string {
 		if value == "" {
 			return ""
 		}
@@ -183,9 +176,31 @@ func (c Checker) Check(ctx context.Context, d Draft) (Result, error) {
 		fail(rule, "%s %q is not one of %s", rule, value, strings.Join(allowed, ", "))
 		return value
 	}
+	or := func(v, fallback string) string {
+		if v == "" {
+			return fallback
+		}
+		return v
+	}
+	// pick reads a field from its label (the tracker's truth) or the table.
+	pick := func(field string, allowed []string) string {
+		rule := strings.ToLower(field)
+		label := labelValue(d.Labels, rule+":")
+		table := b.meta[rule]
+		if label != "" && table != "" && !strings.EqualFold(label, table) {
+			fail(rule, "the label %s:%s and the table's %s %q disagree", rule, label, field, table)
+		}
+		return spell(rule, or(label, table), allowed)
+	}
 	res.Type = pick("Type", c.Standard.Types)
 	res.Size = pick("Size", c.Standard.Sizes)
-	res.Priority = pick("Priority", c.Standard.Priorities)
+	// The priority label may differ from the table: the stored priority is
+	// taken from the table once and is the source after that (spec 4.5).
+	table := spell("priority", b.meta["priority"], c.Standard.Priorities)
+	if slices.Contains(c.Standard.Priorities, table) {
+		res.TablePriority = table
+	}
+	res.Priority = or(spell("priority", labelValue(d.Labels, "priority:"), c.Standard.Priorities), table)
 	if res.Type == "" {
 		fail("type", "the ticket has no type (a type: label or the table's Type)")
 	}
