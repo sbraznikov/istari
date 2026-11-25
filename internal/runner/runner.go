@@ -166,11 +166,13 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	for _, t := range all {
 		byRef[t.Ref] = t
 	}
-	// The budget is the first ticket's of a chain of budget_of.
+	// The budget is the first ticket's of a chain of budget_of. The chain
+	// stops at a child of a split: it has a budget of its own (spec section
+	// 4.5).
 	root := func(t core.Ticket) core.Ticket {
 		for range len(all) + 1 {
 			parent, ok := byRef[t.BudgetOf]
-			if t.BudgetOf == "" || !ok {
+			if t.BudgetOf == "" || !ok || slices.Contains(parent.Children, t.Ref) {
 				break
 			}
 			t = parent
@@ -185,7 +187,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 		}
 	}
 	// A ticket that shares a budget has the budget of the one it shares
-	// (spec section 4.5: it inherits the parent's budget).
+	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
 	if size == "" {
 		size = "M"
