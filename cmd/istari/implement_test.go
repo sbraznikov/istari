@@ -52,6 +52,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestAReadyTicketBecomesADraftPullRequest(t *testing.T) {
+	t.Parallel()
 	server := gitServer(t)
 	seed := filepath.Join(server, "seed")
 	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {

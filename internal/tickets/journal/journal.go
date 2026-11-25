@@ -32,11 +32,12 @@ const (
 	Checkpoint Kind = "checkpoint"
 	Review     Kind = "review"
 	Transition Kind = "transition"
+	Note       Kind = "note" // something istari noticed; ID names the task it is about
 )
 
 // Entry is one journal entry. Which fields it uses depends on its kind:
 // question and answer use ID, Text and (answer) Link; assumption uses Text;
-// the others their own part.
+// note uses Text and ID, the task it is about; the others their own part.
 type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
@@ -127,7 +128,7 @@ func (e Entry) validate() error {
 		if e.ID == "" || e.Text == "" {
 			return missing("an id and a text")
 		}
-	case Assumption:
+	case Assumption, Note:
 		if e.Text == "" {
 			return missing("a text")
 		}
@@ -241,6 +242,8 @@ func Text(e Entry) string {
 		return "**Answer** to " + e.ID + by + "\n\n" + e.Text + linkLine(e.Link)
 	case Assumption:
 		return "**Assumption**" + by + "\n\n" + e.Text
+	case Note:
+		return "**Note**" + by + "\n\n" + e.Text
 	case Decision:
 		d := e.Decision
 		var b strings.Builder

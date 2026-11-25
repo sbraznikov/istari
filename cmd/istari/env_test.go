@@ -11,6 +11,7 @@ import (
 // act on the real ticket of the run that runs the tests (CODING_STANDARDS.md
 // S7.8, #154).
 func TestTheTestsDoNotSeeTheIstariEnvironmentOfTheRunThatStartsThem(t *testing.T) {
+	t.Parallel()
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ISTARI_") {
 			t.Errorf("the tests' environment has %s, want no ISTARI_ variable", kv)
