@@ -262,6 +262,7 @@ Rules:
 
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
+- When verify sees a failed check on the pull request's head, istari reads the failed jobs' logs through its own GitHub access (the gh CLI's token or the GitHub App; agents have none, section 7.3) and records a CI failure entry in the journal (section 4.6), once per head commit. The entry holds the end of each failed job's log, cut to a fixed size from its start, so the failing tests and their messages stay. When the log cannot be read, the entry says so and why; the rework round starts either way.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
@@ -375,6 +376,8 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Review result | the review stage is complete | reviewer; details stay in the PR |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
+| CI failure | verify saw a failed check on the pull request's head (section 4.3) | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read |
+| Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`); the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
 
@@ -715,7 +718,7 @@ This is the same "claim, not get assigned" model as in Board: nobody decides tha
 |---|---|---|
 | Identity | environment variables `ISTARI_PROFILE`, `ISTARI_ROLE`, `ISTARI_TICKET`, `ISTARI_TASK`, `ISTARI_TOKEN` | profile name (`implementer-2`), role, ticket, task and a token with this role's permissions on this ticket |
 | Role instruction | the file `.istari/roles/<role>.md` in the repository; if it is absent, the built-in one | who you are, what the stage includes, what counts as a finished result, what is forbidden |
-| Task brief | the first message to the harness | the ticket text, the "Work state" summary, the journal, the last checkpoint, the PR state and the next step |
+| Task brief | the first message to the harness | the ticket text, the "Work state" summary, the journal, the last checkpoint, the PR state and the next step. An implementer's brief shows a CI failure entry newer than the last checkpoint first, before the next step; comment entries newer than the last checkpoint are always kept |
 
 The harness starts in the ticket's workspace with the brief as the first message. The `istari whoami` command returns to the agent, at any moment, its role, ticket, task, permissions and the remaining lease and budget.
 
