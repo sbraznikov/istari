@@ -68,7 +68,9 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 		t.Fatalf("ExpireLeases = %v, %v; want the killed runner's task", expired, err)
 	}
 	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
-		runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Lease: time.Minute, Poll: 50 * time.Millisecond,
+		// The lease of f.tasks, so the runner renews it while the run is
+		// prepared, however long that takes under parallel tests.
+		runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Lease: 600 * time.Millisecond, Poll: 50 * time.Millisecond,
 			Slots: []runner.Slot{{Profile: "implementer-2", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}}})
 	f.start(t)
 	f.session(t)
