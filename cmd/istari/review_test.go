@@ -157,7 +157,8 @@ func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
 
 // stagedReviewAgent plays the planner and the implementer like stageAgent, and
 // as the reviewer submits the report given as %[3]s and ends its run
-// without istari complete, as a refused submit tells it to.
+// without istari complete, as a refused submit tells it to. While the file
+// <log>.hold exists, the reviewer waits before it submits.
 const stagedReviewAgent = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
@@ -194,6 +195,7 @@ BODY
   "$istari" complete "implemented" >> "$log" 2>&1
   ;;
 reviewer)
+  while [ -e "$log.hold" ]; do sleep 0.1; done
   "$istari" review submit --file - >> "$log" 2>&1 <<'REPORT'
 %[3]s
 REPORT
@@ -312,6 +314,65 @@ func showTask(t *testing.T, d *daemon, id string) taskView {
 	var task taskView
 	d.mustCLI(t, &task, "task", "show", id)
 	return task
+}
+
+const validReport = `standards: 0 findings
+spec: 0 findings
+findings: []`
+
+// The ticket leaves in_review while its reviewer runs: a human closes the
+// issue (T13), so the review is submitted for a canceled ticket.
+func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
+	t.Parallel()
+	d, gh, n, log := stagedReview(t, validReport)
+	hold := log + ".hold"
+	if err := os.WriteFile(hold, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	greenCI(t, gh)
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		if out, _ := os.ReadFile(log); strings.Contains(string(out), "reviewer ") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no reviewer run started\ndaemon:\n%s", d.stderr)
+		}
+	}
+	d.mustCLI(t, nil, "sync") // the issue gets istari:in_review, so the close is the only change
+	gh.HumanClose(n, "alex", "not_planned")
+	d.mustCLI(t, nil, "sync")
+	var tk struct{ State string }
+	if d.mustCLI(t, &tk, "ticket", "show", fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)); tk.State != "canceled" {
+		t.Fatalf("the closed ticket is %s, want canceled", tk.State)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	runs := endedReviews(t, d, log, 1)
+	out, _ := os.ReadFile(log)
+	if !strings.Contains(string(out), "is canceled") || !strings.Contains(string(out), "end your run without a result") {
+		t.Fatalf("the refusal does not tell the reviewer to end its run without a result:\n%s", out)
+	}
+	for _, r := range runs {
+		if !strings.HasPrefix(r.Reason, "yielded: ") {
+			t.Fatalf("a reviewer run ended %q, want it yielded", r.Reason)
+		}
+	}
+	if task := showTask(t, d, runs[0].Task); task.Attempts != 0 || task.State == "failed" {
+		t.Fatalf("the review task is %s with %d attempts after a refused submit, want no attempt spent", task.State, task.Attempts)
+	}
+	var notes int
+	for _, c := range gh.Issue(n).Comments {
+		if strings.Contains(c.Body, "handed out before") {
+			notes++
+			if !strings.Contains(c.Body, "canceled") {
+				t.Fatalf("the journal entry does not name the ticket's state:\n%s", c.Body)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("%d journal entries say the review was handed out early after %d refused submits, want 1", notes, len(runs))
+	}
 }
 
 func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
