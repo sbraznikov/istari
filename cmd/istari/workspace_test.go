@@ -43,6 +43,7 @@ func gitServer(t *testing.T) string {
 }
 
 func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
+	t.Parallel()
 	server := gitServer(t)
 	dataDir := newDataDir(t)
 	// Before the daemon starts: a ticket in planning, and a worktree whose

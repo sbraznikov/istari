@@ -106,6 +106,7 @@ func (f *engineFixture) finish(t *testing.T, ref, stage, actor string) {
 const ref = "gh:acme/web#1"
 
 func TestAReadyTicketStartsAndGetsTheTasksOfItsPipeline(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -126,6 +127,7 @@ func TestAReadyTicketStartsAndGetsTheTasksOfItsPipeline(t *testing.T) {
 }
 
 func TestThePlanGateHoldsT4UntilAHumanApproves(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []bool{false, true} {
 		f := newEngine(t, config.Defaults{PlanGate: gate}, nil)
 		f.readyTicket(t, ref)
@@ -153,6 +155,7 @@ func TestThePlanGateHoldsT4UntilAHumanApproves(t *testing.T) {
 }
 
 func TestTheTicketFollowsItsTasksToMerge(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -185,6 +188,7 @@ func TestTheTicketFollowsItsTasksToMerge(t *testing.T) {
 }
 
 func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_review_rounds = 2\n\n[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -214,6 +218,7 @@ func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
 }
 
 func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -226,6 +231,7 @@ func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
 }
 
 func TestATicketWithoutTheEnginesTasksIsNotMovedOn(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	for _, tr := range []string{"start", "plan_accepted", "pr_ready"} {
@@ -260,6 +266,7 @@ func TestATicketWithoutTheEnginesTasksIsNotMovedOn(t *testing.T) {
 }
 
 func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"x\"\nrole = \"wizard\"\n"})
 	f.readyTicket(t, ref)
 	all, _ := f.tickets.List(ctx)
@@ -272,6 +279,7 @@ func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
 }
 
 func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
+	t.Parallel()
 	// The scaffolded file: approve names no needs.
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
 	f.readyTicket(t, ref)
@@ -285,6 +293,7 @@ func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 }
 
 func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	other := "gh:acme/web#2"
 	if _, err := f.tickets.Create(ctx, "human:alex", other, "web"); err != nil {
@@ -308,6 +317,7 @@ func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
 }
 
 func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	done := "gh:acme/web#3"
 	if _, err := f.tickets.Create(ctx, "human:alex", done, "web"); err != nil {
@@ -329,6 +339,7 @@ func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
 }
 
 func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	need := "gh:acme/web#2"
 	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
@@ -352,6 +363,7 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 }
 
 func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
+	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
@@ -370,6 +382,7 @@ func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
 }
 
 func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
+	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return true, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
@@ -391,6 +404,7 @@ func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
 }
 
 func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_size = \"M\"\n"})
 	f.readyTicket(t, ref)
 	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", ref, "L"); err != nil {
@@ -405,6 +419,7 @@ func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
 }
 
 func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -438,6 +453,7 @@ func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
 }
 
 func TestAPlanTaskDoneWithoutAPlanOrTooLargeHoldsTheTicket(t *testing.T) {
+	t.Parallel()
 	noPlan := func(context.Context, string) (bool, error) { return false, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{HasPlan: noPlan})
@@ -451,6 +467,7 @@ func TestAPlanTaskDoneWithoutAPlanOrTooLargeHoldsTheTicket(t *testing.T) {
 }
 
 func TestACanceledChildHoldsItsParent(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -470,6 +487,7 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 }
 
 func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
+	t.Parallel()
 	ci := map[string]string{}
 	checks := func(_ context.Context, ref string) (string, bool) { s, ok := ci[ref]; return s, ok }
 	f := newEngine(t, config.Defaults{}, nil)
@@ -508,6 +526,7 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 }
 
 func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
+	t.Parallel()
 	ci := "pending"
 	checks := func(context.Context, string) (string, bool) { return ci, true }
 	var f *engineFixture
@@ -543,6 +562,7 @@ func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
 }
 
 func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
+	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "success", true }
 	readyErr := errors.New("github: 502")
 	ready := func(context.Context, string) error { return readyErr }
@@ -574,6 +594,7 @@ func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
 }
 
 func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
+	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "failure", true }
 	f := newEngine(t, config.Defaults{MaxReviewRounds: 2}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: config.Defaults{MaxReviewRounds: 2}, Checks: checks})
@@ -595,6 +616,7 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 }
 
 func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		fires       []string
 		first, none string // the first stage it gets, and one before it that it must not get
@@ -654,6 +676,7 @@ func inReview(t *testing.T, defaults config.Defaults, ci map[string]string, r re
 }
 
 func TestOneAcceptedFindingReturnsTheTicketForRework(t *testing.T) {
+	t.Parallel()
 	r := reports{}
 	f := inReview(t, config.Defaults{}, map[string]string{}, r)
 	review := f.stage(t, ref, "review")
@@ -669,6 +692,7 @@ func TestOneAcceptedFindingReturnsTheTicketForRework(t *testing.T) {
 }
 
 func TestNoAcceptedFindingsAndGreenCIMoveTheTicketToAwaitingApproval(t *testing.T) {
+	t.Parallel()
 	r, ci := reports{}, map[string]string{}
 	f := inReview(t, config.Defaults{}, ci, r)
 	r[f.stage(t, ref, "review").ID] = 0
@@ -686,6 +710,7 @@ func TestNoAcceptedFindingsAndGreenCIMoveTheTicketToAwaitingApproval(t *testing.
 }
 
 func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
+	t.Parallel()
 	r, ci := reports{}, map[string]string{}
 	f := inReview(t, config.Defaults{MaxReviewRounds: 1}, ci, r)
 	r[f.stage(t, ref, "review").ID] = 2
@@ -701,6 +726,7 @@ func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
 }
 
 func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
+	t.Parallel()
 	f := inReview(t, config.Defaults{}, map[string]string{}, reports{})
 	f.finish(t, ref, "review", "human:alex") // only a human can: a reviewer's complete needs a report
 	f.reconcile(t)

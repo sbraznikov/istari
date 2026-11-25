@@ -31,6 +31,7 @@ func ticketLink(t *testing.T, gh *githubtest.Server, pr int) (string, string, in
 }
 
 func TestCITicketLinkPassesAPullRequestOfAnOpenTicketOnly(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	open := gh.Seed("open", "", "bob", "istari:in_progress")
 	canceled := gh.Seed("canceled", "", "bob", "istari:canceled")
