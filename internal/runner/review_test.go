@@ -164,6 +164,37 @@ func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
 	}
 }
 
+// refusesUnquotedColon checks that a parse error names the report's line and
+// says to quote the value (S4.9).
+func refusesUnquotedColon(t *testing.T, err error, line int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	for _, want := range []string{"line " + strconv.Itoa(line), "quote the value"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+}
+
+func TestAReportWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	report := "standards: 1 finding; most serious: duplicated code\nspec: 0 findings\n"
+	_, err := runner.ParseReviewResult([]byte(report))
+	refusesUnquotedColon(t, err, 1)
+}
+
+func TestAnUnquotedColonOnALaterLineIsNamedAfterACommentWithAColon(t *testing.T) {
+	report := "standards: \"0 findings\"\n" +
+		"spec: \"1 finding\"\n" +
+		"findings:\n" +
+		"  - axis: spec  # standards; spec: missing\n" +
+		"    kind: missing\n" +
+		"    text: dup: here\n"
+	_, err := runner.ParseReviewResult([]byte(report))
+	refusesUnquotedColon(t, err, 6)
+}
+
 func TestACodeSmellQuotesTheBaselineOfTheReviewersInstructions(t *testing.T) {
 	t.Parallel()
 	f := newReviews(t) // main has no .istari/roles/reviewer.md: the built-in one applies
