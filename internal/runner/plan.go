@@ -41,7 +41,7 @@ func ParsePlanResult(data []byte) (PlanResult, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&r); err != nil {
-		return PlanResult{}, fmt.Errorf("plan: %w", err)
+		return PlanResult{}, yamlError("plan", data, err)
 	}
 	bad := func(format string, args ...any) error { return fmt.Errorf("plan: "+format, args...) }
 	switch {
@@ -189,7 +189,8 @@ func (p *Plans) Record(ctx context.Context, run Run, res PlanResult, s PlanSetti
 
 // WithSplit lets the plans split tickets: tasks to end the parent's own,
 // creator to make the children in the tracker, and created to mirror them
-// into istari with the parent's admission and budget.
+// into istari with the parent's admission. Each child has a budget of its own
+// size (spec section 4.5).
 func (p *Plans) WithSplit(tasks *core.Tasks, creator tickets.Creator, created func(ctx context.Context, refs []tickets.Ref, budgetOf string) error) *Plans {
 	p.tasks, p.creator, p.created = tasks, creator, created
 	return p
