@@ -47,15 +47,23 @@ func CheckDescription(body string) error {
 // fullRed is what the journal says of a pr open stopped by red full checks.
 const fullRed = "the full checks fail: the pull request is not opened"
 
-// lastCheckpoint returns the last checkpoint entry of a journal, or nil.
-func lastCheckpoint(entries []journal.Entry) *journal.CheckpointEntry {
+// lastCheckpoint returns the last checkpoint entry of a journal that match
+// accepts, or nil.
+func lastCheckpoint(entries []journal.Entry, match func(*journal.CheckpointEntry) bool) *journal.CheckpointEntry {
 	for i := len(entries) - 1; i >= 0; i-- {
-		if cp := entries[i].Checkpoint; cp != nil {
+		if cp := entries[i].Checkpoint; cp != nil && match(cp) {
 			return cp
 		}
 	}
 	return nil
 }
+
+// anyCheckpoint accepts every checkpoint entry.
+func anyCheckpoint(*journal.CheckpointEntry) bool { return true }
+
+// shortCommit is the form of a commit the journal keeps: its first 12
+// characters, so that entries compare by the same string.
+func shortCommit(sha string) string { return sha[:min(12, len(sha))] }
 
 // PullRequests opens the pull requests of tickets (spec section 7.7: opening
 // is gated by the full check suite run by code).
@@ -109,14 +117,14 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if err != nil {
 		return vcs.Opened{}, err
 	}
-	commit := head[:min(12, len(head))]
+	commit := shortCommit(head)
 	entries, err := p.cp.journal.Stored(ctx, ref)
 	if err != nil {
 		return vcs.Opened{}, err
 	}
 	// The same code fails the same way: running the checks again only costs
 	// time (spec 7.7, a red full suite).
-	if last := lastCheckpoint(entries); last != nil && last.Done == fullRed && last.Commit == commit {
+	if last := lastCheckpoint(entries, anyCheckpoint); last != nil && last.Done == fullRed && last.Commit == commit {
 		return vcs.Opened{}, fmt.Errorf("pr: the full checks already failed on %s, and the branch has not changed since: change the code, or merge origin/%s, make a checkpoint, then open the pull request", commit, main)
 	}
 	// Only the result of a run by code goes into the journal (spec 7.7).
@@ -222,10 +230,11 @@ func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, 
 	if err != nil {
 		return nil, err
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		if cp := entries[i].Checkpoint; cp != nil && cp.Main != nil && cp.Main.Commit == tip[:min(12, len(tip))] && cp.Main.Check == name {
-			return cp.Main, nil
-		}
+	onTip := func(cp *journal.CheckpointEntry) bool {
+		return cp.Main != nil && cp.Main.Commit == shortCommit(tip) && cp.Main.Check == name
+	}
+	if cp := lastCheckpoint(entries, onTip); cp != nil {
+		return cp.Main, nil
 	}
 	dir := ws.Dir + mainSuffix
 	remove, err := p.cp.ws.Scratch(ctx, ticket, dir)
@@ -237,7 +246,7 @@ func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, 
 	if tip, err = gitOut(ctx, dir, "rev-parse", "HEAD"); err != nil {
 		return nil, err
 	}
-	m := &journal.MainCheck{Commit: tip[:min(12, len(tip))], Check: name, Result: "green"}
+	m := &journal.MainCheck{Commit: shortCommit(tip), Check: name, Result: "green"}
 	if passed, output := runCheck(ctx, dir, cmd); !passed {
 		m.Result, m.Output = "red", output
 	}
