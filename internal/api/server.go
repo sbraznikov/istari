@@ -108,7 +108,15 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent})
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		j := journal.New(jt, ns, opts.Clock)
+		note := func(ctx context.Context, ref tickets.Ref, text string) error {
+			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note})
 	}
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {

@@ -70,6 +70,8 @@ type SyncOptions struct {
 	// Parent reads the ticket a ticket's text names as its parent; istari
 	// recover gives split parents their children with it. nil: none.
 	Parent func(body, repo string) string
+	// Note adds a note to the ticket's journal; nil: the sync notes nothing.
+	Note func(ctx context.Context, ref Ref, text string) error
 }
 
 // CodeNotTrusted refuses an admission by someone who is not trusted.
@@ -459,6 +461,9 @@ type baseRecord struct {
 	// Sponsor is the trusted member who asked to admit the ticket while it
 	// fell short of the standard: it is refined, then admitted by them.
 	Sponsor string `json:"sponsor,omitempty"`
+	// PriorityNoted is the pair "stored/table" of priorities whose
+	// difference the journal last noted, so it says so once.
+	PriorityNoted string `json:"priority_noted,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -805,6 +810,9 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 			x.base.Sponsor = who
 			return s.revert(ctx, x, c, "the ticket does not meet the standard yet ("+strings.Join(conf.Deviations, "; ")+"); it is refined first and admitted as soon as it does")
 		}
+		if err := s.tablePriority(ctx, x, conf); err != nil {
+			return err
+		}
 	} else {
 		allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
 		if err != nil {
@@ -929,6 +937,9 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil {
 			return err
 		}
+		if err := s.notePriority(ctx, x, conf); err != nil {
+			return err
+		}
 		switch {
 		case x.base.Hash == "":
 			x.base.Hash = conf.Hash // ready before istari kept a hash: from now on
@@ -945,6 +956,13 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 			}
 			x.report.Pushed++
 		}
+	case core.TicketDone, core.TicketCanceled:
+	default:
+		conf, err := s.conformance(ctx, x.repo, x.t)
+		if err != nil {
+			return err
+		}
+		return s.notePriority(ctx, x, conf)
 	}
 	return nil
 }
@@ -952,12 +970,8 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 // admit fires T2 and writes the new state out, remembering the hash. A ticket
 // without a stored priority takes its table's, set by its author (spec 4.5).
 func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Conformance) error {
-	if x.tk.Priority == "" && conf.Priority != "" {
-		tk, err := s.tickets.SetPriority(ctx, "human:"+x.t.Author, x.tk.Ref, conf.Priority)
-		if err != nil {
-			return err
-		}
-		x.tk = tk
+	if err := s.tablePriority(ctx, x, conf); err != nil {
+		return err
 	}
 	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
 	if err != nil {
@@ -971,6 +985,37 @@ func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Confo
 	}
 	x.report.Pushed++
 	return nil
+}
+
+// tablePriority makes the table's priority the stored one, set by the
+// ticket's author, when the ticket has none yet (spec 4.5).
+func (s *Syncer) tablePriority(ctx context.Context, x *syncing, conf Conformance) error {
+	if x.tk.Priority != "" || conf.Priority == "" {
+		return nil
+	}
+	tk, err := s.tickets.SetPriority(ctx, "human:"+x.t.Author, x.tk.Ref, conf.Priority)
+	if err == nil {
+		x.tk = tk
+	}
+	return err
+}
+
+// notePriority says once in the journal that the table's priority differs
+// from the stored one, naming both; the stored priority stays (spec 4.5).
+func (s *Syncer) notePriority(ctx context.Context, x *syncing, conf Conformance) error {
+	if s.opts.Note == nil || conf.Priority == "" || x.tk.Priority == "" || conf.Priority == x.tk.Priority {
+		return nil
+	}
+	pair := x.tk.Priority + "/" + conf.Priority
+	if x.base.PriorityNoted == pair {
+		return nil
+	}
+	text := fmt.Sprintf("The ticket's priority is %s, its table says %s. The priority stays %s: the table's is taken only when the ticket is admitted; change the label `priority:` to change it.", x.tk.Priority, conf.Priority, x.tk.Priority)
+	if err := s.opts.Note(ctx, x.t.Ref, text); err != nil {
+		return err
+	}
+	x.base.PriorityNoted = pair
+	return s.record(ctx, x, EventSyncObserved, "system", x.tk, map[string]any{"priority": x.tk.Priority, "table_priority": conf.Priority})
 }
 
 // repoOf returns the synced repository of ref.
