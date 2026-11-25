@@ -41,14 +41,22 @@ type Options struct {
 	BaseURL    string // default DefaultBaseURL
 	Token      string // a token that may read and write issues and labels
 	HTTPClient *http.Client
+	// Backoff are the waits before each retry of a write that met a server
+	// error, a rate limit or a network error (spec section 5); its length is
+	// the number of retries. Default DefaultBackoff.
+	Backoff []time.Duration
 }
+
+// DefaultBackoff retries a write three times within about seven seconds.
+var DefaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
 // Provider talks to GitHub Issues.
 type Provider struct {
 	base   string
 	token  string
-	http   *http.Client
-	mu     sync.Mutex
+	http    *http.Client
+	backoff []time.Duration
+	mu      sync.Mutex
 	labels map[string]bool // "owner/repo\x00label" known to exist
 	self   string          // the token's login, once known
 }
@@ -122,7 +130,11 @@ func New(opts Options) *Provider {
 	client := *opts.HTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.HTTPClient = &client
-	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}}
+	if opts.Backoff == nil {
+		opts.Backoff = DefaultBackoff
+	}
+	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient,
+		backoff: opts.Backoff, labels: map[string]bool{}}
 }
 
 // Capabilities implements tickets.Provider.
@@ -685,9 +697,13 @@ func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []strin
 type apiError struct {
 	Status  int
 	Message string
+	Limited bool // a rate limit: a 429, or a 403 with no requests left
 }
 
 func (e *apiError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Message) }
+
+// unavailable tells a server error or a rate limit from a refusal.
+func (e *apiError) unavailable() bool { return e.Status >= 500 || e.Limited }
 
 // Is makes 404 (missing), 410 (deleted) and 301 (transferred to another
 // repository) match tickets.ErrNotFound: the ticket is not at its ref.
@@ -727,13 +743,52 @@ func (p *Provider) doPage(ctx context.Context, path string, out any) (string, er
 	return m[1], nil // an absolute URL, followed as given
 }
 
+// request sends one API request. A write that meets a server error, a rate
+// limit or a network error is tried again after each wait of the backoff
+// (spec section 5); a read is not, since the next poll reads again.
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) (*http.Response, error) {
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
 			return nil, err
 		}
+	}
+	res, err := p.send(ctx, method, path, data, out)
+	if method == http.MethodGet {
+		return res, err
+	}
+	for _, wait := range p.backoff {
+		if !transient(err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errors.Join(err, ctx.Err())
+		case <-time.After(wait):
+		}
+		res, err = p.send(ctx, method, path, data, out)
+	}
+	return res, err
+}
+
+// transient tells whether an error is the tracker's passing trouble: a server
+// error, a rate limit or a network error, not a refusal of the request.
+func transient(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.unavailable()
+	}
+	var network *url.Error
+	return errors.As(err, &network)
+}
+
+func (p *Provider) send(ctx context.Context, method, path string, data []byte, out any) (*http.Response, error) {
+	var reader io.Reader
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	target := path
@@ -747,7 +802,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Authorization", "Bearer "+p.token)
-	if body != nil {
+	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := p.http.Do(req)
@@ -755,7 +810,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		return nil, err
 	}
 	defer res.Body.Close()
-	data, err := io.ReadAll(res.Body)
+	reply, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -763,17 +818,18 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		var e struct {
 			Message string `json:"message"`
 		}
-		json.Unmarshal(data, &e)
+		json.Unmarshal(reply, &e)
 		if e.Message == "" {
-			e.Message = strconv.Quote(string(data))
+			e.Message = strconv.Quote(string(reply))
 		}
-		if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
+		limited := res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests
+		if limited {
 			e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
 		}
-		return nil, &apiError{Status: res.StatusCode, Message: e.Message}
+		return nil, &apiError{Status: res.StatusCode, Message: e.Message, Limited: limited}
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
+	if out != nil && len(reply) > 0 {
+		if err := json.Unmarshal(reply, out); err != nil {
 			return nil, fmt.Errorf("decoding %s %s: %w", method, path, err)
 		}
 	}

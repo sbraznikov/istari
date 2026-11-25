@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -19,6 +20,22 @@ func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 	t.Helper()
 	fake := githubtest.New(t)
 	return github.New(github.Options{BaseURL: fake.URL, Token: fake.Token}), fake
+}
+
+// quick are retry waits short enough for tests.
+var quick = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+
+func TestAWriteSurvivesAShortServerOutageInsideTheCall(t *testing.T) {
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNext(2)
+	if _, err := p.Comment(ctx, ref(n), "journal entry"); err != nil {
+		t.Fatalf("comment after two 500s: %v", err)
+	}
+	if got := fake.Issue(n).Comments; len(got) != 1 {
+		t.Fatalf("comments = %+v, want exactly one", got)
+	}
 }
 
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
