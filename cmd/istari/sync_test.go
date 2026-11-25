@@ -302,6 +302,37 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *tes
 	h.finished(t)
 }
 
+func TestAHumanClosingTheIssueOfATicketWithAnOpenPullRequestCancelsIt(t *testing.T) {
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.issue, "alex", "not_planned")
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "canceled" {
+		t.Fatalf("the ticket of a closed issue is %s, want canceled (T13)", st)
+	}
+}
+
+func TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync(t *testing.T) {
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.issue, "alex", "not_planned")
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "canceled" {
+		t.Fatalf("the ticket is %s, want canceled before the merge", st)
+	}
+	before := len(h.d.eventTypes(t, h.ref, "ticket.transitioned"))
+	h.gh.HumanMerge(h.pr, "alex")
+	h.restart(t) // the watch records the merge
+	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not record the merge\n%s", h.d.stderr)
+		}
+	}
+	h.d.mustCLI(t, nil, "sync")
+	h.finished(t)
+	if after := len(h.d.eventTypes(t, h.ref, "ticket.transitioned")); after != before+1 {
+		t.Fatalf("the repair logged %d transitions, want 1", after-before)
+	}
+}
+
 func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirst(t *testing.T) {
 	h := newHumanMerge(t)
 	h.gh.HumanMerge(h.pr, "alex")

@@ -188,7 +188,14 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			continue
 		}
 		if base.side.Closed && finished(tk.State) {
-			continue // closed on both sides
+			repaired, err := s.repairMerged(ctx, tk)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
+			}
+			if !repaired {
+				continue // closed on both sides
+			}
+			report.Transitioned++
 		}
 		t, err := s.provider.Get(ctx, ref)
 		if errors.Is(err, ErrNotFound) {
@@ -850,6 +857,22 @@ func (s *Syncer) merged(ctx context.Context, ref string, fresh bool) (bool, erro
 		return false, nil
 	}
 	return s.opts.Merged(ctx, ref, fresh)
+}
+
+// repairMerged moves a canceled ticket whose pull request the PR watch saw
+// merged to done (T11 from canceled, spec 4.8): an earlier sync read the
+// issue that merge closed as a cancel. It reports whether it did; the
+// tracker then gets done on the reconcile that follows.
+func (s *Syncer) repairMerged(ctx context.Context, tk core.Ticket) (bool, error) {
+	if tk.State != core.TicketCanceled {
+		return false, nil
+	}
+	merged, err := s.merged(ctx, tk.Ref, false)
+	if err != nil || !merged {
+		return false, err
+	}
+	_, err = s.tickets.Fire(ctx, "system", tk.Ref, "merged")
+	return err == nil, err
 }
 
 // finishMerged moves a ticket whose pull request a human merged to done
