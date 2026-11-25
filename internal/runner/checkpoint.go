@@ -120,7 +120,12 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		if !check.RunsAt(pipeline.AtCheckpoint) {
 			continue
 		}
-		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
+		command, ok := check.For(tests)
+		if !ok {
+			entry.Notes = append(entry.Notes, check.Name+": not run, the slice has no test change to fill {files} or {dirs}")
+			continue
+		}
+		if passed, output := runCheck(ctx, run.Dir, command); passed {
 			entry.Checks[check.Name] = "green"
 		} else {
 			entry.Checks[check.Name], entry.Red = "red", true
@@ -131,7 +136,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		}
 	}
 	if test, ok := checks.Get("test"); ok && checks.VerifyRed && len(tests) > 0 {
-		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, test.Run)
+		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, test)
 		switch {
 		case err != nil:
 			return journal.Entry{}, err
@@ -143,7 +148,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		default:
 			entry.Checks["verify_red"] = "green"
 		}
-		if judged {
+		if judged && !test.TakesTests() {
 			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
 		}
 	}
@@ -210,21 +215,23 @@ func (w *Workspaces) checks(ctx context.Context, repo string) (pipeline.Checks, 
 	return p.Checks, nil
 }
 
-// onPrevious runs the test command on the previous checkpoint's code in a
+// onPrevious runs the test check on the previous checkpoint's code in a
 // ticket's verify_red worktree with the slice's tests in place, which must
-// fail. The previous code must pass on its own for red first to be judged:
-// prevTest is its recorded test result; without one it runs there as it is
+// fail; a command with {files} or {dirs} runs them alone. The previous code
+// must pass on its own for red first to be judged: prevTest is its recorded
+// test result; without one a command of the whole suite runs there as it is
 // first. It reports whether it could judge, and whether the slice's tests
 // passed there.
-func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, cmd string) (judged, passed bool, err error) {
+func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, test pipeline.Check) (judged, passed bool, err error) {
 	if prevTest == "red" {
 		return false, false, nil
 	}
+	cmd, _ := test.For(tests)
 	scratch, err := c.ws.redCheckout(ctx, ws, prev)
 	if err != nil {
 		return false, false, err
 	}
-	if prevTest == "" {
+	if prevTest == "" && !test.TakesTests() {
 		if ok, _ := runCheck(ctx, scratch, cmd); !ok {
 			return false, false, nil
 		}

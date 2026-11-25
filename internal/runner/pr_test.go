@@ -133,6 +133,21 @@ func TestARedCheckAtPRKeepsThePullRequestClosed(t *testing.T) {
 	}
 }
 
+func TestACheckOfTheSlicesTestsDoesNotRunBeforeAPullRequest(t *testing.T) {
+	t.Parallel()
+	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"exit 1 {dirs}\"\nfull = \"true\"\nnames = \"exit 1 {files}\"\n")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err != nil {
+		t.Fatalf("pr open: %v", err)
+	}
+	entries := prJournal(t, f)
+	if len(entries) != 1 || gh.IssueCount() != 1 {
+		t.Fatalf("journal = %+v", entries)
+	}
+	if c := entries[0].Checkpoint; c.Checks["full"] != "green" || c.Checks["names"] != "" || !strings.Contains(strings.Join(c.Notes, " "), "names: not run") {
+		t.Fatalf("checks = %v notes %v, want names left to the slices and noted", c.Checks, c.Notes)
+	}
+}
+
 func prJournal(t *testing.T, f *cpFixture) []journal.Entry {
 	t.Helper()
 	ref, err := tickets.ParseRef(f.tk.Ref)

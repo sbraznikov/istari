@@ -25,6 +25,50 @@ type Check struct {
 // RunsAt tells whether the check runs at a moment.
 func (c Check) RunsAt(moment string) bool { return slices.Contains(c.At, moment) }
 
+// The placeholders a check command may carry for the slice's tests.
+const (
+	FilesPlaceholder = "{files}" // the test files the slice changed
+	DirsPlaceholder  = "{dirs}"  // their directories, each as ./<dir>
+)
+
+// TakesTests tells whether the command carries {files} or {dirs}: it runs
+// the slice's tests, not the whole suite.
+func (c Check) TakesTests() bool {
+	return strings.Contains(c.Run, FilesPlaceholder) || strings.Contains(c.Run, DirsPlaceholder)
+}
+
+// For returns the command for a slice whose test files are tests, with
+// {files} and {dirs} filled in and shell-quoted. A command that takes tests
+// has none to run without them: ok is false.
+func (c Check) For(tests []string) (command string, ok bool) {
+	if !c.TakesTests() {
+		return c.Run, true
+	}
+	if len(tests) == 0 {
+		return "", false
+	}
+	var files, dirs []string
+	for _, t := range tests {
+		files = append(files, shellQuote(t))
+		dir := "."
+		if d := path.Dir(t); d != "." {
+			dir = "./" + d
+		}
+		dirs = append(dirs, shellQuote(dir))
+	}
+	slices.Sort(files)
+	slices.Sort(dirs)
+	return strings.NewReplacer(FilesPlaceholder, strings.Join(files, " "), DirsPlaceholder, strings.Join(slices.Compact(dirs), " ")).Replace(c.Run), true
+}
+
+// shellQuote quotes a word for sh unless it is plain.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-+@:") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // Checks are the [checks] of a pipeline (spec sections 7.7 and 12).
 type Checks struct {
 	List      []Check  // typecheck, test and full first, then the rest by name

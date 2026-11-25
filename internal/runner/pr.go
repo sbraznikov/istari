@@ -117,6 +117,10 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	}
 	var red []string // the outputs of the red checks
 	for _, check := range prChecks(checks) {
+		if check.TakesTests() {
+			entry.Notes = append(entry.Notes, check.Name+": not run, it runs the slice's tests through {files} or {dirs}; the whole suite is full")
+			continue
+		}
 		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
 			entry.Checks[check.Name] = "green"
 		} else {

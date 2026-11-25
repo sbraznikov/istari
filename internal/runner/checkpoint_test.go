@@ -379,6 +379,46 @@ test_files = ["**/*.check.ts"]
 	}
 }
 
+func TestACheckpointRunsTheSlicesTestsThroughDirsAndFiles(t *testing.T) {
+	t.Parallel()
+	log := filepath.Join(t.TempDir(), "runs.log")
+	checks := `[checks]
+typecheck = "true"
+test = "echo test {dirs} >> ` + log + `; for d in {dirs}; do for t in $d/*_test.sh; do sh $t || exit 1; done; done"
+names = "echo names {files} >> ` + log + `"
+`
+	runs := func() []string {
+		data, _ := os.ReadFile(log)
+		os.Remove(log)
+		return strings.Split(strings.TrimSpace(string(data)), "\n")
+	}
+	f := newCheckpointsWith(t, checks)
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "feature\n")
+	write(t, filepath.Join(f.ws.Dir, "sub", "feature_test.sh"), "test -f feature.txt\n")
+	c := f.checkpoint(t, "A test in sub")
+	if c.Red || c.Checks["test"] != "green" || c.Checks["names"] != "green" || c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v notes %v, want green", c.Checks, c.Notes)
+	}
+	// In the worktree: test and names; then verify_red runs the same filled
+	// test command on the previous checkpoint's code.
+	if got, want := strings.Join(runs(), "|"), "test ./sub|names sub/feature_test.sh|test ./sub"; got != want {
+		t.Fatalf("runs = %s, want %s", got, want)
+	}
+	if notes := strings.Join(c.Notes, " "); strings.Contains(notes, "whole test command") {
+		t.Fatalf("notes = %v: red first was judged on the new tests alone", c.Notes)
+	}
+
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "more\n")
+	c = f.checkpoint(t, "Code only")
+	if got := runs(); len(got) != 1 || got[0] != "" {
+		t.Fatalf("runs = %v, want no check with the slice's tests run", got)
+	}
+	notes := strings.Join(c.Notes, " ")
+	if _, ran := c.Checks["test"]; ran || !strings.Contains(notes, "test: not run") || !strings.Contains(notes, "names: not run") {
+		t.Fatalf("checks = %v notes %v, want test and names not run and noted", c.Checks, c.Notes)
+	}
+}
+
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
 	t.Parallel()
 	f := newCheckpoints(t)
