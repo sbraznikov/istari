@@ -214,3 +214,16 @@ ok  	github.com/sbraznikov/istari/internal/harness	1.745s
 ok  	github.com/sbraznikov/istari/internal/harness/claudecode	8.343s
 ok  	github.com/sbraznikov/istari/internal/pipeline	8.526s
 ok  	github.com/sbraznikov/istari/internal/project	1.596s
+ok  	github.com/sbraznikov/istari/internal/runner	279.004s
+ok  	github.com/sbraznikov/istari/internal/scheduler	3.210s
+?   	github.com/sbraznikov/istari/internal/slack	[no test files]
+ok  	github.com/sbraznikov/istari/internal/store	42.025s
+ok  	github.com/sbraznikov/istari/internal/tickets	43.666s
+ok  	github.com/sbraznikov/istari/internal/tickets/github	2.918s
+?   	github.com/sbraznikov/istari/internal/tickets/github/githubtest	[no test files]
+ok  	github.com/sbraznikov/istari/internal/tickets/journal	5.032s
+ok  	github.com/sbraznikov/istari/internal/tickets/standard	3.199s
+?   	github.com/sbraznikov/istari/internal/tui	[no test files]
+ok  	github.com/sbraznikov/istari/internal/vcs	37.220s
+ok  	github.com/sbraznikov/istari/skill	1.318s
+FAIL
