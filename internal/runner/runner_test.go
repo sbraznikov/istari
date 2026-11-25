@@ -452,6 +452,29 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 	}
 }
 
+func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 16)
+	f.start(t)
+	s := f.session(t)
+	id := s.spec.Env["ISTARI_RUN"]
+	if _, err := f.runner.Runs().Reject(ctx, id, "review: yaml: line 3: did not find expected key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.runner.Runs().Accept(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	f.runner.Runs().Complete(ctx, id, "reviewed")
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	if run, _ := f.runner.Runs().Get(ctx, id); run.Reason != "completed: reviewed" {
+		t.Fatalf("the run ended %q, want it completed: its refused result was corrected", run.Reason)
+	}
+	if rejected := f.events(t, "run.rejected"); len(rejected) != 1 || !strings.Contains(string(rejected[0].Payload), "yaml") {
+		t.Fatalf("run.rejected = %+v, want the refusal kept", rejected)
+	}
+}
+
 func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
