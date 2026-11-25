@@ -139,11 +139,14 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		if opts.VCS != nil {
 			tokens = opts.VCS.Tokens()
 		}
-		srv.saves = runner.NewCheckpoints(srv.spaces, journal.New(jt, ns, opts.Clock), tokens)
+		// One journal, so a run's notes and its checkpoints keep one order.
+		j := journal.New(jt, ns, opts.Clock)
+		srv.saves = runner.NewCheckpoints(srv.spaces, j, tokens)
 		if len(opts.Runner.Slots) > 0 {
 			ro := opts.Runner
 			ro.Clock = opts.Clock
 			ro.Checkpoints = srv.saves
+			ro.Journal = j
 			srv.runner = runner.New(ns, srv.tasks, srv.tickets, srv.spaces, ro)
 		}
 	}
@@ -211,7 +214,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			return opts.VCS.MarkReady(ctx, pr.Repo, pr.Number)
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged})
+	var jt journal.Tracker // the engine's notes go to the ticket when the tracker takes comments
+	if t, ok := opts.Tracker.(journal.Tracker); ok {
+		jt = t
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Journal: journal.New(jt, ns, opts.Clock)})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)

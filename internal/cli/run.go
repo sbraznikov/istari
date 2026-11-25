@@ -174,7 +174,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		if err != nil {
 			return err
 		}
-		var ok api.OK // istari parses and judges it; a malformed result fails the run
+		var ok api.OK // istari parses and judges it; a malformed result fails the run unless it is corrected
 		if err := opts.call(cmd, "refine.submit", key, api.RefineSubmitRequest{Actor: opts.Actor, Result: string(data)}, &ok); err != nil {
 			return err
 		}
@@ -191,7 +191,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		if err != nil {
 			return err
 		}
-		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run
+		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run unless it is corrected
 		if err := opts.call(cmd, "plan.submit", key, api.PlanSubmitRequest{Actor: opts.Actor, Plan: string(data)}, &answer); err != nil {
 			return err
 		}

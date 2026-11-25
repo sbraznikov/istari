@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -471,5 +472,102 @@ func TestADirectoryThatIsNoWorktreeIsNoOrphan(t *testing.T) {
 	}
 	if orphans, err := f.ws.Orphans(ctx, nil); err != nil || len(orphans) != 0 {
 		t.Fatalf("Orphans = %+v, %v; a plain directory is not istari's", orphans, err)
+	}
+}
+
+// moveBranches pushes a new commit to n branches of the remote, so the next
+// fetch of the clone has every one of them to update.
+func (f *wsFixture) moveBranches(t *testing.T, n int) {
+	t.Helper()
+	seed := filepath.Join(f.root, "seed")
+	gitIn(t, seed, "commit", "-q", "--allow-empty", "-m", "branches moved")
+	args := []string{"push", "-q", "-f", "origin"}
+	for i := range n {
+		args = append(args, "HEAD:refs/heads/other/"+strconv.Itoa(i))
+	}
+	gitIn(t, seed, args...)
+	gitIn(t, seed, "reset", "-q", "--hard", "HEAD~")
+}
+
+// atOnce starts every call at the same moment and returns the error of each.
+func atOnce(calls []func() error) []error {
+	errs := make([]error, len(calls))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, call := range calls {
+		wg.Go(func() {
+			<-start
+			errs[i] = call()
+		})
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
+// mergeMainAtOnce runs MergeMain for every ticket at the same moment and
+// returns the error of each.
+func (f *wsFixture) mergeMainAtOnce(tks []core.Ticket) []error {
+	var calls []func() error
+	for _, tk := range tks {
+		calls = append(calls, func() error {
+			_, err := f.ws.MergeMain(ctx, tk.Ref)
+			return err
+		})
+	}
+	return atOnce(calls)
+}
+
+func TestTenRunsOfOneRepositoryStartingAtOnceAllMergeTheMainBranch(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaces(t)
+	var tks []core.Ticket
+	var dirs []string
+	for n := range 10 {
+		tk := f.ticket(t, 20+n, "Run at once")
+		w, err := f.ws.Ensure(ctx, tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tks, dirs = append(tks, tk), append(dirs, w.Dir)
+	}
+	f.moveMain(t, map[string]string{"other.go": "package other\n"})
+	f.moveBranches(t, 1000)
+	for i, err := range f.mergeMainAtOnce(tks) {
+		if err != nil {
+			t.Fatalf("MergeMain of %s: %v", tks[i].Ref, err)
+		}
+		if !exists(filepath.Join(dirs[i], "other.go")) {
+			t.Fatalf("main's new file is not in the worktree of %s", tks[i].Ref)
+		}
+	}
+}
+
+func TestARemovalAndAMergeOfOneRepositoryAtOnceBothFetch(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaces(t)
+	var calls []func() error
+	for n := range 10 {
+		tk := f.ticket(t, 40+n, "Fetch at once")
+		if _, err := f.ws.Ensure(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+		if n%2 == 0 {
+			calls = append(calls, func() error {
+				_, err := f.ws.MergeMain(ctx, tk.Ref)
+				return err
+			})
+		} else {
+			calls = append(calls, func() error {
+				_, err := f.ws.Remove(ctx, tk)
+				return err
+			})
+		}
+	}
+	f.moveBranches(t, 1000)
+	for _, err := range atOnce(calls) {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
