@@ -407,3 +407,77 @@ func TestARecoveredTicketStartsInTheStateAndHoldTheTrackerHas(t *testing.T) {
 		}
 	}
 }
+
+// endingTicket makes ticket gh:acme/web#1 with a completed, a waiting, a
+// ready, a claimed and a blocked task, and a ready task of ticket #2.
+func (f *fixture) endingTicket(t *testing.T, tickets *core.Tickets) {
+	t.Helper()
+	for _, ref := range []string{"gh:acme/web#1", "gh:acme/web#2"} {
+		if _, err := tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.create(t, "t_done", "implementer")
+	f.complete(t, "t_done")
+	f.create(t, "t_ready", "implementer")
+	f.create(t, "t_waiting", "reviewer", "t_ready")
+	f.create(t, "t_claimed", "implementer")
+	f.claim(t, "t_claimed")
+	f.create(t, "t_blocked", "implementer")
+	if err := f.tasks.Block(ctx, f.claim(t, "t_blocked"), "needs_input"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_other", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertEnded checks that the ticket's open tasks are canceled without a
+// lease, its finished task is untouched and the other ticket's task is not.
+func (f *fixture) assertEnded(t *testing.T) {
+	t.Helper()
+	want := map[string]core.TaskState{
+		"t_done": core.TaskCompleted, "t_ready": core.TaskCanceled, "t_waiting": core.TaskCanceled,
+		"t_claimed": core.TaskCanceled, "t_blocked": core.TaskCanceled, "t_other": core.TaskReady,
+	}
+	for id, state := range want {
+		task, err := f.tasks.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.State != state {
+			t.Errorf("%s is %s, want %s", id, task.State, state)
+		}
+		if task.Owner != "" || !task.LeaseUntil.IsZero() {
+			t.Errorf("%s still has a lease: %s until %s", id, task.Owner, task.LeaseUntil)
+		}
+	}
+}
+
+func TestCancelingATicketCancelsItsOpenTasksInTheSameEvent(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.endingTicket(t, tickets)
+	before := len(f.events(t, store.Filter{}))
+	if _, err := tickets.Fire(ctx, "human:alex", "gh:acme/web#1", "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.events(t, store.Filter{})[before:]; len(got) != 1 || got[0].Type != core.EventTicketTransitioned {
+		t.Fatalf("cancel appended %d events (%v), want the one transition", len(got), got)
+	}
+	f.assertEnded(t)
+}
+
+func TestATicketThatIsMergedCancelsItsOpenTasks(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.endingTicket(t, tickets)
+	for _, trigger := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		if _, err := tickets.Fire(ctx, "system", "gh:acme/web#1", trigger); err != nil {
+			t.Fatalf("%s: %v", trigger, err)
+		}
+	}
+	f.assertEnded(t)
+}

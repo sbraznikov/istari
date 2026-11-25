@@ -520,15 +520,48 @@ func (t *Tasks) Revoke(ctx context.Context, actor, id string) error {
 // Cancel cancels a task from any open state.
 func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
 	return t.byActor(ctx, actor, id, "task.canceled", func(task *Task) (map[string]any, error) {
-		switch task.State {
-		case TaskWaiting, TaskReady, TaskClaimed, TaskBlocked:
-		default:
+		if !task.open() {
 			return nil, errorf(CodeInvalidState, "task %s is %s and cannot be canceled", id, task.State)
 		}
 		task.State = TaskCanceled
 		task.release()
 		return nil, nil
 	})
+}
+
+// open reports whether the task is not finished: it can still be canceled.
+func (task Task) open() bool {
+	switch task.State {
+	case TaskWaiting, TaskReady, TaskClaimed, TaskBlocked:
+		return true
+	}
+	return false
+}
+
+// cancelTasksOf returns the changes that cancel every open task of a ticket,
+// each conditional on the version it was read at, and their ids. A claimed
+// task loses its lease.
+func cancelTasksOf(ctx context.Context, s store.Store, ticket string) ([]string, []store.Change, error) {
+	recs, err := s.List(ctx, taskKind)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ids []string
+	var changes []store.Change
+	for _, rec := range recs {
+		task, err := decodeTask(rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		if task.Ticket != ticket || !task.open() {
+			continue
+		}
+		task.State = TaskCanceled
+		task.release()
+		ids = append(ids, task.ID)
+		changes = append(changes, mustChange(task))
+	}
+	return ids, changes, nil
 }
 
 // ExpireLeases returns every claimed task whose lease deadline has passed by

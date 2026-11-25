@@ -32,6 +32,10 @@ func States() []TicketState {
 	return []TicketState{TicketNew, TicketReady, TicketPlanning, TicketInProgress, TicketInReview, TicketAwaitingApproval, TicketDone, TicketCanceled}
 }
 
+// Finished reports whether the state is final, done or canceled: the
+// ticket has no open tasks (spec section 4.1).
+func (s TicketState) Finished() bool { return s == TicketDone || s == TicketCanceled }
+
 // HoldReasons are the reasons a ticket can be held (spec section 4.1).
 func HoldReasons() []string {
 	return []string{"needs_input", "attempts_exhausted", "budget_exceeded", "paused", "waiting_dependency", "waiting_zone"}
@@ -299,7 +303,18 @@ func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket,
 			ticket.Hold = ""
 		}
 		ticket.Updated = m.opts.Clock()
-		return m.commit(ctx, actor, EventTicketTransitioned, ticket, payload)
+		var ended []store.Change
+		if ticket.State.Finished() {
+			// A finished ticket has no open tasks (spec 4.1).
+			var ids []string
+			if ids, ended, err = cancelTasksOf(ctx, m.store, ref); err != nil {
+				return err
+			}
+			if len(ids) > 0 {
+				payload["tasks_canceled"] = ids
+			}
+		}
+		return m.commit(ctx, actor, EventTicketTransitioned, ticket, payload, ended...)
 	})
 	if err != nil {
 		return Ticket{}, err
@@ -467,7 +482,7 @@ func transitionPayload(from, to TicketState, trigger, actor string) map[string]a
 	return map[string]any{"from": from, "to": to, "trigger": trigger, "actor": actor}
 }
 
-func (m *Tickets) commit(ctx context.Context, actor, typ string, ticket Ticket, payload map[string]any) error {
+func (m *Tickets) commit(ctx context.Context, actor, typ string, ticket Ticket, payload map[string]any, more ...store.Change) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -478,7 +493,7 @@ func (m *Tickets) commit(ctx context.Context, actor, typ string, ticket Ticket, 
 	}
 	_, err = m.store.Append(ctx, store.Event{
 		Type: typ, At: ticket.Updated, Actor: actor, Project: ticket.Project, Ticket: ticket.Ref, Payload: raw,
-	}, store.Change{Kind: ticketKind, ID: ticket.Ref, Data: data, IfVersion: ticket.version})
+	}, append([]store.Change{{Kind: ticketKind, ID: ticket.Ref, Data: data, IfVersion: ticket.version}}, more...)...)
 	return err
 }
 
