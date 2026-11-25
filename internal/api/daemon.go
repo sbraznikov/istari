@@ -106,6 +106,11 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	if err := srv.EndRunsLeftRunning(ctx); err != nil {
 		return fmt.Errorf("ending runs left running: %w", err)
 	}
+	// A store from before a finished ticket canceled its tasks is repaired
+	// once, before anything hands them out (spec 4.2).
+	if _, err := srv.Tasks().CancelOfFinished(ctx, "system"); err != nil {
+		return fmt.Errorf("canceling the open tasks of finished tickets: %w", err)
+	}
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)

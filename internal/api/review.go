@@ -22,7 +22,7 @@ type ReviewAnswer struct {
 // submitReview checks and records the reviewer's report and publishes it on
 // the pull request (spec sections 7.6 and 7.7). It moves no ticket: the
 // pipeline computes the verdict from the recorded report. A report outside
-// its schema fails the run.
+// its schema fails the run, unless a later report of the run is accepted.
 func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, error) {
 	run, isAgent := runOf(ctx)
 	switch {
@@ -44,6 +44,9 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
 	}
 	if err := s.reviews.Record(ctx, run, checked); err != nil {
+		return nil, err
+	}
+	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 		return nil, err
 	}
 	if err := s.publishReview(ctx, run.Ticket, checked); err != nil {
