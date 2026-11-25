@@ -22,8 +22,11 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 		t.Fatalf("state = %s, want ready", tk.State)
 	}
 	tr := f.transitions(t, n)
-	if len(tr) != 2 || tr[1].Trigger != "accept" || tr[1].Actor != "system" {
-		t.Fatalf("transitions = %+v, want create then accept by the system", tr)
+	if len(tr) != 2 || tr[0].Actor != "human:alex" || tr[1].Trigger != "accept" || tr[1].Actor != "system" {
+		t.Fatalf("transitions = %+v, want create by human:alex then accept by the system", tr)
+	}
+	if tr[1].Rule != "trusted_author" || tr[1].Parent != "" {
+		t.Fatalf("T2 = %+v, want the rule trusted_author and no parent", tr[1])
 	}
 	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:ready"}) {
 		t.Fatalf("labels = %v", got)
@@ -85,6 +88,9 @@ func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
 	}
 	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:ready"}) {
 		t.Fatalf("labels after ticket ready = %v", got)
+	}
+	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" || tr[len(tr)-1].Rule != "human_admission" {
+		t.Fatalf("transitions = %+v, want the accept by human:alex by the rule human_admission", tr)
 	}
 	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" {
 		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
@@ -184,8 +190,8 @@ func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
 	if tk := f.ticket(t, n); tk.State != core.TicketReady {
 		t.Fatalf("state = %s, want ready after alex's label", tk.State)
 	}
-	if tr := f.transitions(t, n); tr[len(tr)-1].Trigger != "accept" || tr[len(tr)-1].Actor != "human:alex" {
-		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
+	if tr := f.transitions(t, n); tr[len(tr)-1].Trigger != "accept" || tr[len(tr)-1].Actor != "human:alex" || tr[len(tr)-1].Rule != "human_admission" {
+		t.Fatalf("transitions = %+v, want the accept by human:alex by the rule human_admission", tr)
 	}
 }
 

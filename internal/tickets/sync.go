@@ -864,7 +864,9 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 		return s.revert(ctx, x, c, "who made the change is unknown, so its right to make it cannot be checked")
 	}
 	var conf Conformance
+	var more map[string]any
 	if trigger == "accept" {
+		more = admittedAs{rule: ruleHumanAdmission}.payload()
 		// Admission (spec 4.5): a trusted member, and a ticket that meets
 		// the standard.
 		trusted, err := s.trusted(ctx, x.repo, who)
@@ -894,7 +896,7 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 		}
 	}
 	x.base.Hash = conf.Hash
-	next, err := s.tickets.Fire(ctx, "human:"+who, x.tk.Ref, trigger)
+	next, err := s.tickets.FireWith(ctx, "human:"+who, x.tk.Ref, trigger, more)
 	if errors.As(err, new(*core.Error)) {
 		return s.revert(ctx, x, c, err.Error())
 	}
