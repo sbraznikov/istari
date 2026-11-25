@@ -51,6 +51,22 @@ func TestNoRunStartsWhenTheTicketsBudgetIsSpent(t *testing.T) {
 	}
 }
 
+func TestATaskBlockedForBudgetLeavesItsTicketHeld(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 4)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	held, err := f.tickets.Get(ctx, tk.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Hold != "budget_exceeded" {
+		t.Fatalf("hold = %q, want budget_exceeded", held.Hold)
+	}
+}
+
 func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	parent, task := f.readyTask(t, 3)
