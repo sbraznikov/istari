@@ -190,6 +190,8 @@ func TestACheckTableWithAnUnknownKeyOrMomentIsRefusedWithItsLine(t *testing.T) {
 		{"[checks]\ntest = \"true\"\n\n[checks.lint]\nrun = \"x\"\nevery = \"day\"\n", `.istari/pipeline.toml line 6: check "lint": unknown key "every"`},
 		{"[checks]\nlint = { at = [\"pr\"] }\n", `.istari/pipeline.toml line 2: check "lint": a check table needs run`},
 		{"[checks]\nlint = 3\n", `.istari/pipeline.toml line 2: check "lint"`},
+		{"[checks]\ntest = \"true\"\nverify_red = \"yes\"\n", `.istari/pipeline.toml line 3: verify_red is true or false`},
+		{"[checks]\ntest_files = \"**/*_test.go\"\n", `.istari/pipeline.toml line 2: test_files is a list of glob patterns`},
 	} {
 		_, err := pipeline.Parse([]byte(tc.file))
 		if err == nil || !strings.Contains(err.Error(), tc.says) {
