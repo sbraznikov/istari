@@ -238,13 +238,13 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 		if err != nil {
 			return err
 		}
-		onHold, err := t.heldTickets(ctx)
+		withheld, err := t.withheldTickets(ctx)
 		if err != nil {
 			return err
 		}
 		var ready []Task
 		for _, task := range all {
-			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) && !onHold[task.Ticket] {
+			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) && !withheld[task.Ticket] {
 				ready = append(ready, task)
 			}
 		}
@@ -279,24 +279,26 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 	return lease, err
 }
 
-// heldTickets returns the tickets on hold: their tasks are not handed out
-// (spec section 7.2: a run starts only when there is no hold on the ticket).
-func (t *Tasks) heldTickets(ctx context.Context) (map[string]bool, error) {
+// withheldTickets returns the tickets whose tasks are not handed out: those
+// on hold (spec section 7.2: a run starts only when there is no hold on the
+// ticket) and the finished ones (spec 4.2), whose tasks a store from before
+// they were canceled with the ticket may still have open.
+func (t *Tasks) withheldTickets(ctx context.Context) (map[string]bool, error) {
 	recs, err := t.store.List(ctx, ticketKind)
 	if err != nil {
 		return nil, err
 	}
-	held := map[string]bool{}
+	withheld := map[string]bool{}
 	for _, rec := range recs {
 		ticket, err := decodeTicket(rec)
 		if err != nil {
 			return nil, err
 		}
-		if ticket.Hold != "" {
-			held[ticket.Ref] = true
+		if ticket.Hold != "" || ticket.State.Finished() {
+			withheld[ticket.Ref] = true
 		}
 	}
-	return held, nil
+	return withheld, nil
 }
 
 // priorities returns the priority a task is handed out at: its ticket's, or
@@ -375,6 +377,19 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 		return Lease{}, errorf(CodeTaskClaimed, "task %s is claimed by %s", task.ID, task.Owner)
 	default:
 		return Lease{}, errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
+	}
+	// A store from before a finished ticket canceled its tasks may still
+	// have one ready (spec 4.2).
+	if rec, err := t.store.Get(ctx, ticketKind, task.Ticket); err == nil {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return Lease{}, err
+		}
+		if ticket.State.Finished() {
+			return Lease{}, errorf(CodeInvalidState, "task %s belongs to ticket %s, which is %s", task.ID, task.Ticket, ticket.State)
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return Lease{}, err
 	}
 	admitted, err := t.admit(ctx, task)
 	if err != nil {
