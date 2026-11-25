@@ -100,6 +100,7 @@ func TestDoctorListsOnlyTheMissingStandardsFiles(t *testing.T) {
 }
 
 func TestDoctorOutsideARepositoryShowsNeitherPipelineNorStandards(t *testing.T) {
+	t.Parallel()
 	out, _ := doctorInRepo(t, t.TempDir())
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "pipeline") || strings.HasPrefix(line, "standards") {
