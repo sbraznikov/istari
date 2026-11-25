@@ -44,6 +44,51 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	}
 }
 
+// correctingPlanner submits a plan that is no YAML, then a corrected one.
+const correctingPlanner = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = planner ]; then
+  printf 'slices: [unclosed\n' | "$istari" plan submit --file - >> "$log" 2>&1
+  "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+summary: Write the feature file
+slices: [the feature file]
+seams: [{name: feature.txt, catches: its presence, misses: its content}]
+zone: [feature.txt (new)]
+PLAN
+  "$istari" complete "planned" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+const planOnlyPipeline = `[checks]
+typecheck = "true"
+test = "true"
+full = "true"
+verify_red = false
+
+[[stage]]
+name = "plan"
+role = "planner"
+`
+
+func TestAPlanCorrectedInTheSameRunCompletesThePlanTask(t *testing.T) {
+	t.Parallel()
+	d, _, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(correctingPlanner, binary, log) })
+	runs := endedRuns(t, d, log, "planner", 1)
+	out, _ := os.ReadFile(log)
+	if !strings.Contains(string(out), "yaml") {
+		t.Fatalf("the first plan was not refused:\n%s", out)
+	}
+	if runs[0].Reason != "completed: planned" {
+		t.Fatalf("the planner run ended %q, want it completed: its refused plan was corrected\nagent log:\n%s", runs[0].Reason, out)
+	}
+	if task := showTask(t, d, runs[0].Task); task.State != "completed" {
+		t.Fatalf("the plan task is %s, want completed", task.State)
+	}
+}
+
 func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)

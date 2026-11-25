@@ -106,6 +106,11 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
 		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS})
+	// A store from before a finished ticket canceled its tasks is repaired
+	// once, before anything hands them out (spec 4.2).
+	if _, err := srv.Tasks().CancelOfFinished(ctx, "system"); err != nil {
+		return fmt.Errorf("canceling the open tasks of finished tickets: %w", err)
+	}
 	if opts.PausedBy != "" {
 		// A hand-out still paused from before the restart stays paused.
 		var already *core.Error

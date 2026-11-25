@@ -72,14 +72,14 @@ func Brief(in BriefInput) string {
 			"```yaml\nsummary: the approach in a few lines\nslices: [one test and the minimum code each, in order]\n" +
 			"seams: [{name: the public boundary, catches: what its tests catch, misses: what they miss}]\n" +
 			"zone: [path/that/exists.go, path/to/create.go (new)]\nsize: XS | S | M | L | XL  # only to revise it\nsize_reason: why\n" +
-			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run.\n\n")
+			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run, unless you correct it and submit it again before `istari complete`.\n\n")
 	}
 	if in.Role == "refiner" {
 		pr := "## Your result\n\n" + submitText("istari refine submit", "result") + "\n\n" +
 			"```yaml\nverdict: meets | rewrite | needs_input | duplicate\nsize: XS | S | M | L | XL\nsize_reason: why, when it differs from the author's\n" +
 			"deviations: [what falls short]\nassumptions: [what you inferred]\nbody: the rewritten text, ending with the original kept verbatim in <details><summary>Original text</summary> … </details>  # rewrite\n" +
 			"changes: [what you changed]  # rewrite\nquestions: [for the author]  # needs_input\ncard: {problem, state, options: [{letter, gist, consequences, size, risks, changes}], recommendation, recommended, status: proposed}  # duplicate\n```\n\n" +
-			"A result code rejects fails this run.\n\n## Duplicate candidates\n\n"
+			"A result code rejects fails this run, unless you correct it and submit it again before `istari complete`.\n\n## Duplicate candidates\n\n"
 		if len(in.Candidates) == 0 {
 			pr += "No other ticket shares paths, identifiers or title words with this one: there is no candidate to compare.\n\n"
 		} else {
