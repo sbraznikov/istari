@@ -104,7 +104,7 @@ func TestGitInTheOwnWorktreeIsFreeAndWhatReachesBeyondItIsDenied(t *testing.T) {
 		"/data/repos/acme/web.git/worktrees/7/config.worktree": true,
 		"/home/me/web/.git/config":                             true,
 	} {
-		if err := runner.FileGuard(path); (err != nil) != denied {
+		if err := runner.FileGuard(path, ""); (err != nil) != denied {
 			t.Errorf("writing %s: %v, denied want %v", path, err, denied)
 		}
 	}
