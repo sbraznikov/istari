@@ -180,6 +180,17 @@ func TestAReportWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
 	refusesUnquotedColon(t, err, 1)
 }
 
+func TestAnUnquotedColonOnALaterLineIsNamedAfterACommentWithAColon(t *testing.T) {
+	report := "standards: \"0 findings\"\n" +
+		"spec: \"1 finding\"\n" +
+		"findings:\n" +
+		"  - axis: spec  # standards; spec: missing\n" +
+		"    kind: missing\n" +
+		"    text: dup: here\n"
+	_, err := runner.ParseReviewResult([]byte(report))
+	refusesUnquotedColon(t, err, 6)
+}
+
 func TestACodeSmellQuotesTheBaselineOfTheReviewersInstructions(t *testing.T) {
 	f := newReviews(t) // main has no .istari/roles/reviewer.md: the built-in one applies
 	checked := f.submit(t, `

@@ -2,6 +2,8 @@ package runner
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -14,12 +16,16 @@ const quoteHint = `a value with ": " in it must be quoted: quote the value, as i
 // says how to fix it (S4.9).
 //
 // Such a value fails in one of two ways: as the value of a key, the scanner
-// refuses it ("mapping values are not allowed"), and yaml.v3 leaves the line
-// out when it is the first one, so the line is found in data; as a list item
+// refuses it ("mapping values are not allowed"); yaml.v3 names the line but
+// leaves it out when it is the first one, and only then is the line found in
+// data; as a list item
 // where a string is expected, it decodes as a map, and yaml.v3 names the line.
 func yamlError(what string, data []byte, err error) error {
 	switch msg := err.Error(); {
 	case strings.Contains(msg, "mapping values are not allowed"):
+		if line := yamlLine(msg); line > 0 {
+			return fmt.Errorf("%s: line %d: %s", what, line, quoteHint)
+		}
 		if line := unquotedColonLine(data); line > 0 {
 			return fmt.Errorf("%s: line %d: %s", what, line, quoteHint)
 		}
@@ -29,6 +35,23 @@ func yamlError(what string, data []byte, err error) error {
 	default:
 		return fmt.Errorf("%s: %w", what, err)
 	}
+}
+
+// yamlLineRE finds the line yaml.v3 names in its error.
+var yamlLineRE = regexp.MustCompile(`line (\d+):`)
+
+// yamlLine returns the line yaml.v3 names in its error message, or 0 when it
+// names none.
+func yamlLine(msg string) int {
+	m := yamlLineRE.FindStringSubmatch(msg)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // unquotedColonLine returns the first line, counted from 1, whose value
