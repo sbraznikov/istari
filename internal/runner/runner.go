@@ -15,6 +15,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -403,7 +404,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		// The implementer may run the repository's checks itself (spec 7.3):
 		// one test while it writes it, not only a whole checkpoint.
 		if ref, err := tickets.ParseRef(task.Ticket); err == nil {
-			checks, _, err := r.ws.checks(bg, ref.Repo)
+			checks, err := r.ws.checks(bg, ref.Repo)
 			if err != nil {
 				log.Printf("istari: run %s: reading the checks: %v", run.ID, err)
 			}
@@ -698,11 +699,11 @@ var resultRoles = []string{"refiner", "planner", "reviewer"}
 // "go test ./... -short" allows "Bash(go test *)". The leading words end at
 // the first argument, a word that starts with "-", "." or "/". Sorted, one
 // rule per program and subcommand.
-func checkTools(checks map[string]string) []string {
+func checkTools(checks pipeline.Checks) []string {
 	var rules []string
-	for _, cmd := range checks {
+	for _, c := range checks.List {
 		var lead []string
-		for _, w := range strings.Fields(cmd) {
+		for _, w := range strings.Fields(c.Run) {
 			if strings.ContainsAny(w[:1], "-./") {
 				break
 			}

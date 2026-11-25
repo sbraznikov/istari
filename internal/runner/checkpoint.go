@@ -108,17 +108,17 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		entry.Notes = append(entry.Notes, "no test change in this slice")
 	}
 
-	checks, verifyRed, err := c.ws.checks(ctx, ws.Repo)
+	checks, err := c.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return journal.Entry{}, err
 	}
 	for _, name := range []string{"typecheck", "test"} {
-		cmd, ok := checks[name]
+		check, ok := checks.Get(name)
 		if !ok {
 			entry.Notes = append(entry.Notes, name+": no command in the main branch's "+pipeline.Path)
 			continue
 		}
-		if passed, output := runCheck(ctx, run.Dir, cmd); passed {
+		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
 			entry.Checks[name] = "green"
 		} else {
 			entry.Checks[name], entry.Red = "red", true
@@ -128,8 +128,8 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Failures[name] = output
 		}
 	}
-	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 {
-		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, cmd)
+	if test, ok := checks.Get("test"); ok && checks.VerifyRed && len(tests) > 0 {
+		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, test.Run)
 		switch {
 		case err != nil:
 			return journal.Entry{}, err
@@ -193,31 +193,19 @@ func (c *Checkpoints) previous(ctx context.Context, run Run, ref tickets.Ref, ws
 
 // checks reads the check commands from the main branch: the ticket's branch
 // must not choose the checks that judge it, nor what its agent may run.
-func (w *Workspaces) checks(ctx context.Context, repo string) (map[string]string, bool, error) {
+func (w *Workspaces) checks(ctx context.Context, repo string) (pipeline.Checks, error) {
 	data, err := w.MainFile(ctx, repo, pipeline.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]string{}, false, nil
+		return pipeline.Checks{}, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return pipeline.Checks{}, err
 	}
 	p, err := pipeline.Parse(data)
 	if err != nil {
-		return nil, false, err
+		return pipeline.Checks{}, err
 	}
-	out := map[string]string{}
-	verifyRed := true
-	for k, v := range p.Checks {
-		switch val := v.(type) {
-		case string:
-			out[k] = val
-		case bool:
-			if k == "verify_red" {
-				verifyRed = val
-			}
-		}
-	}
-	return out, verifyRed, nil
+	return p.Checks, nil
 }
 
 // onPrevious runs the test command on the previous checkpoint's code in a

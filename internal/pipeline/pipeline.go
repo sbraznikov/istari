@@ -66,7 +66,7 @@ type Limits struct {
 // Pipeline is a repository's pipeline.
 type Pipeline struct {
 	Limits Limits         `toml:"limits"`
-	Checks map[string]any `toml:"checks"`
+	Checks Checks         `toml:"-"`
 	Merge  map[string]any `toml:"merge"`
 	Stages []Stage        `toml:"stage"`
 }
@@ -91,6 +91,7 @@ func Parse(data []byte) (Pipeline, error) {
 	// A stage that names no needs follows the stage before it; needs = []
 	// runs it in parallel (spec section 4.3: stages can be made parallel).
 	var raw struct {
+		Checks map[string]any `toml:"checks"`
 		Stages []struct {
 			Needs *[]string `toml:"needs"`
 		} `toml:"stage"`
@@ -110,6 +111,11 @@ func Parse(data []byte) (Pipeline, error) {
 		}
 		return Pipeline{}, fmt.Errorf("%s: %w", Path, err)
 	}
+	checks, err := parseChecks(raw.Checks)
+	if err != nil {
+		return Pipeline{}, err
+	}
+	p.Checks = checks
 	if len(p.Stages) == 0 { // a file of limits and checks keeps the default stages
 		p.Stages = Default().Stages
 		return p, nil

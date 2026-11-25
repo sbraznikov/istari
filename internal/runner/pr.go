@@ -98,19 +98,19 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Done = done
 		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
 	}
-	checks, _, err := p.cp.ws.checks(ctx, ws.Repo)
+	checks, err := p.cp.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return vcs.Opened{}, err
 	}
 	name := "full"
-	full, ok := checks[name]
+	full, ok := checks.Get(name)
 	if !ok {
 		name = "test" // without a full suite, the tests
-		full, ok = checks[name]
+		full, ok = checks.Get(name)
 	}
 	if !ok {
 		entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
-	} else if passed, output := runCheck(ctx, run.Dir, full); passed {
+	} else if passed, output := runCheck(ctx, run.Dir, full.Run); passed {
 		entry.Checks[name] = "green"
 	} else {
 		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}

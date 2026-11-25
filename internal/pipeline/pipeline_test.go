@@ -140,3 +140,44 @@ func TestWithThePlanGateTheImplementerWaitsForAHuman(t *testing.T) {
 		t.Fatalf("implement = %v, want it to need the approval", got[2])
 	}
 }
+
+func TestAProjectNamesItsOwnChecksAndWhenTheyRun(t *testing.T) {
+	t.Parallel()
+	p, err := pipeline.Parse([]byte(`[checks]
+typecheck = "go vet ./..."
+test      = "go test -short {dirs}"
+full      = "go test ./..."
+format    = "test -z \"$(gofmt -l .)\""
+tidy      = { run = "go mod tidy -diff", at = ["pr"] }
+verify_red = false
+
+[checks.lint]
+run = "golangci-lint run"
+at  = ["checkpoint"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type check struct {
+		Name, Run string
+		At        []string
+	}
+	var got []check
+	for _, c := range p.Checks.List {
+		got = append(got, check{c.Name, c.Run, c.At})
+	}
+	want := []check{
+		{"typecheck", "go vet ./...", []string{"checkpoint"}},
+		{"test", "go test -short {dirs}", []string{"checkpoint"}},
+		{"full", "go test ./...", []string{"pr"}},
+		{"format", `test -z "$(gofmt -l .)"`, []string{"checkpoint", "pr"}},
+		{"lint", "golangci-lint run", []string{"checkpoint"}},
+		{"tidy", "go mod tidy -diff", []string{"pr"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checks = %+v\nwant %+v", got, want)
+	}
+	if p.Checks.VerifyRed {
+		t.Error("verify_red = false was not read")
+	}
+}
