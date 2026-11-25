@@ -466,7 +466,9 @@ func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
 	f.start(t)
 	s := f.session(t)
 	id := s.spec.Env["ISTARI_RUN"]
-	f.runner.Runs().Yield(ctx, id, "gh:o/r#15 is in_progress")
+	if _, err := f.runner.Runs().Yield(ctx, id, "gh:o/r#15 is in_progress"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.runner.Runs().Reject(ctx, id, "review result: yaml: line 1"); err != nil {
 		t.Fatal(err)
 	}

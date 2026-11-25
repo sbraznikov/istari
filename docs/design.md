@@ -237,7 +237,7 @@ canceled — from any open state
 - The lease is 5 minutes by default; Runner renews it at every third of the term.
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
-- An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task that it was handed out before its ticket was ready, with the ticket's state.
+- An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 
 ### 4.3 Default pipeline

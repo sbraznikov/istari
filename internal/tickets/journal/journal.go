@@ -37,7 +37,7 @@ const (
 
 // Entry is one journal entry. Which fields it uses depends on its kind:
 // question and answer use ID, Text and (answer) Link; assumption uses Text;
-// the others their own part.
+// note uses Text and ID, the task it is about; the others their own part.
 type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
