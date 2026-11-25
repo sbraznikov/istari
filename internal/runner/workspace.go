@@ -733,7 +733,8 @@ func repoName(repo string) string {
 // MergeMain brings the main branch, fetched just now, into the ticket's
 // worktree (spec section 4.6, resuming: step 2). It returns the files in
 // conflict, left with their markers for the worker: resolving them is its
-// first step.
+// first step. A fetch that fails twice is an error, and the worktree is left
+// as it was.
 func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []string, err error) {
 	ws, err := w.get(ctx, ticket)
 	if err != nil {
@@ -742,7 +743,11 @@ func (w *Workspaces) MergeMain(ctx context.Context, ticket string) (conflicts []
 	if ws.State != WorkspaceActive || !isWorktree(ctx, ws.Dir) {
 		return nil, fmt.Errorf("merge main: %s has no worktree", ticket)
 	}
+	// A failed fetch is tried once more before the merge is given up.
 	clone, err := w.clone(ctx, ws.Repo)
+	if err != nil {
+		clone, err = w.clone(ctx, ws.Repo)
+	}
 	if err != nil {
 		return nil, err
 	}
