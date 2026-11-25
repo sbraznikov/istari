@@ -168,7 +168,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	refine := &cobra.Command{Use: "refine", Short: "For the refiner: submit the result of refining a ticket", Args: Args(cobra.NoArgs)}
 	var file string
 	submit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <result.yaml>", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <result.yaml>]", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
 		data, err := readResult(cmd, file)
 		if err != nil {
@@ -185,7 +185,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	plan := &cobra.Command{Use: "plan", Short: "For the planner: submit the plan of a ticket", Args: Args(cobra.NoArgs)}
 	var planFile string
 	planSubmit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <plan.yaml>", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <plan.yaml>]", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
 		data, err := readResult(cmd, planFile)
 		if err != nil {
@@ -206,7 +206,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	review := &cobra.Command{Use: "review", Short: "For the reviewer: submit the review of a pull request", Args: Args(cobra.NoArgs)}
 	var reviewFile string
 	reviewSubmit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <review.yaml>", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <review.yaml>]", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
 		data, err := readResult(cmd, reviewFile)
 		if err != nil {
