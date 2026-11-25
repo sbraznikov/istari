@@ -26,6 +26,7 @@ const (
 	DefaultRunTimeout    = time.Hour
 	DefaultPoll          = 2 * time.Second
 	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
+	DefaultStartRetry    = 5 * time.Second
 	stopGrace            = 10 * time.Second
 )
 
@@ -72,6 +73,10 @@ type RunnerOptions struct {
 	// .istari/skill.md when the repository has none (spec section 7.4);
 	// "": istari's own.
 	Skill string
+	// StartRetry is how long a slot holds a task whose harness did not start
+	// before it releases it, so a binary being replaced has time to come
+	// back (spec section 7.3); 0: DefaultStartRetry.
+	StartRetry time.Duration
 }
 
 // Runner starts agents (spec section 7.2). Only the runner does: a free slot
@@ -105,6 +110,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.TranscriptMax <= 0 {
 		opts.TranscriptMax = DefaultTranscriptMax
+	}
+	if opts.StartRetry <= 0 {
+		opts.StartRetry = DefaultStartRetry
 	}
 	if opts.Skill == "" {
 		opts.Skill = skill.Skill()
