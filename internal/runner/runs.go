@@ -63,6 +63,7 @@ type Run struct {
 	Usage      harness.Usage `json:"usage"`
 	Completed  string        `json:"completed,omitempty"` // what the agent said with istari complete
 	Rejected   string        `json:"rejected,omitempty"`  // why code rejected what the agent submitted: the run fails unless a later submit is accepted
+	Yielded    string        `json:"yielded,omitempty"`   // why code refused a submission for the ticket's state: the run ends without a result
 	ExitCode   int           `json:"exit_code"`
 	Reason     string        `json:"reason,omitempty"` // how the run ended
 
@@ -183,6 +184,14 @@ func (r *Runs) Accept(ctx context.Context, id string) (Run, error) {
 		return run, err
 	}
 	return r.update(ctx, id, EventRunAccepted, map[string]any{"run": id, "cleared": run.Rejected}, func(run *Run) { run.Rejected = "" })
+}
+
+// Yield records that code refused what the run's agent submitted because of
+// the ticket's state, not the submission: the run ends without a result and
+// its task is released, without spending an attempt (spec section 4.2). A
+// rejection still wins over it.
+func (r *Runs) Yield(ctx context.Context, id, reason string) (Run, error) {
+	return r.update(ctx, id, "run.yielded", map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Yielded = reason })
 }
 
 // create records a new run and its token.

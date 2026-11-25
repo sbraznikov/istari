@@ -465,6 +465,43 @@ func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) 
 	}
 }
 
+func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 15)
+	f.start(t)
+	s := f.session(t)
+	if _, err := f.runner.Runs().Yield(ctx, s.spec.Env["ISTARI_RUN"], "gh:o/r#15 is in_progress; a review is submitted in in_review"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	// Released to ready; the slot may claim it again at once.
+	if released := f.waitEvent(t, "task.released"); released.Task != task.ID {
+		t.Fatalf("task.released is of %q, want %q", released.Task, task.ID)
+	}
+	if got, _ := f.tasks.Get(ctx, task.ID); got.Attempts != 0 {
+		t.Fatalf("attempts = %d after a yielded run, want 0", got.Attempts)
+	}
+}
+
+func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 15)
+	f.start(t)
+	s := f.session(t)
+	id := s.spec.Env["ISTARI_RUN"]
+	if _, err := f.runner.Runs().Yield(ctx, id, "gh:o/r#15 is in_progress"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.runner.Runs().Reject(ctx, id, "review result: yaml: line 1"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitEvent(t, "task.failed")
+	if got, _ := f.tasks.Get(ctx, task.ID); got.Attempts != 1 {
+		t.Fatalf("attempts = %d after a rejected run, want 1", got.Attempts)
+	}
+}
+
 func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 	f := newRunner(t, runner.RunnerOptions{Lease: time.Hour})
 	_, task := f.readyTask(t, 11)

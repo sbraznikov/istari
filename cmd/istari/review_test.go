@@ -219,3 +219,189 @@ func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
 		t.Fatalf("the ticket is %s, want in_review: no report, no verdict", tk.State)
 	}
 }
+
+// earlyReviewAgent plays the planner and the implementer like stageAgent, and
+// as the reviewer submits the report given as %[3]s and ends its run
+// without istari complete, as a refused submit tells it to.
+const earlyReviewAgent = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+echo "$ISTARI_ROLE $ISTARI_TASK" >> "$log"
+case "$ISTARI_ROLE" in
+planner)
+  "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+summary: Write the feature file
+slices: [the feature file]
+seams: [{name: feature.txt, catches: its presence, misses: its content}]
+zone: [feature.txt (new)]
+PLAN
+  "$istari" complete "planned" >> "$log" 2>&1
+  ;;
+implementer)
+  echo "the feature" > feature.txt
+  "$istari" checkpoint "The feature file; next the pull request" >> "$log" 2>&1
+  "$istari" pr open --title "Add the feature" --body-file - >> "$log" 2>&1 <<'BODY'
+## Summary
+
+The feature file.
+
+## Evidence
+
+- Before: none. After: feature.txt.
+
+## Merge Danger
+
+**Door:** two-way
+
+**Blast Radius:** none
+BODY
+  "$istari" complete "implemented" >> "$log" 2>&1
+  ;;
+reviewer)
+  "$istari" review submit --file - >> "$log" 2>&1 <<'REPORT'
+%[3]s
+REPORT
+  ;;
+esac
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+// earlyReviewPipeline gives review only implement to wait for, so the review
+// task is handed out while the ticket is still in_progress (as before #137).
+const earlyReviewPipeline = `[checks]
+typecheck = "true"
+test = "true"
+full = "true"
+verify_red = false
+
+[[stage]]
+name = "plan"
+role = "planner"
+
+[[stage]]
+name = "implement"
+role = "implementer"
+needs = ["plan"]
+isolation = "worktree"
+
+[[stage]]
+name = "review"
+role = "reviewer"
+needs = ["implement"]
+`
+
+// earlyReview starts a daemon on a ready ticket of a project with
+// earlyReviewPipeline, whose reviewer submits report.
+func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
+	t.Helper()
+	server := gitServer(t)
+	seed := filepath.Join(server, "seed")
+	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte(earlyReviewPipeline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, seed, "add", ".")
+	git(t, seed, "commit", "-q", "-m", "pipeline")
+	git(t, seed, "push", "-q", "origin", "main")
+
+	gh = githubtest.New(t)
+	gh.SetFile("go.mod", "module x\n")
+	gh.SetFile(".istari/pipeline.toml", earlyReviewPipeline) // the stages are read from the repository's main branch
+	ticket = gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
+	dataDir := newDataDir(t)
+	log = filepath.Join(t.TempDir(), "agent.log")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(earlyReviewAgent, binary, log, report)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d = startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	return d, gh, ticket, log
+}
+
+type reviewerRun struct{ Role, Task, State, Reason string }
+
+// endedReviews waits until n reviewer runs have ended and returns them.
+func endedReviews(t *testing.T, d *daemon, log string, n int) []reviewerRun {
+	t.Helper()
+	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		var runs, ended []reviewerRun
+		d.mustCLI(t, &runs, "run", "list")
+		for _, r := range runs {
+			if r.Role == "reviewer" && r.State == "ended" {
+				ended = append(ended, r)
+			}
+		}
+		if len(ended) >= n {
+			return ended
+		}
+		if time.Now().After(deadline) {
+			out, _ := os.ReadFile(log)
+			t.Fatalf("%d reviewer runs ended, want %d: %+v\nagent log:\n%s\ndaemon:\n%s", len(ended), n, runs, out, d.stderr)
+		}
+	}
+}
+
+type taskView struct {
+	State    string
+	Attempts int
+}
+
+func showTask(t *testing.T, d *daemon, id string) taskView {
+	t.Helper()
+	var task taskView
+	d.mustCLI(t, &task, "task", "show", id)
+	return task
+}
+
+const validReport = `standards: 0 findings
+spec: 0 findings
+findings: []`
+
+func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
+	d, gh, n, log := earlyReview(t, validReport)
+	runs := endedReviews(t, d, log, 2)
+	out, _ := os.ReadFile(log)
+	if !strings.Contains(string(out), "is in_progress") || !strings.Contains(string(out), "end your run without a result") {
+		t.Fatalf("the refusal does not tell the reviewer to end its run without a result:\n%s", out)
+	}
+	for _, r := range runs {
+		if !strings.HasPrefix(r.Reason, "yielded: ") {
+			t.Fatalf("a reviewer run ended %q, want it yielded", r.Reason)
+		}
+	}
+	if task := showTask(t, d, runs[0].Task); task.Attempts != 0 || task.State == "failed" {
+		t.Fatalf("the review task is %s with %d attempts after refused submits, want no attempt spent", task.State, task.Attempts)
+	}
+	var notes int
+	for _, c := range gh.Issue(n).Comments {
+		if strings.Contains(c.Body, "handed out before") {
+			notes++
+			if !strings.Contains(c.Body, "in_progress") {
+				t.Fatalf("the journal entry does not name the ticket's state:\n%s", c.Body)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("%d journal entries say the review was handed out early after %d refused submits, want 1", notes, len(runs))
+	}
+}
+
+func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
+	d, _, _, log := earlyReview(t, "findings: [")
+	runs := endedReviews(t, d, log, 1)
+	if !strings.HasPrefix(runs[0].Reason, "rejected: ") {
+		t.Fatalf("the reviewer run ended %q, want it rejected", runs[0].Reason)
+	}
+	if task := showTask(t, d, runs[0].Task); task.Attempts < 1 {
+		t.Fatalf("the review task has %d attempts after a YAML error, want the failed one counted", task.Attempts)
+	}
+}

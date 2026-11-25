@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -33,6 +34,9 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 		return nil, &core.Error{Code: core.CodeInvalidState, Message: "reviewing is off: istari has no workspaces or no ticket tracker"}
 	}
 	checked, err := s.checkReview(ctx, run, r.Report)
+	if early := (*notInReview)(nil); errors.As(err, &early) {
+		return nil, s.yieldReview(ctx, run, early)
+	}
 	if err != nil {
 		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
 			return nil, rerr
@@ -60,7 +64,7 @@ func (s *Server) checkReview(ctx context.Context, run runner.Run, raw string) (r
 		if err != nil {
 			return runner.ReviewCheck{}, err
 		}
-		return runner.ReviewCheck{}, fmt.Errorf("review: %s is %s; a review is submitted in in_review", run.Ticket, tk.State)
+		return runner.ReviewCheck{}, &notInReview{ticket: run.Ticket, state: tk.State}
 	}
 	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
@@ -71,6 +75,56 @@ func (s *Server) checkReview(ctx context.Context, run runner.Run, raw string) (r
 		return runner.ReviewCheck{}, err
 	}
 	return s.reviews.Check(ctx, run, res, journal.StripWorkState(t.Body))
+}
+
+// notInReview refuses a review because of the ticket's state, not the
+// report: the agent could not have made it acceptable.
+type notInReview struct {
+	ticket string
+	state  core.TicketState
+}
+
+func (e *notInReview) Error() string {
+	return fmt.Sprintf("review: %s is %s; a review is submitted in in_review", e.ticket, e.state)
+}
+
+// yieldReview ends a review run that came too early without a result and
+// without spending an attempt (spec section 4.2), and notes it once per task
+// in the ticket's journal.
+func (s *Server) yieldReview(ctx context.Context, run runner.Run, early *notInReview) error {
+	if _, err := s.runs.Yield(ctx, run.ID, early.Error()); err != nil {
+		return err
+	}
+	if err := s.noteEarlyReview(ctx, run, early.state); err != nil {
+		log.Printf("istari: review of %s: noting the early hand-out: %v", run.Ticket, err)
+	}
+	return &core.Error{Code: core.CodeInvalidState, Message: early.Error() +
+		". Stop and end your run without a result, without istari complete: istari asks for the review again once the ticket is in review"}
+}
+
+// noteEarlyReview records that a review task was handed out before its
+// ticket was in review, unless the journal already says so for this task.
+func (s *Server) noteEarlyReview(ctx context.Context, run runner.Run, state core.TicketState) error {
+	jt, ok := s.tracker.(journal.Tracker)
+	if !ok {
+		return nil
+	}
+	ref, err := tickets.ParseRef(run.Ticket)
+	if err != nil {
+		return err
+	}
+	j := journal.New(jt, s.store, s.clock)
+	entries, err := j.Stored(ctx, ref)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Kind == journal.Note && e.ID == run.Task {
+			return nil
+		}
+	}
+	return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", ID: run.Task,
+		Text: fmt.Sprintf("The review task %s was handed out before the ticket was in review: the ticket is %s. Its run ended without a result and spent no attempt.", run.Task, state)})
 }
 
 // publishReview posts the checked report on the ticket's pull request, the

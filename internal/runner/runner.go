@@ -515,6 +515,10 @@ func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (re
 		return err.Error(), r.failWith(err.Error()), false
 	case run.Rejected != "":
 		return "rejected: " + run.Rejected, r.failWith("rejected: " + run.Rejected), false
+	case run.Yielded != "":
+		// Refused for the ticket's state, not the agent's work: no attempt
+		// is spent (spec section 4.2).
+		return "yielded: " + run.Yielded, r.tasks.Release, false
 	case run.Completed != "" && res.ExitCode == 0 && !res.Failed:
 		return "completed: " + run.Completed, r.tasks.Complete, true
 	case run.Completed == "":
