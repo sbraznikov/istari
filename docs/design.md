@@ -207,7 +207,7 @@ any unfinished state ──► canceled ──► new (reopen)
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
-| `needs_input` | an agent asked a question and stopped | human, by replying in the thread |
+| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
@@ -903,8 +903,17 @@ The principle: less model, more deterministic code. The model is non-determinist
 | Moment | What is run | Consequence of failure |
 |---|---|---|
 | `istari checkpoint` | type check and fast tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
-| `istari pr open` | full suite | the PR is not opened |
+| `istari pr open` | full suite | the PR is not opened; see below for whose failure it is |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
+
+**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command once on the tip of the main branch, as last fetched, in a scratch worktree, and records that result in the journal entry together with the main commit. The result is kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
+
+| Main branch | Journal entry | What follows |
+|---|---|---|
+| green | the branch's failure and output, as before | the failure is the ticket's: the agent fixes it |
+| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again |
+
+A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch.
 
 The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter.
 
