@@ -43,6 +43,19 @@ func CheckDescription(body string) error {
 	return nil
 }
 
+// fullRed is what the journal says of a pr open stopped by red full checks.
+const fullRed = "the full checks fail: the pull request is not opened"
+
+// lastCheckpoint returns the last checkpoint entry of a journal, or nil.
+func lastCheckpoint(entries []journal.Entry) *journal.CheckpointEntry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if cp := entries[i].Checkpoint; cp != nil {
+			return cp
+		}
+	}
+	return nil
+}
+
 // PullRequests opens the pull requests of tickets (spec section 7.7: opening
 // is gated by the full check suite run by code).
 type PullRequests struct {
@@ -83,7 +96,8 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	} else if dirty != "" {
 		return vcs.Opened{}, fmt.Errorf("pr: the worktree has uncommitted changes; commit them with istari checkpoint first:\n%s", dirty)
 	}
-	if based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir); err != nil {
+	based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir)
+	if err != nil {
 		return vcs.Opened{}, err
 	} else if !based {
 		return vcs.Opened{}, fmt.Errorf("pr: the branch is not based on the current %s: merge origin/%s, resolve, make a checkpoint, then open the pull request", main, main)
@@ -92,8 +106,18 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	if err != nil {
 		return vcs.Opened{}, err
 	}
+	commit := head[:min(12, len(head))]
+	entries, err := p.cp.journal.Stored(ctx, ref)
+	if err != nil {
+		return vcs.Opened{}, err
+	}
+	// The same code fails the same way: running the checks again only costs
+	// time (spec 7.7, a red full suite).
+	if last := lastCheckpoint(entries); last != nil && last.Done == fullRed && last.Commit == commit {
+		return vcs.Opened{}, fmt.Errorf("pr: the full checks already failed on %s, and the branch has not changed since: change the code, or merge origin/%s, make a checkpoint, then open the pull request", commit, main)
+	}
 	// Only the result of a run by code goes into the journal (spec 7.7).
-	entry := &journal.CheckpointEntry{Branch: ws.Branch, Commit: head[:min(12, len(head))], Checks: map[string]string{}}
+	entry := &journal.CheckpointEntry{Branch: ws.Branch, Commit: commit, Checks: map[string]string{}}
 	record := func(done string) error {
 		entry.Done = done
 		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
@@ -114,7 +138,7 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Checks[name] = "green"
 	} else {
 		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
-		if err := record("the full checks fail: the pull request is not opened"); err != nil {
+		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err
 		}
 		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
