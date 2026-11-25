@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -84,6 +85,65 @@ func TestRequestsAreCountedByKindWithTheQuotaOfTheLastAnswer(t *testing.T) {
 	}
 	if wantReset := time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC); !s.Reset.Equal(wantReset) {
 		t.Errorf("reset = %v, want %v", s.Reset, wantReset)
+	}
+}
+
+// conditional is a fake GitHub that answers 304 when If-None-Match carries
+// the ETag of its one resource, and counts the answers that count against
+// the quota (all but 304).
+type conditional struct {
+	mu      sync.Mutex // serializes the fields below
+	counted int
+	matched []string // the If-None-Match of each request
+}
+
+func (f *conditional) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.matched = append(f.matched, r.Header.Get("If-None-Match"))
+	if r.Header.Get("If-None-Match") == `"v1"` {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	f.counted++
+	w.Header().Set("ETag", `"v1"`)
+	w.Write([]byte(`{"title":"hello"}`))
+}
+
+func TestARepeatedReadIsAskedConditionallyAndAnsweredFromTheCache(t *testing.T) {
+	t.Parallel()
+	fake := &conditional{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	tr := ratelimit.New(ratelimit.Options{})
+	c := &http.Client{Transport: tr}
+	ctx := context.Background()
+	for i := range 2 {
+		status, body := get(t, c, ctx, srv.URL+"/repos/o/r/issues/1", ratelimit.KindSync, "Authorization", "Bearer one")
+		if status != http.StatusOK || body != `{"title":"hello"}` {
+			t.Errorf("read %d = %d %q, want 200 %q", i+1, status, body, `{"title":"hello"}`)
+		}
+	}
+	if fake.counted != 1 {
+		t.Errorf("answers that count at GitHub = %d, want 1", fake.counted)
+	}
+	want := map[ratelimit.Kind]int{ratelimit.KindSync: 1}
+	if got := tr.Stats().Requests; !maps.Equal(got, want) {
+		t.Errorf("counted requests = %v, want %v", got, want)
+	}
+}
+
+func TestTheCacheOfOneTokenIsNotUsedForAnother(t *testing.T) {
+	t.Parallel()
+	fake := &conditional{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := &http.Client{Transport: ratelimit.New(ratelimit.Options{})}
+	ctx := context.Background()
+	get(t, c, ctx, srv.URL+"/x", ratelimit.KindSync, "Authorization", "Bearer one")
+	get(t, c, ctx, srv.URL+"/x", ratelimit.KindSync, "Authorization", "Bearer two")
+	if want := []string{"", ""}; !slices.Equal(fake.matched, want) {
+		t.Errorf("If-None-Match sent = %q, want %q", fake.matched, want)
 	}
 }
 

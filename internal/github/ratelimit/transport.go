@@ -5,7 +5,11 @@
 package ratelimit
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -57,6 +61,61 @@ type Transport struct {
 	mu    sync.Mutex // serializes the fields below
 	sent  []sent     // oldest first, within Window
 	quota quota
+	cache cache
+}
+
+// The ETag cache is bounded: at most maxCached answers of at most
+// maxCachedBody bytes each; the oldest goes first.
+const (
+	maxCached     = 2048
+	maxCachedBody = 1 << 20
+)
+
+// entry is a cached answer.
+type entry struct {
+	etag   string
+	header http.Header
+	body   []byte
+}
+
+// response is the cached answer for req, with the quota headers of the 304
+// that confirmed it.
+func (e entry) response(req *http.Request, fresh http.Header) *http.Response {
+	h := e.header.Clone()
+	for _, k := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used"} {
+		if v := fresh.Get(k); v != "" {
+			h.Set(k, v)
+		}
+	}
+	return &http.Response{
+		Status: "200 OK", StatusCode: http.StatusOK, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: h, Body: io.NopCloser(bytes.NewReader(e.body)), ContentLength: int64(len(e.body)), Request: req,
+	}
+}
+
+// cache is a bounded map of entries in insertion order.
+type cache struct {
+	entries map[string]entry
+	order   []string
+}
+
+func (c *cache) get(key string) (entry, bool) {
+	e, ok := c.entries[key]
+	return e, ok
+}
+
+func (c *cache) put(key string, e entry) {
+	if c.entries == nil {
+		c.entries = map[string]entry{}
+	}
+	if _, ok := c.entries[key]; !ok {
+		c.order = append(c.order, key)
+	}
+	c.entries[key] = e
+	for len(c.order) > maxCached {
+		delete(c.entries, c.order[0])
+		c.order = c.order[1:]
+	}
 }
 
 type sent struct {
@@ -80,19 +139,67 @@ func New(opts Options) *Transport {
 	return &Transport{base: opts.Base, clock: opts.Clock}
 }
 
-// RoundTrip implements http.RoundTripper.
+// RoundTrip implements http.RoundTripper. A GET whose earlier answer had an
+// ETag is sent with If-None-Match; GitHub's 304 does not count against the
+// quota, and the caller gets the earlier answer back as a 200.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	key, cacheable := cacheKey(req)
+	if cacheable {
+		t.mu.Lock()
+		e, ok := t.cache.get(key)
+		t.mu.Unlock()
+		if ok {
+			req = req.Clone(req.Context())
+			req.Header.Set("If-None-Match", e.etag)
+		}
+	}
 	res, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.sent = append(t.sent, sent{at: t.clock(), kind: kindOf(req.Context())})
 	if q, ok := quotaOf(res.Header); ok {
 		t.quota = q
 	}
+	if res.StatusCode == http.StatusNotModified {
+		if e, ok := t.cache.get(key); ok && cacheable {
+			res.Body.Close()
+			return e.response(req, res.Header), nil
+		}
+		return res, nil
+	}
+	t.sent = append(t.sent, sent{at: t.clock(), kind: kindOf(req.Context())})
+	if cacheable && res.StatusCode == http.StatusOK && res.Header.Get("ETag") != "" {
+		return t.store(key, res)
+	}
 	return res, nil
+}
+
+// store keeps a 200 answer with an ETag for the next conditional read; t.mu
+// is held.
+func (t *Transport) store(key string, res *http.Response) (*http.Response, error) {
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxCachedBody+1))
+	res.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) <= maxCachedBody {
+		t.cache.put(key, entry{etag: res.Header.Get("ETag"), header: res.Header.Clone(), body: body})
+	}
+	return res, nil
+}
+
+// cacheKey is the key of a GET's cached answer: the URL, what it accepts
+// (raw file or JSON) and a hash of its token, so that one token's answer is
+// never handed to another. A request with its own If-None-Match is left alone.
+func cacheKey(req *http.Request) (string, bool) {
+	if req.Method != http.MethodGet || req.Header.Get("If-None-Match") != "" {
+		return "", false
+	}
+	token := sha256.Sum256([]byte(req.Header.Get("Authorization")))
+	return req.URL.String() + "\x00" + req.Header.Get("Accept") + "\x00" + hex.EncodeToString(token[:]), true
 }
 
 // quotaOf reads the X-RateLimit-* headers of an answer.
