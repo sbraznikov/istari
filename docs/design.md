@@ -759,6 +759,13 @@ claude --print "$(cat brief.md)" \
 | `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
+**What the brief says about allowed tools.** In a mode where nobody is asked (`dontAsk`), a command that no rule allows is denied, and a compound command (`a; b | c`) is denied whole when one of its parts is. So the brief has a section "Commands you may run" that lists every shell rule of the run's `--allowedTools` (`istari *`, `git log *`, …). The list is taken from the same allowed tools the harness gets, after the profile and the implementer's check rules are applied, so it cannot drift from the rules. The section also says:
+
+- run each `istari` command on its own, not chained with other commands;
+- a denied command denies only that command: the others, and the `istari` commands that submit the result (`istari review submit`, …) and `istari complete` above all, still work.
+
+The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, `git show` and `istari`; the reviewer may also run `git fetch origin main`, so it can see what the main branch has.
+
 **Allowed tools of the roles.** The refiner, the planner and the reviewer change nothing in the repository: they get the reading tools (`Read`, `Grep`, `Glob`), `Bash(istari *)` and git's reading commands, and, as their one write, the run's result file. The Runner gives each of their runs the path `ISTARI_RESULT` (`<data_dir>/runs/<run>/result.yaml`, inside the run's own directory) and allows writing that one path (`Write(//<path>)`, `Edit(//<path>)`). The guard hook refuses a file tool of these roles on any other path, so a settings file in the repository cannot widen it. The implementer keeps its tools and gets no result file.
 
 The result file exists because a heredoc does not carry a long result. Claude Code's shell parser gives up on a long command ("Parser aborted (timeout, resource limit, or over-length)"), and then `Bash(istari *)` is not matched and the command is refused. Measured on 2026-11-25: a heredoc `istari` command of 9,014 and of 9,335 characters was allowed; one of 9,999, 10,000, 10,125 and 13,842 characters was refused, whatever the lines and characters in it.

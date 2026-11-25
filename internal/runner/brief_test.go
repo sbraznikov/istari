@@ -34,6 +34,25 @@ func longJournal() []journal.Entry {
 	return out
 }
 
+func TestABriefListsTheCommandsTheRunMayRun(t *testing.T) {
+	in := briefInput()
+	in.AllowedTools = []string{"Read", "Bash(istari *)", "Bash(git log *)"}
+	b := runner.Brief(in)
+	for _, want := range []string{
+		"## Commands you may run",
+		"- `istari *`\n- `git log *`\n",
+		"Run each `istari` command on its own, not chained with other commands",
+		"A denied command denies only that command",
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the brief lacks %q", want)
+		}
+	}
+	if strings.Contains(b, "- `Read`") {
+		t.Error("the commands section lists a tool that is not a shell command")
+	}
+}
+
 func briefInput() runner.BriefInput {
 	return runner.BriefInput{
 		Role: "implementer", Task: "t_1", Ref: "gh:acme/web#7", Title: "Add a cache",

@@ -36,6 +36,9 @@ type BriefInput struct {
 	Conflicts []string
 	// Review is what code prepared for the reviewer (spec section 7.7).
 	Review *ReviewInput
+	// AllowedTools are the tools the harness of the run allows (spec 7.3);
+	// the brief lists their shell commands.
+	AllowedTools []string
 }
 
 // Brief assembles the first message of a run from a template, by code alone
@@ -58,6 +61,7 @@ func Brief(in BriefInput) string {
 			strings.Join(in.Conflicts, "\n- ") + "\n\nResolve them, finish the merge with a commit, and make a checkpoint before anything else.\n\n")
 	}
 	head.WriteString("## Next step\n\n" + next + "\n\n")
+	head.WriteString(commandsSection(in.AllowedTools))
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
 	if in.Role == "implementer" && in.SelfReview {
@@ -194,6 +198,23 @@ func workState(w journal.WorkState) string {
 	}
 	return line("Stage", stage) + line("Branch", w.Branch) + line("PR", w.PR) + line("Last checkpoint", w.LastCheckpoint) +
 		line("Open questions", strings.Join(w.OpenQuestions, "; "))
+}
+
+// commandsSection lists the shell commands the run's tools allow and how a
+// denied command behaves (spec 7.3). Without shell rules it is empty.
+func commandsSection(tools []string) string {
+	var cmds []string
+	for _, t := range tools {
+		if c, ok := strings.CutPrefix(t, "Bash("); ok && strings.HasSuffix(c, ")") {
+			cmds = append(cmds, strings.TrimSuffix(c, ")"))
+		}
+	}
+	if len(cmds) == 0 {
+		return ""
+	}
+	return "## Commands you may run\n\nThe shell runs only these commands; any other is denied:\n\n- `" + strings.Join(cmds, "`\n- `") + "`\n\n" +
+		"Run each `istari` command on its own, not chained with other commands by `;`, `&&` or `|`: a chain is denied whole when one of its parts is. " +
+		"A denied command denies only that command: the others, and the `istari` commands that submit your result and `istari complete` above all, still work.\n\n"
 }
 
 var closing = regexp.MustCompile(`(?i)</untrusted`)

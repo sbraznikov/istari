@@ -393,7 +393,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
 	if result, ok := env["ISTARI_RESULT"]; ok {
 		// "//" starts an absolute path in a rule; Edit's rule covers every
 		// file tool, Write's the tool by name.
@@ -410,6 +410,9 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			spec.AllowedTools = append(spec.AllowedTools, checkTools(checks)...)
 		}
 	}
+	// The brief lists the commands the harness allows (spec 7.3), from the
+	// same list, so the two cannot drift apart.
+	spec.Brief = r.brief(bg, task, tk, run.Dir, conflicts, spec.AllowedTools)
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
@@ -610,8 +613,8 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 }
 
 // brief assembles the run's brief from the ticket and its journal.
-func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts []string) string {
-	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts}
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts, tools []string) string {
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts, AllowedTools: tools}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Brief(in)
