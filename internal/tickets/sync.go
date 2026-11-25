@@ -53,6 +53,9 @@ type Standards interface {
 type Conformance struct {
 	Deviations []string // empty: the ticket meets the standard
 	Hash       string   // digest of the required sections, for T15
+	// Priority is the priority the ticket's table states, "" when it states
+	// none: it becomes the stored priority on admission (spec 4.5).
+	Priority string
 }
 
 // SyncOptions configures a Syncer.
@@ -920,7 +923,7 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil || len(conf.Deviations) > 0 {
 			return err
 		}
-		return s.admit(ctx, x, actor, conf.Hash)
+		return s.admit(ctx, x, actor, conf)
 	case core.TicketReady:
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil {
@@ -946,14 +949,22 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	return nil
 }
 
-// admit fires T2 and writes the new state out, remembering the hash.
-func (s *Syncer) admit(ctx context.Context, x *syncing, actor, hash string) error {
+// admit fires T2 and writes the new state out, remembering the hash. A ticket
+// without a stored priority takes its table's, set by its author (spec 4.5).
+func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Conformance) error {
+	if x.tk.Priority == "" && conf.Priority != "" {
+		tk, err := s.tickets.SetPriority(ctx, "human:"+x.t.Author, x.tk.Ref, conf.Priority)
+		if err != nil {
+			return err
+		}
+		x.tk = tk
+	}
 	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
 	if err != nil {
 		return err
 	}
 	x.report.Transitioned++
-	x.base.Hash = hash
+	x.base.Hash = conf.Hash
 	x.base.Sponsor = "" // a request admits once: an edit after it is checked again (T15)
 	if err := s.push(ctx, x, next); err != nil {
 		return err
@@ -1058,7 +1069,7 @@ func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit 
 	if err != nil {
 		return err
 	}
-	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf.Hash)
+	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf)
 }
 
 // Ready admits a ticket by hand (istari ticket ready): login must be a
@@ -1113,5 +1124,5 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 		x.base.Sponsor = login
 		return s.record(ctx, x, EventAdmissionRequested, "human:"+login, tk, map[string]any{"deviations": conf.Deviations})
 	}
-	return s.admit(ctx, x, "human:"+login, conf.Hash)
+	return s.admit(ctx, x, "human:"+login, conf)
 }
