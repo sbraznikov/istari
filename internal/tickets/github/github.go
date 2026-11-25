@@ -548,7 +548,8 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 	p.mu.Unlock()
 	// While GitHub refuses for the rate limit, the file of the last known
 	// head is given again: a refusal is "later", not a missing file.
-	if ok && (headErr == nil && f.head == string(head) || errors.Is(headErr, ratelimit.ErrRateLimited)) {
+	fresh := headErr == nil && f.head == string(head)
+	if ok && (fresh || errors.Is(headErr, ratelimit.ErrRateLimited)) {
 		return slices.Clone(f.data), f.err
 	}
 	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")
