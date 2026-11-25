@@ -22,7 +22,7 @@ func TestADataDirTooLongForTheSocketIsSaidPlainly(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "daemon socket") || !strings.Contains(out, "shorter data_dir") {
 		t.Fatalf("doctor with a long data_dir: exit %d\n%s", code, out)
 	}
-	short := filepath.Join(os.TempDir(), "istari-sock-ok")
+	short := shortDir(t)
 	if err := os.WriteFile(config, []byte(fmt.Sprintf("[daemon]\ndata_dir = %q\n", short)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestADataDirTooLongForTheSocketIsSaidPlainly(t *testing.T) {
 
 func TestDoctorFailsVCSWhenNeitherAnAppNorGhGivesAToken(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "config.toml")
-	body := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = \"acme/web\"\n", filepath.Join(os.TempDir(), "istari-doc"))
+	body := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = \"acme/web\"\n", shortDir(t))
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +46,18 @@ func TestDoctorFailsVCSWhenNeitherAnAppNorGhGivesAToken(t *testing.T) {
 	if rowFails(out, "vcs") {
 		t.Fatalf("doctor with gh logged in fails vcs:\n%s", out)
 	}
+}
+
+// shortDir returns a fresh directory of this test whose path stays short
+// enough for the macOS socket path limit, which t.TempDir can exceed.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 // rowFails tells whether the doctor row whose first word is name failed.
