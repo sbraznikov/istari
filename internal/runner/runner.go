@@ -26,11 +26,11 @@ const (
 	DefaultRunTimeout     = time.Hour
 	DefaultStopCheckpoint = 15 * time.Minute // the limit of a stopping run's checkpoint
 	DefaultPoll           = 2 * time.Second
-	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
-	DefaultStartRetry    = 5 * time.Second
-	DefaultStartPause    = time.Minute
-	startFailuresToPause = 3 // start failures in a row that pause a slot
-	stopGrace            = 10 * time.Second
+	DefaultTranscriptMax  = 10 << 20 // bytes of a transcript file before it is rotated
+	DefaultStartRetry     = 5 * time.Second
+	DefaultStartPause     = time.Minute
+	startFailuresToPause  = 3 // start failures in a row that pause a slot
+	stopGrace             = 10 * time.Second
 )
 
 // Slot is one agent slot: a profile name, its role and how it runs. The
