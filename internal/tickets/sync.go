@@ -1171,11 +1171,12 @@ func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority strin
 	return s.tickets.Get(ctx, refText)
 }
 
-// Created mirrors tickets istari just created in the tracker. With budgetOf,
-// an admitted ticket an agent was working on, each is admitted when it meets
-// the standard and shares that ticket's budget (spec section 4.5: it
-// inherits the parent's admission and budget).
-func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error {
+// Created mirrors tickets istari just created in the tracker for actor, who
+// is the actor of their create transition whatever login the tracker shows as
+// their author. With budgetOf, an admitted ticket an agent was working on,
+// each is admitted when it meets the standard and shares that ticket's
+// budget (spec section 4.5: it inherits the parent's admission and budget).
+func (s *Syncer) Created(ctx context.Context, actor string, refs []Ref, budgetOf string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var parent core.Ticket
@@ -1187,7 +1188,7 @@ func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error
 	}
 	var errs []error
 	for _, ref := range refs {
-		if err := s.created(ctx, ref, parent); err != nil {
+		if err := s.created(ctx, actor, ref, parent); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
 		}
 	}
@@ -1197,7 +1198,7 @@ func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error
 // created mirrors one ticket istari created; parent is the ticket an agent
 // was working on, zero for none. The ticket takes its table's priority at
 // once, or the parent's when the table states none (spec 4.5).
-func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error {
+func (s *Syncer) created(ctx context.Context, actor string, ref Ref, parent core.Ticket) error {
 	repo, ok := s.repoOf(ref)
 	if !ok {
 		return nil // a repository istari does not sync
@@ -1215,7 +1216,7 @@ func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error
 	if inherit {
 		nt.BudgetOf = parent.Ref
 	}
-	tk, err := s.tickets.CreateWith(ctx, "human:"+t.Author, nt)
+	tk, err := s.tickets.CreateWith(ctx, actor, nt)
 	var ce *core.Error
 	switch {
 	case errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket:

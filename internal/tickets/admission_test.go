@@ -30,6 +30,22 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 	}
 }
 
+func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testing.T) {
+	f := newSync(t, "alex")
+	parent := f.gh.Seed("Parent", conforming, "alex")
+	f.gh.SetPermission("alex", "write")
+	f.run(t)
+	child := f.gh.Seed("Found while working", conforming, "alex") // the token owner, as GitHub shows it
+	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: child}}
+	if err := f.sync.Created(ctx, "agent:implementer-2", refs, ref(parent)); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	tr := f.transitions(t, child)
+	if len(tr) != 2 || tr[0].Trigger != "create" || tr[0].Actor != "agent:implementer-2" {
+		t.Fatalf("transitions = %+v, want create by agent:implementer-2", tr)
+	}
+}
+
 func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
@@ -228,7 +244,7 @@ func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
 	child := f.gh.Seed("Found while working", conforming, "alex")
 	short := f.gh.Seed("Half B", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
 	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: child}, {Provider: "gh", Repo: githubtest.Repo, Number: short}}
-	if err := f.sync.Created(ctx, refs, ref(parent)); err != nil {
+	if err := f.sync.Created(ctx, "agent:implementer-1", refs, ref(parent)); err != nil {
 		t.Fatalf("Created: %v", err)
 	}
 	if tk := f.ticket(t, child); tk.State != core.TicketReady {
