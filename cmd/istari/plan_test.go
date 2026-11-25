@@ -95,6 +95,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
+	t.Parallel()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
