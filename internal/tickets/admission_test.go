@@ -14,6 +14,7 @@ import (
 func ref(n int) string { return ghRef(n) }
 
 func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "alex") // alex can write, so is trusted
 	f.run(t)
@@ -30,6 +31,7 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 }
 
 func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
 	f.run(t)
@@ -45,6 +47,7 @@ func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
 }
 
 func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol may only read
 	f.run(t)
@@ -72,6 +75,7 @@ func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
 }
 
 func TestAnExplicitTrustedListReplacesWriteAccess(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "carol")
 	byAlex := f.gh.Seed("a", conforming, "alex") // can write, but not on the list
 	byCarol := f.gh.Seed("c", conforming, "carol")
@@ -88,6 +92,7 @@ func TestAnExplicitTrustedListReplacesWriteAccess(t *testing.T) {
 }
 
 func TestEditingARequiredSectionInReadyReturnsTheTicketToNew(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol")
 	f.run(t)
@@ -106,6 +111,7 @@ func TestEditingARequiredSectionInReadyReturnsTheTicketToNew(t *testing.T) {
 }
 
 func TestEditsOutsideTheRequiredSectionsLeaveTheTicketReady(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol")
 	f.run(t)
@@ -123,6 +129,7 @@ func TestEditsOutsideTheRequiredSectionsLeaveTheTicketReady(t *testing.T) {
 }
 
 func TestTheRepositorysOwnStandardIsReadFromTheTracker(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	f.gh.SetFile(".istari/ticket-standard.toml", "sections = [\"Context\", \"Risks\"]\n")
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -134,6 +141,7 @@ func TestTheRepositorysOwnStandardIsReadFromTheTracker(t *testing.T) {
 }
 
 func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "carol")
 	f.run(t)

@@ -100,6 +100,7 @@ func (f *syncFixture) transitions(t *testing.T, n int) []transition {
 }
 
 func TestAnIssueCreatedInTheTrackerAppearsAsNew(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add rate limits", "## Context\n…", "bob", "bug")
 	report := f.run(t)
@@ -119,6 +120,7 @@ func TestAnIssueCreatedInTheTrackerAppearsAsNew(t *testing.T) {
 }
 
 func TestIstarisOwnWritesDoNotCauseASecondTransition(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob")
 	f.run(t)
@@ -146,6 +148,7 @@ func TestIstarisOwnWritesDoNotCauseASecondTransition(t *testing.T) {
 }
 
 func TestALegalLabelChangeByAnAuthorizedUserTransitionsTheTicket(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "bob")
 	f.run(t)
@@ -168,6 +171,7 @@ func TestALegalLabelChangeByAnAuthorizedUserTransitionsTheTicket(t *testing.T) {
 }
 
 func TestAnIllegalOrUnauthorizedLabelChangeIsRevertedWithAReason(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, who, perm, label, says string
 	}{
@@ -175,6 +179,7 @@ func TestAnIllegalOrUnauthorizedLabelChangeIsRevertedWithAReason(t *testing.T) {
 		{"unauthorized", "mallory", "read", "istari:ready", "mallory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSync(t)
 			n := f.gh.Seed("t", "", "bob")
 			f.run(t)
@@ -206,6 +211,7 @@ func TestAnIllegalOrUnauthorizedLabelChangeIsRevertedWithAReason(t *testing.T) {
 }
 
 func TestAChangeMissedByOnePollIsRepairedByTheNext(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "carol") // carol may not write, so she is not trusted
 	f.run(t)
@@ -224,6 +230,7 @@ func TestAChangeMissedByOnePollIsRepairedByTheNext(t *testing.T) {
 }
 
 func TestAHumanCommentProducesOneEvent(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob")
 	f.run(t)
@@ -245,6 +252,7 @@ func TestAHumanCommentProducesOneEvent(t *testing.T) {
 }
 
 func TestClosingAndReopeningAnIssueRequestCancelAndReopen(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "alex")
 	f.run(t)
@@ -264,6 +272,7 @@ func TestClosingAndReopeningAnIssueRequestCancelAndReopen(t *testing.T) {
 }
 
 func TestAnIssueFirstSeenWithAStateLabelIsARequestToo(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "alex", "istari:ready") // alex is an admin
 	f.run(t)
@@ -276,6 +285,7 @@ func TestAnIssueFirstSeenWithAStateLabelIsARequestToo(t *testing.T) {
 }
 
 func TestAStateLabelAddedNextToTheOldOneIsSeen(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "bob")
 	f.run(t)
@@ -291,6 +301,7 @@ func TestAStateLabelAddedNextToTheOldOneIsSeen(t *testing.T) {
 }
 
 func TestOnlyTransitionsAHumanMayStartAreApplied(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "alex") // alex administers the repository
 	f.run(t)
@@ -309,6 +320,7 @@ func TestOnlyTransitionsAHumanMayStartAreApplied(t *testing.T) {
 }
 
 func TestRemovingTheStateLabelIsRevertedWithAReason(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "alex")
 	f.run(t)
@@ -324,6 +336,7 @@ func TestRemovingTheStateLabelIsRevertedWithAReason(t *testing.T) {
 }
 
 func TestCommentsFromBeforeIstariSawTheTicketAreNotEvents(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob")
 	f.gh.HumanComment(n, "bob", "an old discussion")
@@ -340,6 +353,7 @@ func TestCommentsFromBeforeIstariSawTheTicketAreNotEvents(t *testing.T) {
 }
 
 func TestATicketMadeInIstariForAClosedIssueDoesNotReopenIt(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "alex")
 	f.gh.HumanClose(n, "alex", "completed")
@@ -356,6 +370,7 @@ func TestATicketMadeInIstariForAClosedIssueDoesNotReopenIt(t *testing.T) {
 }
 
 func TestAChangeByAnUnknownAuthorSaysSo(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "alex")
 	f.run(t)
@@ -373,6 +388,7 @@ const conforming = "## Context\n\nLimits protect the API.\n\n## What needs to be
 	"## Dependencies\n\n- Needs: none\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"
 
 func TestAnUnknownTicketPastReadyIsLeftForRecover(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", conforming, "alex", "istari:in_progress", "istari:hold:needs_input")
 	report := f.run(t)
@@ -388,6 +404,7 @@ func TestAnUnknownTicketPastReadyIsLeftForRecover(t *testing.T) {
 }
 
 func TestRecoverTakesTheTicketsStateHoldAndJournalFromTheTracker(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add a cache", conforming, "alex", "istari:in_progress", "istari:hold:needs_input", "priority:P1", "size:S")
 	f.gh.HumanComment(n, "bob", "unrelated")
@@ -413,6 +430,7 @@ func TestRecoverTakesTheTicketsStateHoldAndJournalFromTheTracker(t *testing.T) {
 }
 
 func TestRecoverTakesOnlyStateLabelsIstariOrATrustedMemberSet(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "bob")
 	f.gh.SetPermission("mallory", "triage")
 	n := f.gh.Seed("Sneak in", conforming, "mallory", "istari:in_progress")
@@ -433,6 +451,7 @@ func TestRecoverTakesOnlyStateLabelsIstariOrATrustedMemberSet(t *testing.T) {
 }
 
 func TestRecoverTakesBackTheClosedTicketsARecoveredOneNeeds(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	done := f.gh.Seed("Done before", conforming, "alex", "istari:done")
 	f.gh.HumanClose(done, "alex", "completed")
@@ -451,6 +470,7 @@ func TestRecoverTakesBackTheClosedTicketsARecoveredOneNeeds(t *testing.T) {
 const raw = "We should add rate limits.\n" // below the standard
 
 func TestOnlyATicketThatWouldBeAdmittedIsRefined(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex")
 	f.gh.SetPermission("carol", "read")
 	theirs := f.gh.Seed("Limits", raw, "carol")
@@ -472,6 +492,7 @@ func TestOnlyATicketThatWouldBeAdmittedIsRefined(t *testing.T) {
 }
 
 func TestATrustedReadyOnARawTicketRefinesItFirstThenAdmitsIt(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex")
 	f.gh.SetPermission("carol", "read")
 	n := f.gh.Seed("Limits", raw, "carol")
@@ -496,6 +517,7 @@ func TestATrustedReadyOnARawTicketRefinesItFirstThenAdmitsIt(t *testing.T) {
 }
 
 func TestTheReadyLabelOnARawTicketAsksForRefiningAndGoesBack(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex")
 	f.gh.SetPermission("carol", "read")
 	n := f.gh.Seed("Limits", raw, "carol")
@@ -515,6 +537,7 @@ func TestTheReadyLabelOnARawTicketAsksForRefiningAndGoesBack(t *testing.T) {
 }
 
 func TestASponsoredAdmissionIsSpentOnceAndNeedsATrustedSponsor(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex", "bob")
 	f.gh.SetPermission("carol", "read")
 	n := f.gh.Seed("Limits", raw, "carol")
@@ -553,6 +576,7 @@ func TestASponsoredAdmissionIsSpentOnceAndNeedsATrustedSponsor(t *testing.T) {
 }
 
 func TestRecoverGivesASplitParentItsChildren(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	parent := f.gh.Seed("Big", conforming, "alex", "istari:in_progress")
 	child := func(title string, labels ...string) int {
