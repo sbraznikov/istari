@@ -82,7 +82,7 @@ func (w *Watcher) PullRequestOf(ctx context.Context, ticket string) (Tracked, er
 	return t, nil
 }
 
-// SeenMerged tells whether the watch saw the ticket's pull request merged
+// SeenMerged reports whether the watch saw the ticket's pull request merged
 // (spec 4.8: a human may merge it before istari does). It reads only what
 // the watch recorded; false without a tracked pull request.
 func (w *Watcher) SeenMerged(ctx context.Context, ticket string) (bool, error) {
@@ -110,7 +110,7 @@ func (w *Watcher) SeenMerged(ctx context.Context, ticket string) (bool, error) {
 	return false, nil
 }
 
-// Merged tells whether the ticket's pull request is merged: as the watch
+// Merged reports whether the ticket's pull request is merged: as the watch
 // recorded it once it saw it closed, else as GitHub has it now. Sync asks
 // before it reads a closed issue as a cancel, which may come before the
 // watch's poll. false without a tracked pull request.
@@ -197,7 +197,7 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 	}
 	if (s.Merged || s.Closed) && !t.Done {
 		t.Done = true
-		changes = append(changes, change{EventClosed,map[string]any{"number": t.Number, "merged": s.Merged}})
+		changes = append(changes, change{EventClosed, map[string]any{"number": t.Number, "merged": s.Merged}})
 	}
 	for i, c := range changes {
 		raw, _ := json.Marshal(c.payload)

@@ -289,6 +289,7 @@ func (h *humanMerge) finished(t *testing.T) {
 }
 
 func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *testing.T) {
+	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanMerge(h.pr, "alex") // GitHub closes the issue after the watch looked
 	h.restart(t)
@@ -303,6 +304,7 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *tes
 }
 
 func TestAHumanClosingTheIssueOfATicketWithAnOpenPullRequestCancelsIt(t *testing.T) {
+	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanClose(h.issue, "alex", "not_planned")
 	h.d.mustCLI(t, nil, "sync")
@@ -311,7 +313,24 @@ func TestAHumanClosingTheIssueOfATicketWithAnOpenPullRequestCancelsIt(t *testing
 	}
 }
 
+func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.pr, "alex", "")
+	h.restart(t)
+	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not record the close\n%s", h.d.stderr)
+		}
+	}
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "awaiting_approval" {
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
+	}
+}
+
 func TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync(t *testing.T) {
+	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanClose(h.issue, "alex", "not_planned")
 	h.d.mustCLI(t, nil, "sync")
@@ -334,6 +353,7 @@ func TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync(t *testing.T) 
 }
 
 func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirst(t *testing.T) {
+	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanMerge(h.pr, "alex")
 	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n, before the watch polls again
