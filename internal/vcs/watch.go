@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,11 @@ const (
 	// EventClosed: the pull request was merged or closed; its payload says
 	// which with merged.
 	EventClosed = "vcs.closed"
+	// EventConflict: GitHub reports the pull request in conflict with its
+	// base (mergeable false), once per head and base (spec 4.8).
+	EventConflict = "vcs.conflict"
+	// EventMergeable: GitHub reports the pull request free of conflicts.
+	EventMergeable = "vcs.mergeable"
 )
 
 const prKind = "pull_request"
@@ -36,9 +42,21 @@ type Tracked struct {
 	SHA      string `json:"sha,omitempty"` // the head commit the checks are of
 	Review   string `json:"review,omitempty"`
 	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
+	// Mergeable is GitHub's last answer whether the pull request merges into
+	// its base, MergeableClean or MergeableDirty, at the head MergeHead and the
+	// base MergeBase; "" while GitHub has not answered for istari's head.
+	Mergeable string `json:"mergeable,omitempty"`
+	MergeHead string `json:"merge_head,omitempty"`
+	MergeBase string `json:"merge_base,omitempty"`
 
 	version int64
 }
+
+// What GitHub says about merging a pull request into its base.
+const (
+	MergeableClean = "clean"
+	MergeableDirty = "dirty" // conflicts
+)
 
 // Watcher polls tracked pull requests and turns changes of their checks and
 // reviews into events.
@@ -130,18 +148,19 @@ func (w *Watcher) Merged(ctx context.Context, ticket string) (bool, error) {
 }
 
 // Pushed records the commit istari pushed to a tracked pull request: the
-// checks istari knew are of an older commit, so they are forgotten until CI
-// reports on this one.
+// checks and the mergeable istari knew are of an older commit, so they are
+// forgotten until GitHub reports on this one.
 func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 	for {
 		t, err := w.PullRequestOf(ctx, ticket)
 		if err != nil {
 			return err
 		}
-		if t.SHA != "" {
-			t.Replaced = t.SHA
+		if old := cmp.Or(t.SHA, t.MergeHead); old != "" {
+			t.Replaced = old
 		}
 		t.Head, t.Checks, t.SHA = head, "", ""
+		t.Mergeable, t.MergeHead, t.MergeBase = "", "", ""
 		data, _ := json.Marshal(t)
 		raw, _ := json.Marshal(map[string]any{"number": t.Number, "head": head})
 		_, err = w.store.Append(ctx, store.Event{Type: "vcs.pushed", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
@@ -195,6 +214,14 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		t.Review = s.Review
 		changes = append(changes, change{EventReview, map[string]any{"number": t.Number, "review": s.Review, "by": s.By}})
 	}
+	if m, ok := mergeable(s, t, stale); ok {
+		t.Mergeable, t.MergeHead, t.MergeBase = m, s.HeadSHA, s.BaseSHA
+		typ := EventMergeable
+		if m == MergeableDirty {
+			typ = EventConflict
+		}
+		changes = append(changes, change{typ, map[string]any{"number": t.Number, "head": s.HeadSHA, "base": s.BaseSHA, "state": s.MergeableState}})
+	}
 	if (s.Merged || s.Closed) && !t.Done {
 		t.Done = true
 		changes = append(changes, change{EventClosed, map[string]any{"number": t.Number, "merged": s.Merged}})
@@ -211,4 +238,22 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		}
 	}
 	return nil
+}
+
+// mergeable reads GitHub's answer whether the pull request merges into its
+// base; ok is false when there is nothing new: GitHub has not computed it yet
+// (null), the answer is of a head istari has replaced, or it is the one
+// recorded for this head and base.
+func mergeable(s Status, t Tracked, stale bool) (string, bool) {
+	if s.Mergeable == nil || stale || s.Merged || s.Closed {
+		return "", false
+	}
+	m := MergeableClean
+	if !*s.Mergeable {
+		m = MergeableDirty
+	}
+	if m == t.Mergeable && s.HeadSHA == t.MergeHead && s.BaseSHA == t.MergeBase {
+		return "", false
+	}
+	return m, true
 }
