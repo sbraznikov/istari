@@ -543,13 +543,13 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 	ctx = ratelimit.WithKind(ctx, ratelimit.KindFiles)
 	key := repo + "\x00" + path
 	head, headErr := p.raw(ctx, "/repos/"+repo+"/commits/HEAD", "application/vnd.github.sha")
-	if headErr == nil {
-		p.mu.Lock()
-		f, ok := p.files[key]
-		p.mu.Unlock()
-		if ok && f.head == string(head) {
-			return slices.Clone(f.data), f.err
-		}
+	p.mu.Lock()
+	f, ok := p.files[key]
+	p.mu.Unlock()
+	// While GitHub refuses for the rate limit, the file of the last known
+	// head is given again: a refusal is "later", not a missing file.
+	if ok && (headErr == nil && f.head == string(head) || errors.Is(headErr, ratelimit.ErrRateLimited)) {
+		return slices.Clone(f.data), f.err
 	}
 	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")
 	if err != nil {

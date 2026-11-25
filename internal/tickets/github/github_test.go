@@ -81,6 +81,23 @@ func TestAFileOfMainIsReadOncePerMainCommit(t *testing.T) {
 	}
 }
 
+func TestWhileGitHubRefusesForTheRateLimitAFileAlreadyReadIsGivenAgain(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	fake.SetFile(".istari/pipeline.toml", "one")
+	if _, err := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml"); err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	fake.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	got, err := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml")
+	if err != nil || string(got) != "one" {
+		t.Fatalf("ReadFile while the quota is spent = %q, %v, want the file read before", got, err)
+	}
+	if _, err := p.ReadFile(ctx, "acme/web", ".istari/other.toml"); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatalf("ReadFile of a file not read before while the quota is spent: %v, want ErrRateLimited", err)
+	}
+}
+
 func stateLabels(labels []string) []string {
 	var out []string
 	for _, l := range labels {
