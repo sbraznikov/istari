@@ -103,10 +103,7 @@ func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, erro
 	}
 	answer, err := s.applyPlan(ctx, run, r.Plan)
 	if err != nil {
-		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-			return nil, rerr
-		}
-		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+		return nil, s.refuseResult(ctx, run, err)
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 		return nil, err

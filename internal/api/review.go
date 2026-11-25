@@ -38,10 +38,7 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 		return nil, s.yieldReview(ctx, run, early)
 	}
 	if err != nil {
-		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-			return nil, rerr
-		}
-		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+		return nil, s.refuseResult(ctx, run, err)
 	}
 	if err := s.reviews.Record(ctx, run, checked); err != nil {
 		return nil, err

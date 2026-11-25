@@ -229,3 +229,61 @@ func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
 		t.Fatalf("plan submit from stdin: %v\n%s", err, out)
 	}
 }
+
+// waitingPlanner submits its plan when the test lets it: once while GitHub
+// refuses for the rate limit, once after, then completes.
+const waitingPlanner = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+plan() {
+  "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+summary: Write the feature file
+slices: [the feature file]
+seams: [{name: feature.txt, catches: its presence, misses: its content}]
+zone: [feature.txt (new)]
+PLAN
+}
+if [ "$ISTARI_ROLE" = planner ]; then
+  touch "$log.started"
+  while [ ! -e "$log.refusing" ]; do sleep 0.05; done
+  plan
+  touch "$log.submitted"
+  while [ ! -e "$log.answering" ]; do sleep 0.05; done
+  plan
+  "$istari" complete "planned" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAPlanSubmittedWhileGitHubRefusesForTheRateLimitIsLaterNotRejected(t *testing.T) {
+	t.Parallel()
+	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(waitingPlanner, binary, log) })
+	// The planner is another process: the test polls its marker files.
+	await := func(file string) {
+		t.Helper()
+		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			if _, err := os.Stat(file); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				out, _ := os.ReadFile(log)
+				t.Fatalf("the planner did not reach %s\nagent log:\n%s\ndaemon:\n%s", filepath.Base(file), out, d.stderr)
+			}
+		}
+	}
+	await(log + ".started")
+	gh.SetRateLimit(0, time.Now().Add(2*time.Second))
+	os.WriteFile(log+".refusing", nil, 0o644)
+	await(log + ".submitted")
+	gh.SetRateLimit(5000, time.Now().Add(time.Hour))
+	os.WriteFile(log+".answering", nil, 0o644)
+	runs := endedRuns(t, d, log, "planner", 1)
+	out, _ := os.ReadFile(log)
+	if !strings.Contains(string(out), "rate_limited") || strings.Contains(string(out), "invalid_ticket") {
+		t.Errorf("the plan submitted while GitHub refuses was not answered rate_limited:\n%s", out)
+	}
+	if runs[0].Reason != "completed: planned" {
+		t.Fatalf("the planner run ended %q, want completed: planned\nagent log:\n%s", runs[0].Reason, out)
+	}
+}

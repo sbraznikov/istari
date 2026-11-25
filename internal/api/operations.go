@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -172,6 +173,24 @@ func (r *TimerScheduleRequest) validate() error {
 
 // CodeSyncDisabled refuses istari sync when no tracker is configured.
 const CodeSyncDisabled = "sync_disabled"
+
+// CodeRateLimited refuses a submit that GitHub refused for the rate limit:
+// the result is not wrong, it is to be submitted again later (#192, #208).
+const CodeRateLimited = "rate_limited"
+
+// refuseResult answers a structured result that could not be applied. A
+// refusal of GitHub for the rate limit is "later": it marks nothing, and the
+// agent submits the same result again. Any other error marks the run
+// rejected (spec section 7.7).
+func (s *Server) refuseResult(ctx context.Context, run runner.Run, err error) error {
+	if errors.Is(err, ratelimit.ErrRateLimited) {
+		return &core.Error{Code: CodeRateLimited, Message: err.Error() + "; GitHub refuses for the rate limit: submit the same result again later"}
+	}
+	if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
+		return rerr
+	}
+	return &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+}
 
 // OK is the response of operations that return nothing else.
 type OK struct {
@@ -391,10 +410,7 @@ func (s *Server) operations() map[string]operation {
 				err = s.refines.Apply(ctx, run, res)
 			}
 			if err != nil {
-				if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-					return nil, rerr
-				}
-				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+				return nil, s.refuseResult(ctx, run, err)
 			}
 			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 				return nil, err
