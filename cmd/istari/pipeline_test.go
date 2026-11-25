@@ -8,6 +8,7 @@ import (
 )
 
 func TestDoctorRejectsAPipelineWithAnUnknownRoleAtItsLine(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
 	if err := os.MkdirAll(filepath.Join(repo, ".istari"), 0o755); err != nil {
@@ -33,6 +34,7 @@ func TestDoctorRejectsAPipelineWithAnUnknownRoleAtItsLine(t *testing.T) {
 }
 
 func TestAHumanApprovesThePlanGate(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "gate_1", "ticket": "gh:acme/web#1", "project": "web", "role": "human"}, nil)
 	var gates []struct{ ID string }
