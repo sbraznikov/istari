@@ -743,6 +743,10 @@ claude --print "$(cat brief.md)" \
 | `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
+**Allowed tools of the roles.** The refiner, the planner and the reviewer change nothing in the repository: they get the reading tools (`Read`, `Grep`, `Glob`), `Bash(istari *)` and git's reading commands, and, as their one write, the run's result file. The Runner gives each of their runs the path `ISTARI_RESULT` (`<data_dir>/runs/<run>/result.yaml`, inside the run's own directory) and allows writing that one path (`Write(//<path>)`, `Edit(//<path>)`). The guard hook refuses a file tool of these roles on any other path, so a settings file in the repository cannot widen it. The implementer keeps its tools and gets no result file.
+
+The result file exists because a heredoc does not carry a long result. Claude Code's shell parser gives up on a long command ("Parser aborted (timeout, resource limit, or over-length)"), and then `Bash(istari *)` is not matched and the command is refused. Measured on 2026-11-25: a heredoc `istari` command of 9,014 and of 9,335 characters was allowed; one of 9,999, 10,000, 10,125 and 13,842 characters was refused, whatever the lines and characters in it.
+
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
@@ -839,6 +843,8 @@ Review rules:
 | Standards axis: a code smell from the baseline set | return for rework (T7) |
 
 Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets a hold and waits for a human.
+
+**How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
 
 **Repository requirements.** The Standards axis is the more precise, the more complete `CODING_STANDARDS.md`, `CONTRIBUTING.md`, `GLOSSARY.md` and the ADRs are. `istari doctor` reports which of them are missing.
 
