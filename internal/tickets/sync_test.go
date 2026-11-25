@@ -96,7 +96,7 @@ func istariLabels(labels []string) []string {
 	return out
 }
 
-type transition struct{ From, To, Trigger, Actor string }
+type transition struct{ From, To, Trigger, Actor, Rule, Parent string }
 
 func (f *syncFixture) transitions(t *testing.T, n int) []transition {
 	t.Helper()

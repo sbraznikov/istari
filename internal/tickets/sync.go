@@ -875,7 +875,9 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 		return s.revert(ctx, x, c, "who made the change is unknown, so its right to make it cannot be checked")
 	}
 	var conf Conformance
+	var more map[string]any
 	if trigger == "accept" {
+		more = admittedAs{rule: ruleHumanAdmission}.payload()
 		// Admission (spec 4.5): a trusted member, and a ticket that meets
 		// the standard.
 		trusted, err := s.trusted(ctx, x.repo, who)
@@ -905,7 +907,7 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 		}
 	}
 	x.base.Hash = conf.Hash
-	next, err := s.tickets.Fire(ctx, "human:"+who, x.tk.Ref, trigger)
+	next, err := s.tickets.FireWith(ctx, "human:"+who, x.tk.Ref, trigger, more)
 	if errors.As(err, new(*core.Error)) {
 		return s.revert(ctx, x, c, err.Error())
 	}
@@ -1039,16 +1041,17 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	}
 	switch x.tk.State {
 	case core.TicketNew:
-		actor := "system"
+		actor, rule := "system", admittedAs{rule: ruleTrustedAuthor}
 		sponsored, err := s.sponsored(ctx, x.repo, x.base)
 		if err != nil {
 			return err
 		}
 		switch {
 		case sponsored:
-			actor = "human:" + x.base.Sponsor
+			actor, rule = "human:"+x.base.Sponsor, admittedAs{rule: ruleHumanAdmission}
 		case x.tk.BudgetOf != "":
 			// an agent created it for an admitted ticket: it inherits that admission
+			rule = admittedAs{rule: ruleAgent, parent: x.tk.BudgetOf}
 		default:
 			if admits, err := s.authorAdmits(ctx, x.repo, x.t.Author); err != nil || !admits {
 				return err
@@ -1058,7 +1061,7 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil || len(conf.Deviations) > 0 {
 			return err
 		}
-		return s.admit(ctx, x, actor, conf)
+		return s.admit(ctx, x, actor, rule, conf)
 	case core.TicketReady:
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil {
@@ -1094,13 +1097,33 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	return nil
 }
 
-// admit fires T2 and writes the new state out, remembering the hash. A ticket
-// without a stored priority takes its table's, set by its author (spec 4.5).
-func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Conformance) error {
+// The rules that admit a ticket, as T2's payload names them (spec 4.5).
+const (
+	ruleTrustedAuthor  = "trusted_author"
+	ruleAgent          = "agent"
+	ruleHumanAdmission = "human_admission"
+)
+
+// admittedAs is the rule that admits a ticket and, for ruleAgent, the
+// admitted ticket the agent created it on.
+type admittedAs struct{ rule, parent string }
+
+func (a admittedAs) payload() map[string]any {
+	p := map[string]any{"rule": a.rule}
+	if a.parent != "" {
+		p["parent"] = a.parent
+	}
+	return p
+}
+
+// admit fires T2 by rule and writes the new state out, remembering the hash.
+// A ticket without a stored priority takes its table's, set by its author
+// (spec 4.5).
+func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, rule admittedAs, conf Conformance) error {
 	if err := s.tablePriority(ctx, x, conf); err != nil {
 		return err
 	}
-	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
+	next, err := s.tickets.FireWith(ctx, actor, x.tk.Ref, "accept", rule.payload())
 	if err != nil {
 		return err
 	}
@@ -1182,11 +1205,12 @@ func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority strin
 	return s.tickets.Get(ctx, refText)
 }
 
-// Created mirrors tickets istari just created in the tracker. With budgetOf,
-// an admitted ticket an agent was working on, each is admitted when it meets
-// the standard and shares that ticket's budget (spec section 4.5: it
-// inherits the parent's admission and budget).
-func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error {
+// Created mirrors tickets istari just created in the tracker for actor, who
+// is the actor of their create transition whatever login the tracker shows as
+// their author. With budgetOf, an admitted ticket an agent was working on,
+// each is admitted when it meets the standard and shares that ticket's
+// budget (spec section 4.5: it inherits the parent's admission and budget).
+func (s *Syncer) Created(ctx context.Context, actor string, refs []Ref, budgetOf string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var parent core.Ticket
@@ -1198,7 +1222,7 @@ func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error
 	}
 	var errs []error
 	for _, ref := range refs {
-		if err := s.created(ctx, ref, parent); err != nil {
+		if err := s.created(ctx, actor, ref, parent); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
 		}
 	}
@@ -1208,7 +1232,7 @@ func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error
 // created mirrors one ticket istari created; parent is the ticket an agent
 // was working on, zero for none. The ticket takes its table's priority at
 // once, or the parent's when the table states none (spec 4.5).
-func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error {
+func (s *Syncer) created(ctx context.Context, actor string, ref Ref, parent core.Ticket) error {
 	repo, ok := s.repoOf(ref)
 	if !ok {
 		return nil // a repository istari does not sync
@@ -1226,7 +1250,7 @@ func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error
 	if inherit {
 		nt.BudgetOf = parent.Ref
 	}
-	tk, err := s.tickets.CreateWith(ctx, "human:"+t.Author, nt)
+	tk, err := s.tickets.CreateWith(ctx, actor, nt)
 	var ce *core.Error
 	switch {
 	case errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket:
@@ -1259,7 +1283,7 @@ func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error
 	if err != nil {
 		return err
 	}
-	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf)
+	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", admittedAs{rule: ruleAgent, parent: parent.Ref}, conf)
 }
 
 // Ready admits a ticket by hand (istari ticket ready): login must be a
@@ -1314,5 +1338,5 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 		x.base.Sponsor = login
 		return s.record(ctx, x, EventAdmissionRequested, "human:"+login, tk, map[string]any{"deviations": conf.Deviations})
 	}
-	return s.admit(ctx, x, "human:"+login, conf)
+	return s.admit(ctx, x, "human:"+login, admittedAs{rule: ruleHumanAdmission}, conf)
 }

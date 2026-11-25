@@ -87,17 +87,19 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				}
 				checks = append(checks, c)
 			}
-			// The pipeline of the repository the command runs in (spec 12).
-			if c, ok := pipelineCheck(); ok {
-				if !c.OK {
-					failed++
+			// The repository the command runs in; outside one, its checks
+			// are skipped.
+			if root, ok := workingRoot(); ok {
+				// Its pipeline (spec 12).
+				if c, ok := pipelineCheck(root); ok {
+					if !c.OK {
+						failed++
+					}
+					checks = append(checks, c)
 				}
-				checks = append(checks, c)
-			}
-			// The repository's standards files (spec 7.6): a missing one
-			// only warns, so it does not count as failed.
-			if c, ok := standardsCheck(); ok {
-				checks = append(checks, c)
+				// Its standards files (spec 7.6): a missing one only warns,
+				// so it does not count as failed.
+				checks = append(checks, standardsCheck(root))
 			}
 			// Worktrees without a ticket or of a finished ticket (spec 7.2),
 			// as the running daemon sees them.
@@ -198,17 +200,23 @@ func githubCheck(s ratelimit.Stats) doctorCheck {
 	return c
 }
 
-// pipelineCheck validates .istari/pipeline.toml of the repository of the
-// working directory; ok is false when there is none.
-func pipelineCheck() (doctorCheck, bool) {
+// workingRoot returns the root of the repository of the working directory;
+// ok is false outside a repository.
+func workingRoot() (string, bool) {
 	dir, err := os.Getwd()
 	if err != nil {
-		return doctorCheck{}, false
+		return "", false
 	}
 	root, err := project.Root(dir)
 	if err != nil {
-		return doctorCheck{}, false
+		return "", false
 	}
+	return root, true
+}
+
+// pipelineCheck validates .istari/pipeline.toml of the repository at root;
+// ok is false when there is none.
+func pipelineCheck(root string) (doctorCheck, bool) {
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(pipeline.Path)))
 	if err != nil {
 		return doctorCheck{}, false
@@ -231,18 +239,9 @@ var standardsFiles = []string{"CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSAR
 // adrDirs are the places of a repository's ADR directory (spec section 7.6).
 var adrDirs = []string{"adr", filepath.Join("docs", "adr")}
 
-// standardsCheck lists which standards files the repository of the working
-// directory lacks; a missing one is a warning, not a failure. ok is false
-// outside a repository.
-func standardsCheck() (doctorCheck, bool) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return doctorCheck{}, false
-	}
-	root, err := project.Root(dir)
-	if err != nil {
-		return doctorCheck{}, false
-	}
+// standardsCheck lists which standards files the repository at root lacks;
+// a missing one is a warning, not a failure.
+func standardsCheck(root string) doctorCheck {
 	var missing []string
 	for _, name := range standardsFiles {
 		if info, err := os.Stat(filepath.Join(root, name)); err != nil || info.IsDir() {
@@ -261,5 +260,5 @@ func standardsCheck() (doctorCheck, bool) {
 		c.Warn = true
 		c.Detail = "missing: " + strings.Join(missing, ", ")
 	}
-	return c, true
+	return c
 }

@@ -113,6 +113,12 @@ type Status struct {
 	By      string // who gave the deciding review
 	Merged  bool
 	Closed  bool
+	BaseSHA string
+	// Mergeable is GitHub's answer whether the pull request merges into its
+	// base: nil while GitHub has not computed it (null). MergeableState is
+	// its mergeable_state; dirty means conflicts.
+	Mergeable      *bool
+	MergeableState string
 }
 
 // ReviewNone is the review state of a pull request without a deciding review.
@@ -181,11 +187,17 @@ func (c *Client) Status(ctx context.Context, repo string, n int) (Status, error)
 		Head   struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
+		Base struct {
+			SHA string `json:"sha"`
+		} `json:"base"`
+		Mergeable      *bool  `json:"mergeable"`
+		MergeableState string `json:"mergeable_state"`
 	}
 	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
 		return Status{}, err
 	}
-	s := Status{HeadSHA: pr.Head.SHA, Merged: pr.Merged, Closed: pr.State == "closed"}
+	s := Status{HeadSHA: pr.Head.SHA, Merged: pr.Merged, Closed: pr.State == "closed",
+		BaseSHA: pr.Base.SHA, Mergeable: pr.Mergeable, MergeableState: pr.MergeableState}
 	if s.HeadSHA != "" {
 		checks, err := c.checks(ctx, repo, s.HeadSHA)
 		if err != nil {

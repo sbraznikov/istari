@@ -393,6 +393,39 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	}
 }
 
+// sleepingAgent is a harness binary whose run lives until it is killed.
+const sleepingAgent = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+echo '{"type":"system","subtype":"init","session_id":"s1","model":"m","cwd":"/w","tools":[]}'
+exec sleep 30
+`
+
+func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
+	t.Parallel()
+	d := startAgentDaemon(t, sleepingAgent)
+	type listed struct{ ID, State, Reason string }
+	var runs []listed
+	for deadline := time.Now().Add(20 * time.Second); len(runs) == 0 || runs[0].State != "running"; time.Sleep(50 * time.Millisecond) {
+		d.mustCLI(t, &runs, "run", "list")
+		if time.Now().After(deadline) {
+			t.Fatalf("no run started: %+v\nstderr: %s", runs, d.stderr)
+		}
+	}
+	left := runs[0].ID
+	d.cmd.Process.Kill() // the daemon dies with its run still recorded running
+	d.cmd.Wait()
+
+	again := startDaemonWithConfig(t, d.dataDir, d.config, d.env...)
+	again.mustCLI(t, &runs, "run", "list")
+	if len(runs) != 1 || runs[0].ID != left || runs[0].State != "ended" || runs[0].Reason != "the daemon restarted" {
+		t.Fatalf("runs after the restart = %+v, want %s ended because the daemon restarted", runs, left)
+	}
+	_, stderr, code := again.cli(t, "run", "stop", left)
+	if code == 0 || !strings.Contains(stderr, "run "+left+" has ended: the daemon restarted") {
+		t.Fatalf("run stop = exit %d, %q; want that the run has ended", code, stderr)
+	}
+}
+
 func TestDaemonInstallWritesTheUnitAndOnlyPrintsHowToEnableIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ kind, path, enable, contains string }{
