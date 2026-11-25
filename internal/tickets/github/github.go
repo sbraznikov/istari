@@ -43,7 +43,7 @@ type Options struct {
 	HTTPClient *http.Client
 	// Backoff are the waits before each retry of a write that met a server
 	// error, a rate limit or a network error (spec section 5); its length is
-	// the number of retries. Default DefaultBackoff.
+	// the number of retries. nil: DefaultBackoff; empty: no retry.
 	Backoff []time.Duration
 }
 

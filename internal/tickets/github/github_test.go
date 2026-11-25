@@ -26,6 +26,7 @@ func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 var quick = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 
 func TestAWriteSurvivesAShortServerOutageInsideTheCall(t *testing.T) {
+	t.Parallel()
 	fake := githubtest.New(t)
 	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
 	n := fake.Seed("t", "", "bob")
@@ -39,6 +40,7 @@ func TestAWriteSurvivesAShortServerOutageInsideTheCall(t *testing.T) {
 }
 
 func TestAWriteThatOutlastsItsRetriesIsUnavailable(t *testing.T) {
+	t.Parallel()
 	fake := githubtest.New(t)
 	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
 	n := fake.Seed("t", "", "bob")
@@ -53,6 +55,7 @@ func TestAWriteThatOutlastsItsRetriesIsUnavailable(t *testing.T) {
 }
 
 func TestARefusalIsNotRetriedAndNotUnavailable(t *testing.T) {
+	t.Parallel()
 	fake := githubtest.New(t)
 	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
 	n := fake.Seed("t", "", "bob")

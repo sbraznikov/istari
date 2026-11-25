@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/store"
@@ -38,7 +39,7 @@ type PendingWrite struct {
 	Added    time.Time `json:"added"`
 	Next      time.Time `json:"next"` // not tried again before then
 	Tries     int       `json:"tries,omitempty"`
-	Delivered bool      `json:"delivered,omitempty"`
+	Done      bool      `json:"done,omitempty"` // delivered, or dropped as refused
 
 	version int64
 }
@@ -69,6 +70,7 @@ type PendingOptions struct {
 type PendingWrites struct {
 	store store.Store
 	opts  PendingOptions
+	mu    sync.Mutex // serializes replays: the daemon's tick and istari sync never deliver one write twice
 }
 
 // NewPendingWrites returns the pending writes kept in s.
@@ -82,12 +84,17 @@ func NewPendingWrites(s store.Store, opts PendingOptions) *PendingWrites {
 	return &PendingWrites{store: s, opts: opts}
 }
 
-// Add keeps a write to be delivered on the next replay.
+// Add keeps a write to be delivered on the next replay, and says so in the
+// daemon's log: the write is no longer the caller's (spec section 5).
 func (p *PendingWrites) Add(ctx context.Context, w PendingWrite) error {
 	now := p.opts.Clock().UTC()
 	w.ID = fmt.Sprintf("%020d-%s", now.UnixNano(), randomHex(4)) // ordered by when it was added
 	w.Added, w.Next = now, now
-	return p.commit(ctx, w, "tracker.write_pending")
+	if err := p.commit(ctx, w, "tracker.write_queued"); err != nil {
+		return err
+	}
+	p.opts.Logf("istari: pending write: %s kept until the tracker answers; tried again on the next replay", w)
+	return nil
 }
 
 // List returns the writes not delivered yet, oldest first.
@@ -102,7 +109,7 @@ func (p *PendingWrites) List(ctx context.Context) ([]PendingWrite, error) {
 		if err := json.Unmarshal(r.Data, &w); err != nil {
 			return nil, fmt.Errorf("pending write %s: %w", r.ID, err)
 		}
-		if !w.Delivered {
+		if !w.Done {
 			w.version = r.Version
 			out = append(out, w)
 		}
@@ -114,6 +121,8 @@ func (p *PendingWrites) List(ctx context.Context) ([]PendingWrite, error) {
 // unavailable it stops at the first write and logs when that is tried next;
 // a write the tracker refuses for good is dropped and logged.
 func (p *PendingWrites) Replay(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	writes, err := p.List(ctx)
 	if err != nil {
 		return err
@@ -123,6 +132,7 @@ func (p *PendingWrites) Replay(ctx context.Context) error {
 		if now.Before(w.Next) {
 			return nil // keeps the order: nothing later goes first
 		}
+		event := "tracker.write_delivered"
 		err := p.deliver(ctx, w)
 		switch {
 		case errors.Is(err, tickets.ErrUnavailable):
@@ -131,10 +141,11 @@ func (p *PendingWrites) Replay(ctx context.Context) error {
 			p.opts.Logf("istari: pending write: %s: %v; tried again at %s", w, err, w.Next.Format(time.TimeOnly))
 			return p.commit(ctx, w, "tracker.write_retried")
 		case err != nil:
+			event = "tracker.write_dropped"
 			p.opts.Logf("istari: pending write: %s refused, dropped: %v", w, err)
 		}
-		w.Delivered = true
-		if err := p.commit(ctx, w, "tracker.write_delivered"); err != nil {
+		w.Done = true
+		if err := p.commit(ctx, w, event); err != nil {
 			return err
 		}
 	}
@@ -160,11 +171,11 @@ func (p *PendingWrites) deliver(ctx context.Context, w PendingWrite) error {
 		err = p.opts.Tracker.SetSize(ctx, ref, w.Size)
 	case PendingReview:
 		if p.opts.Reviews == nil || w.Review == nil {
-			return fmt.Errorf("no code host to publish the review on")
+			return errors.New("pending write: no code host to publish the review on")
 		}
 		err = p.opts.Reviews.PublishReview(ctx, w.Repo, w.Number, *w.Review)
 	default:
-		err = fmt.Errorf("unknown kind %q", w.Kind)
+		err = fmt.Errorf("pending write: unknown kind %q", w.Kind)
 	}
 	return err
 }

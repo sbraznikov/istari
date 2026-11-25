@@ -51,10 +51,14 @@ func (f *pendingFixture) open(t *testing.T) *runner.PendingWrites {
 }
 
 func TestAPendingCommentWaitsForTheTrackerAndIsDeliveredOnce(t *testing.T) {
+	t.Parallel()
 	f := newPending(t)
 	p := f.open(t)
 	if err := p.Add(ctx, runner.PendingWrite{Kind: runner.PendingComment, Ticket: f.ref.String(), Body: "**Refined** — refiner-1: meets"}); err != nil {
 		t.Fatal(err)
+	}
+	if len(f.logs) != 1 || !strings.Contains(f.logs[0], "comment on "+f.ref.String()) {
+		t.Fatalf("log = %q, want one line naming the comment on %s that is kept", f.logs, f.ref)
 	}
 	f.gh.FailNext(1)
 	if err := p.Replay(ctx); err != nil {
@@ -63,8 +67,8 @@ func TestAPendingCommentWaitsForTheTrackerAndIsDeliveredOnce(t *testing.T) {
 	if got := f.gh.Issue(f.ref.Number).Comments; len(got) != 0 {
 		t.Fatalf("comments while the tracker fails = %+v", got)
 	}
-	if len(f.logs) != 1 || !strings.Contains(f.logs[0], "comment on "+f.ref.String()) || !strings.Contains(f.logs[0], "15:46:00") {
-		t.Fatalf("log = %q, want one line naming the comment on %s and its next try at 15:46:00", f.logs, f.ref)
+	if len(f.logs) != 2 || !strings.Contains(f.logs[1], "comment on "+f.ref.String()) || !strings.Contains(f.logs[1], "15:46:00") {
+		t.Fatalf("log = %q, want a second line naming the comment on %s and its next try at 15:46:00", f.logs, f.ref)
 	}
 
 	f.now = f.now.Add(time.Minute)
@@ -83,6 +87,7 @@ func TestAPendingCommentWaitsForTheTrackerAndIsDeliveredOnce(t *testing.T) {
 }
 
 func TestARefinedCommentThatMeetsAnOutageIsKeptAsAPendingWrite(t *testing.T) {
+	t.Parallel()
 	f := newPending(t)
 	p := f.open(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "other.db"))
@@ -112,6 +117,7 @@ func TestARefinedCommentThatMeetsAnOutageIsKeptAsAPendingWrite(t *testing.T) {
 }
 
 func TestAPendingReviewIsPublishedOnThePullRequestOnceTheHostAnswers(t *testing.T) {
+	t.Parallel()
 	f := newPending(t)
 	s, err := store.Open(f.db)
 	if err != nil {
@@ -133,7 +139,7 @@ func TestAPendingReviewIsPublishedOnThePullRequestOnceTheHostAnswers(t *testing.
 	if err := p.Replay(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.logs) != 1 || !strings.Contains(f.logs[0], "review on "+f.ref.String()) {
+	if len(f.logs) != 2 || !strings.Contains(f.logs[1], "review on "+f.ref.String()) {
 		t.Fatalf("log = %q, want the review named", f.logs)
 	}
 	f.now = f.now.Add(time.Minute)
@@ -147,6 +153,7 @@ func TestAPendingReviewIsPublishedOnThePullRequestOnceTheHostAnswers(t *testing.
 }
 
 func TestAPendingWriteOutlivesARestartOfTheDaemon(t *testing.T) {
+	t.Parallel()
 	f := newPending(t)
 	first := f.open(t)
 	for _, w := range []runner.PendingWrite{

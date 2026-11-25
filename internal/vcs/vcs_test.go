@@ -396,6 +396,7 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 }
 
 func TestAReviewIsPublishedThroughAShortOutageAndUnavailableAfterALongOne(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).WithBackoff([]time.Duration{time.Millisecond, time.Millisecond, time.Millisecond})
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
