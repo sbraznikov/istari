@@ -12,6 +12,13 @@ import (
 var binary string
 
 func TestMain(m *testing.M) {
+	// An agent's run sets ISTARI_SOCKET and ISTARI_TOKEN; inherited, they send
+	// the binaries the tests start to the real daemon (#154).
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "ISTARI_") {
+			os.Unsetenv(name)
+		}
+	}
 	dir, err := os.MkdirTemp("", "istari-bin")
 	if err != nil {
 		panic(err)
