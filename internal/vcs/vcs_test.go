@@ -447,7 +447,7 @@ func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, 
 	return gh, s, w, ticket, pr.Number
 }
 
-// conflicts returns the vcs.conflict events of a ticket as head@base:state.
+// conflicts returns the vcs.conflicted events of a ticket as head@base:state.
 func conflicts(t *testing.T, s store.Store, ticket string) []string {
 	t.Helper()
 	events, err := s.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: vcs.EventConflict}, 0)

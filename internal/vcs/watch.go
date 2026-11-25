@@ -19,11 +19,11 @@ const (
 	// EventClosed: the pull request was merged or closed; its payload says
 	// which with merged.
 	EventClosed = "vcs.closed"
-	// EventConflict: GitHub reports the pull request in conflict with its
+	// EventConflict: GitHub reported the pull request in conflict with its
 	// base (mergeable false), once per head and base (spec 4.8).
-	EventConflict = "vcs.conflict"
-	// EventMergeable: GitHub reports the pull request free of conflicts.
-	EventMergeable = "vcs.mergeable"
+	EventConflict = "vcs.conflicted"
+	// EventMergeable: GitHub reported the pull request free of conflicts.
+	EventMergeable = "vcs.mergeable_read"
 )
 
 const prKind = "pull_request"

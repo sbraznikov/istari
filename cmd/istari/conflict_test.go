@@ -32,7 +32,7 @@ func (h *humanMerge) returnedForConflict(t *testing.T) []task {
 		if h.state(t) == "in_progress" {
 			for _, tk := range h.tasks(t) {
 				if tk.Role == "implementer" && tk.State == "ready" {
-					if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflict"); len(conflicts) != 1 {
+					if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted");len(conflicts) != 1 {
 						t.Fatalf("the watch recorded %d conflicts, want 1", len(conflicts))
 					}
 					if tr := h.lastTrigger(t); tr != "merge_failed" {
@@ -93,7 +93,7 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	// Nothing to wait for: the ticket must stay through the reconciles after
 	// the poll.
 	for until := time.Now().Add(time.Second); time.Now().Before(until); time.Sleep(100 * time.Millisecond) {
-		if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflict"); len(conflicts) != 0 {
+		if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 0 {
 			t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
 		}
 		if st := h.state(t); st != "awaiting_approval" {
