@@ -84,7 +84,7 @@ func syncRepos(cfg *config.Config) []tickets.SyncRepo {
 			continue
 		}
 		for _, r := range p.RepoList() {
-			repos = append(repos, tickets.SyncRepo{Repo: r.Repo, Project: p.Name, Trusted: p.Trusted})
+			repos = append(repos, tickets.SyncRepo{Repo: r.Repo, Project: p.Name, Trusted: p.Trusted, LabelOnly: p.Admission.OrDefault() == config.AdmissionLabel})
 		}
 	}
 	return repos

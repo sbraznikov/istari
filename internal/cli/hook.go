@@ -58,7 +58,7 @@ func newHookCommand() *cobra.Command {
 				if !filepath.IsAbs(path) {
 					path = filepath.Join(call.Cwd, path)
 				}
-				err = runner.FileGuard(path)
+				err = runner.FileGuard(path, os.Getenv("ISTARI_RESULT"))
 			}
 			if err != nil {
 				return denied{err}

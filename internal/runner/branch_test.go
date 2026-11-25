@@ -8,6 +8,7 @@ import (
 )
 
 func TestATicketBranchIsNamedAfterItsKeyAndTitle(t *testing.T) {
+	t.Parallel()
 	gh := tickets.Ref{Provider: "gh", Repo: "acme/web", Number: 123}
 	for _, tc := range []struct {
 		ref   tickets.Ref
