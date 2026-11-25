@@ -236,6 +236,7 @@ canceled — from any open state
 
 - The lease is 5 minutes by default; Runner renews it at every third of the term.
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
+- A run that stops (pause, timeout, a budget cap) keeps its lease until its stop checkpoint (section 4.6) and its end are recorded: Runner renews it as while the agent runs, so the task is not handed out while the checkpoint still commits, checks and pushes in the worktree. The stop checkpoint has a time limit of its own, `[daemon] stop_checkpoint_timeout` (15 minutes by default). When the limit is reached, the checkpoint is abandoned: nothing is committed or pushed, the work stays uncommitted in the worktree, and the journal says so in a note naming the limit. The run then ends as it would have (release on pause, fail on timeout, block on a budget cap), and the next run finds the work in the worktree.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
@@ -674,7 +675,7 @@ For each task the Runner:
 3. issues a run token: it lives as long as the lease and is valid only for this ticket;
 4. assembles the brief only from durable sources: the ticket text, its journal, the branch, the PR (section 4.6). Slack history and past harness sessions are not part of the brief;
 5. starts the harness and reads its streaming output, turning it into `run.*` events;
-6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal;
+6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal. The lease is renewed until this checkpoint and the run's end are recorded; the checkpoint itself is limited by `stop_checkpoint_timeout` (section 4.2);
 7. on completion calls `complete` or `fail`. The worktree stays: it belongs to the ticket, not to the run.
 
 **Ticket worktree.** Work on each ticket happens in a separate `git worktree`. The main working copy of the repository, in which the human works, is not used or changed by agents.
@@ -1117,6 +1118,7 @@ The TUI supports themes. A theme changes only colors; the set of screens, the pa
 [daemon]
 data_dir = "~/.local/share/istari"
 max_concurrent_runs = 4               # claimed tasks at once in the whole installation
+stop_checkpoint_timeout = "15m"       # time limit of the checkpoint a stopping run makes (section 4.2)
 
 [defaults]                            # for all projects; overridden in .istari/pipeline.toml
 max_review_rounds = 3                 # review rounds before a hold
