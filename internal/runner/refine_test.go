@@ -73,6 +73,12 @@ func TestARefinerResultWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testi
 	refusesUnquotedColon(t, err, 3)
 }
 
+func TestARefinerQuestionWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	data := "verdict: needs_input\nsize: S\nquestions:\n  - Which limit: per user or per key?\n"
+	_, err := runner.ParseRefine([]byte(data))
+	refusesUnquotedColon(t, err, 4)
+}
+
 func TestARewriteMustKeepTheOriginalByteForByte(t *testing.T) {
 	f := newRefine(t)
 	changed := standardBody(strings.Replace(rawTicket, "rate limits", "limits", 1))
