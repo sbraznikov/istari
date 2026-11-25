@@ -362,6 +362,27 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 	}
 }
 
+func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	if _, err := f.tickets.SetNeeds(ctx, "agent:refiner-1", ref, []string{need}); err != nil { // the refiner's rewrite
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketPlanning || tk.Hold != "waiting_dependency" {
+		t.Fatalf("a planning ticket with an open need = %s, hold %q; want planning on waiting_dependency", tk.State, tk.Hold)
+	}
+	if l, err := f.tasks.ClaimReady(ctx, "agent:planner-1", "planner"); err == nil {
+		t.Fatalf("the held ticket's plan task was handed out: %+v", l)
+	}
+}
+
 func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
 	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }

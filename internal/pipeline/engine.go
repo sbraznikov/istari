@@ -235,11 +235,12 @@ func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 }
 
 func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task) error {
-	if tk.State == core.TicketReady && (tk.Hold == "" || tk.Hold == waitingDependency) {
-		// T3 needs the tickets in needs completed. A ticket that waits for
-		// them says so with the hold waiting_dependency, which goes when they
-		// are done; a need that never will be (canceled) leaves the hold for
-		// a human to change the needs.
+	if (tk.State == core.TicketReady || tk.State == core.TicketPlanning) && (tk.Hold == "" || tk.Hold == waitingDependency) {
+		// T3 needs the tickets in needs completed, and so does the work
+		// after it when needs appear later (spec 4.1). A ticket that waits
+		// for them says so with the hold waiting_dependency, which goes when
+		// they are done; a need that never will be (canceled) leaves the hold
+		// for a human to change the needs.
 		waiting := false
 		for _, need := range tk.Needs {
 			waiting = waiting || e.state(ctx, need) != core.TicketDone
