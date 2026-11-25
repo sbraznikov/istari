@@ -155,6 +155,32 @@ func TestAMergeThatCannotStartLeavesTheWorktreeAsItWas(t *testing.T) {
 	}
 }
 
+func TestTheJournalNamesTheFilesInConflictWhenARunMergesMain(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{})
+	tk, task := f.readyTask(t, 13)
+	w, err := f.ws.Ensure(ctx, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(w.Dir, "README.md"), "web, by the ticket\n")
+	gitIn(t, w.Dir, "commit", "-q", "-am", "readme")
+	f.moveMain(t, map[string]string{"README.md": "web, by main\n"})
+	f.start(t)
+	f.waitEvent(t, journal.EventPrefix+string(journal.Note))
+	ref, _ := tickets.ParseRef(tk.Ref)
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind == journal.Note && e.ID == task.ID && strings.Contains(e.Text, "conflict") && strings.Contains(e.Text, "README.md") {
+			return
+		}
+	}
+	t.Fatalf("journal = %+v; want a note that names README.md in conflict", entries)
+}
+
 func TestWhenTheRemoteCannotBeReachedTheJournalSaysMainWasNotMergedAndWhy(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})

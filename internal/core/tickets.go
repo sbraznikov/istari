@@ -111,6 +111,10 @@ var transitions = func() []transition {
 		{"T8", TicketInReview, "review_passed", TicketAwaitingApproval},
 		{"T9", TicketAwaitingApproval, "changes_requested", TicketInProgress},
 		{"T10", TicketAwaitingApproval, "merge_failed", TicketInProgress},
+		// T10 also returns a ticket in review whose PR is in conflict (spec
+		// 4.8). After T7, so that TriggerTo(in_review, in_progress) stays
+		// changes_requested.
+		{"T10", TicketInReview, "merge_failed", TicketInProgress},
 		{"T11", TicketAwaitingApproval, "merged", TicketDone},
 		{"T12", TicketInProgress, "children_done", TicketDone},
 		// T11 also finishes a ticket whose PR a human merged before the
@@ -285,6 +289,13 @@ const triggerRecover = "recover"
 // a refused guard with guard_failed; neither appends anything. While a hold is
 // set the state does not change: only cancel is allowed.
 func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket, error) {
+	return m.FireWith(ctx, actor, ref, trigger, nil)
+}
+
+// FireWith is Fire with more fields for the transition's payload, such as
+// the rule that admitted a ticket (T2, spec section 4.5). They do not
+// replace the fields Fire writes.
+func (m *Tickets) FireWith(ctx context.Context, actor, ref, trigger string, more map[string]any) (Ticket, error) {
 	var ticket Ticket
 	err := retry(func() error {
 		var err error
@@ -304,6 +315,11 @@ func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket,
 			}
 		}
 		payload := transitionPayload(row.from, row.to, trigger, actor)
+		for k, v := range more {
+			if _, own := payload[k]; !own {
+				payload[k] = v
+			}
+		}
 		ticket.State = row.to
 		if row.to == TicketCanceled && ticket.Hold != "" {
 			// A finished ticket carries no hold; cancel ends it.
