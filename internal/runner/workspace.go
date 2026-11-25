@@ -235,6 +235,11 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 	} else if err := os.RemoveAll(ws.Dir); err != nil {
 		return Workspace{}, err
 	}
+	// verify_red's worktree holds only the previous code: nothing to lose.
+	gitOut(ctx, clone, "worktree", "remove", "--force", redDir(ws))
+	if err := os.RemoveAll(redDir(ws)); err != nil {
+		return Workspace{}, err
+	}
 	if _, err := gitOut(ctx, clone, "worktree", "prune"); err != nil {
 		return Workspace{}, err
 	}
@@ -362,7 +367,7 @@ func (w *Workspaces) orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 		return nil, err
 	}
 	for _, dir := range dirs {
-		if !recorded[dir] && isWorktree(ctx, dir) {
+		if !recorded[dir] && !recorded[strings.TrimSuffix(dir, redSuffix)] && isWorktree(ctx, dir) {
 			out = append(out, Workspace{Dir: dir, State: WorkspaceActive, Reason: "no record"})
 		}
 	}
@@ -478,7 +483,9 @@ func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove fu
 // redDir is the ticket's worktree for verify_red: one per ticket, at a fixed
 // path next to its own, so the test caches of the toolchain, keyed by the
 // path, stay warm between checkpoints (spec section 7.7).
-func redDir(ws Workspace) string { return ws.Dir + ".red" }
+func redDir(ws Workspace) string { return ws.Dir + redSuffix }
+
+const redSuffix = ".red"
 
 // redCheckout returns the ticket's verify_red worktree at commit, with no
 // untracked or ignored files: what one checkpoint left there is gone at the

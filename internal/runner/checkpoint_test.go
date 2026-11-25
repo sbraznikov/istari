@@ -251,6 +251,38 @@ func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
 	}
 }
 
+func TestTheVerifyRedWorktreeIsRemovedWithTheTicketsWorktree(t *testing.T) {
+	f := newCheckpoints(t)
+	f.slice(t, "first")
+	f.checkpoint(t, "First slice")
+	clone := filepath.Join(f.data, "repos", "acme", "web.git")
+	worktrees := func() []string {
+		var out []string
+		for _, line := range strings.Split(gitIn(t, clone, "worktree", "list", "--porcelain"), "\n") {
+			if dir, ok := strings.CutPrefix(line, "worktree "); ok {
+				out = append(out, dir)
+			}
+		}
+		return out
+	}
+	before := worktrees()
+	if len(before) != 3 {
+		t.Fatalf("worktrees after a checkpoint = %v, want the clone, the ticket's and verify_red's", before)
+	}
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	if got, err := ws.Remove(ctx, f.tk); err != nil || got.State != runner.WorkspaceRemoved {
+		t.Fatalf("Remove = %+v, %v", got, err)
+	}
+	if after := worktrees(); len(after) != 1 {
+		t.Fatalf("worktrees after removal = %v, want only the clone", after)
+	}
+	for _, dir := range before[1:] {
+		if exists(dir) {
+			t.Fatalf("%s is still there", dir)
+		}
+	}
+}
+
 func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 	f, runs := newLoggedCheckpoints(t)
 	// An ignored file is left behind too: only a full clean removes it.
