@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,12 +15,14 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -46,8 +49,11 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
 			daemonOpts := api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg), Priority: cfg.Defaults.Priority, Repos: syncRepos(cfg), GitServer: os.Getenv("GITHUB_SERVER_URL")}
+			// One transport under every GitHub client: istari doctor counts
+			// all requests, and one quota slows them all down (#208).
+			transport := ratelimit.New(ratelimit.Options{})
 			if len(daemonOpts.Repos) > 0 {
-				tracker, err := github.FromEnvironment(ctx)
+				tracker, err := github.FromEnvironmentWith(ctx, &http.Client{Timeout: 30 * time.Second, Transport: transport})
 				if err != nil {
 					// The daemon still runs; istari doctor and istari sync say why
 					// tickets are not synced.
@@ -61,8 +67,9 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				client, err := vcsOf(ctx, cfg)
 				if err != nil {
 					log.Printf("istari: pushes and pull requests are off: %v", err)
+				} else {
+					daemonOpts.VCS = client.WithTransport(transport)
 				}
-				daemonOpts.VCS = client
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
 			if daemonOpts.Tracker != nil {

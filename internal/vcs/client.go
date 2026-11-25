@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
@@ -25,12 +26,22 @@ type Client struct {
 	http   *http.Client
 }
 
-// NewClient returns a client; baseURL "" means api.github.com.
+// NewClient returns a client with its own ratelimit.Transport; baseURL ""
+// means api.github.com.
 func NewClient(baseURL string, tokens Tokens) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second, Transport: ratelimit.New(ratelimit.Options{})}}
+}
+
+// WithTransport returns a copy of the client that sends its requests through
+// rt: the daemon shares one ratelimit.Transport among its GitHub clients
+// (#208).
+func (c *Client) WithTransport(rt http.RoundTripper) *Client {
+	out := *c
+	out.http = &http.Client{Timeout: c.http.Timeout, Transport: rt}
+	return &out
 }
 
 // Tokens returns the client's token source.

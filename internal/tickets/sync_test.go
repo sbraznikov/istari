@@ -123,6 +123,21 @@ func TestAnIssueCreatedInTheTrackerAppearsAsNew(t *testing.T) {
 	}
 }
 
+func TestASyncOfUnchangedIssuesMakesNoRequestThatCounts(t *testing.T) {
+	t.Parallel()
+	f := newSync(t)
+	f.gh.Seed("Add rate limits", "## Context\n…", "bob", "bug")
+	n := f.gh.Seed("Count requests", "## Context\n…", "carol", "bug")
+	f.gh.HumanComment(n, "carol", "a first thought")
+	f.run(t)
+	f.run(t) // reads back what the first sync wrote
+	before := len(f.gh.Counted())
+	f.run(t)
+	if got := f.gh.Counted()[before:]; len(got) != 0 {
+		t.Errorf("counted requests of a sync of unchanged issues = %v, want none", got)
+	}
+}
+
 func TestIstarisOwnWritesDoNotCauseASecondTransition(t *testing.T) {
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob")

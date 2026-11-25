@@ -9,8 +9,11 @@ package githubtest
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -52,6 +55,7 @@ type Server struct {
 	checks          map[string][]Check   // commit → check runs
 	statuses        map[string]string    // commit → combined status
 	deletedBranches []string
+	counted         []string // "METHOD path" of the requests that count against the quota
 }
 
 // Label is a repository label.
@@ -164,11 +168,44 @@ func New(t testing.TB, opts ...Option) *Server {
 			return
 		}
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, s.prefix)
-		mux.ServeHTTP(w, r)
+		s.serveConditional(w, r, mux)
 	}))
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + s.prefix
 	return s
+}
+
+// serveConditional answers as GitHub does with ETags: a GET's 200 carries the
+// ETag of its body, and a GET whose If-None-Match names the ETag of the
+// answer it would get is answered 304 and does not count against the quota.
+// Every other answer is counted.
+func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	res := rec.Result()
+	body := rec.Body.Bytes()
+	if r.Method == http.MethodGet && res.StatusCode == http.StatusOK {
+		sum := sha256.Sum256(body)
+		etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+		res.Header.Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			maps.Copy(w.Header(), res.Header)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	s.counted = append(s.counted, r.Method+" "+r.URL.Path)
+	maps.Copy(w.Header(), res.Header)
+	w.WriteHeader(res.StatusCode)
+	w.Write(body)
+}
+
+// Counted returns the requests that counted against the quota, as "METHOD
+// path", oldest first: all but the ones answered 304.
+func (s *Server) Counted() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.counted)
 }
 
 func (s *Server) tick() time.Time {

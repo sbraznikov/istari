@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 )
 
@@ -166,6 +167,7 @@ func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 func (s *Syncer) Sync(ctx context.Context) (SyncReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindSync)
 	var report SyncReport
 	var errs []error
 	for _, repo := range s.repos {

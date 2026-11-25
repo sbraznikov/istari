@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
@@ -38,8 +39,11 @@ const (
 
 // Options configures the adapter.
 type Options struct {
-	BaseURL    string // default DefaultBaseURL
-	Token      string // a token that may read and write issues and labels
+	BaseURL string // default DefaultBaseURL
+	Token   string // a token that may read and write issues and labels
+	// HTTPClient sends the requests; nil: one with its own
+	// ratelimit.Transport. The daemon gives every GitHub client one shared
+	// transport, so that istari doctor sees all requests (#208).
 	HTTPClient *http.Client
 }
 
@@ -68,11 +72,17 @@ const ownMark = "<!-- istari -->"
 // runs it: the token of the GitHub CLI (`gh auth token`, maintainer decision
 // on #16) and GITHUB_API_URL, if set, as the API base (GitHub Enterprise).
 func FromEnvironment(ctx context.Context) (*Provider, error) {
+	return FromEnvironmentWith(ctx, nil)
+}
+
+// FromEnvironmentWith is FromEnvironment sending through client (nil: the
+// default of Options.HTTPClient).
+func FromEnvironmentWith(ctx context.Context, client *http.Client) (*Provider, error) {
 	token, err := CLIToken(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token, HTTPClient: client}), nil
 }
 
 // CLIToken returns the GitHub CLI's token (`gh auth token`).
@@ -117,7 +127,7 @@ func New(opts Options) *Provider {
 		opts.BaseURL = DefaultBaseURL
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{Timeout: requestTimeout}
+		opts.HTTPClient = &http.Client{Timeout: requestTimeout, Transport: ratelimit.New(ratelimit.Options{})}
 	}
 	client := *opts.HTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -325,6 +335,7 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 	if err := checkState(s); err != nil {
 		return err
 	}
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	current, err := p.Get(ctx, ref)
 	if err != nil {
 		return err
@@ -379,6 +390,7 @@ func (p *Provider) SetSize(ctx context.Context, ref tickets.Ref, size string) er
 	if !slices.Contains(core.Sizes(), size) {
 		return fmt.Errorf("github: %q is not a size", size)
 	}
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	current, err := p.Get(ctx, ref)
 	if err != nil {
 		return err
@@ -406,7 +418,7 @@ func (p *Provider) SetBody(ctx context.Context, ref tickets.Ref, body string) er
 	if _, err := repoOf(ref); err != nil {
 		return err
 	}
-	if err := p.do(ctx, http.MethodPatch, issuePath(ref, ""), map[string]any{"body": body}, nil); err != nil {
+	if err := p.do(ratelimit.WithKind(ctx, ratelimit.KindJournal), http.MethodPatch, issuePath(ref, ""), map[string]any{"body": body}, nil); err != nil {
 		return fmt.Errorf("github: set the body of %s: %w", ref, err)
 	}
 	return nil
@@ -421,7 +433,7 @@ func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (t
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 	}
-	if err := p.do(ctx, http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body + "\n\n" + ownMark}, &c); err != nil {
+	if err := p.do(ratelimit.WithKind(ctx, ratelimit.KindJournal), http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body + "\n\n" + ownMark}, &c); err != nil {
 		return tickets.CommentRef{}, fmt.Errorf("github: comment on %s: %w", ref, err)
 	}
 	return tickets.CommentRef{ID: c.ID, URL: c.HTMLURL}, nil
@@ -522,7 +534,7 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 	if err := checkRepo(repo); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), nil)
+	req, err := http.NewRequestWithContext(ratelimit.WithKind(ctx, ratelimit.KindFiles), http.MethodGet, p.base+fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -655,6 +667,7 @@ func labelInfo(name string) (color, description string) {
 
 // ensureLabels creates the labels missing from the repository.
 func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []string) error {
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	for _, name := range labels {
 		key := repo + "\x00" + name
 		p.mu.Lock()
