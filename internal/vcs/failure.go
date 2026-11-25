@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
+
+// MaxFailureLog bounds the failure output a journal entry holds, in bytes:
+// enough for the failing tests and their messages at a log's end, small
+// enough for the brief (runner.MaxBrief).
+const MaxFailureLog = 8000
 
 // Failure is what istari read of a commit's failed checks (spec 4.3): their
 // names, the commit, a link to the run and the end of their logs.
@@ -45,6 +51,29 @@ func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, err
 		parts = append(parts, string(log))
 	}
 	f.Check = strings.Join(names, ", ")
+	share := MaxFailureLog / max(1, len(parts)) // each failed job keeps the end of its own log
+	for i, p := range parts {
+		var cut bool
+		if parts[i], cut = tail(p, share-1); cut {
+			f.Cut = true
+		}
+	}
 	f.Output = strings.Join(parts, "\n")
 	return f, errors.Join(errs...)
+}
+
+// tail is the end of text in at most limit bytes, starting at a line when
+// one starts in it; cut tells whether anything was left out.
+func tail(text string, limit int) (end string, cut bool) {
+	if len(text) <= limit {
+		return text, false
+	}
+	end = text[len(text)-limit:]
+	if i := strings.IndexByte(end, '\n'); i >= 0 && i+1 < len(end) {
+		return end[i+1:], true
+	}
+	for len(end) > 0 && !utf8.RuneStart(end[0]) {
+		end = end[1:]
+	}
+	return end, true
 }

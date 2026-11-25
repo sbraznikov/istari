@@ -437,3 +437,20 @@ func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
 		t.Fatalf("output = %q", f.Output)
 	}
 }
+
+func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	log := "first line of setup\n" + strings.Repeat("ok  \tsome/package\t0.1s\n", vcs.MaxFailureLog/20) + "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: log})
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if !f.Cut || len(f.Output) > vcs.MaxFailureLog {
+		t.Fatalf("cut = %v, %d bytes; want the end, at most %d bytes", f.Cut, len(f.Output), vcs.MaxFailureLog)
+	}
+	if !strings.HasSuffix(f.Output, "got 1, want 2\nFAIL\n") || strings.Contains(f.Output, "first line of setup") || !strings.HasPrefix(f.Output, "ok  \t") {
+		t.Fatalf("output is not the end of the log cut at a line: %q…%q", f.Output[:40], f.Output[len(f.Output)-40:])
+	}
+}
