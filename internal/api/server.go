@@ -247,6 +247,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		if t, ok := opts.Tracker.(runner.RefineTracker); ok {
 			sizer = t
 		}
+		if qt, ok := opts.Tracker.(runner.QueueTracker); ok {
+			q := srv.pending.Queuing(qt)
+			jt, sizer = q, q
+		}
 		srv.plans = runner.NewPlans(srv.spaces, journal.New(jt, ns, opts.Clock), srv.tickets, sizer)
 		srv.reviews = runner.NewReviews(srv.spaces, journal.New(jt, ns, opts.Clock))
 		if srv.syncer != nil {

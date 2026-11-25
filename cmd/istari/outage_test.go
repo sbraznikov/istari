@@ -103,6 +103,54 @@ func TestARefineResultThatOutlastsTheRetriesCostsNoAttemptAndItsCommentFollows(t
 	}
 }
 
+// outagePlanner submits its plan once the test has started the outage (the
+// file $log.go); a later run of it waits.
+const outagePlanner = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = planner ]; then
+  if [ -e "$log.ran" ]; then sleep 60; exit 0; fi
+  : > "$log.ran"
+  while [ ! -e "$log.go" ]; do sleep 0.1; done
+  "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+summary: Write the feature file
+slices: [the feature file]
+seams: [{name: feature.txt, catches: its presence, misses: its content}]
+zone: [feature.txt (new)]
+PLAN
+  "$istari" complete "planned" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAPlanWhoseJournalEntryOutlastsTheRetriesCostsNoAttempt(t *testing.T) {
+	t.Parallel()
+	d, gh, issue, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(outagePlanner, binary, log) })
+	gh.FailComments("**Plan**", 4, http.StatusBadGateway)
+	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runs := endedRuns(t, d, log, "planner", 1)
+	out, _ := os.ReadFile(log)
+	if !strings.HasPrefix(runs[0].Reason, "yielded: ") {
+		t.Fatalf("the planner run ended %q, want it yielded, not rejected\nagent log:\n%s", runs[0].Reason, out)
+	}
+	if task := showTask(t, d, runs[0].Task); task.Attempts != 0 || task.State == "failed" {
+		t.Fatalf("the plan task is %+v, want it handed out again with no failed attempt", task)
+	}
+	d.mustCLI(t, nil, "sync")
+	plans := 0
+	for _, c := range gh.Issue(issue).Comments {
+		if strings.HasPrefix(c.Body, "**Plan**") {
+			plans++
+		}
+	}
+	if plans != 1 {
+		t.Fatalf("%d plan entries on the ticket once it answers, want 1", plans)
+	}
+}
+
 func TestARefusalOfTheTrackerStillRefusesTheRefineResult(t *testing.T) {
 	t.Parallel()
 	d, _, _, log := refineDuringOutage(t, 1, http.StatusUnprocessableEntity)
