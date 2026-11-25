@@ -71,6 +71,15 @@ type Workspaces struct {
 	// checked is when a kept workspace was last checked for unsaved work;
 	// it is checked again at most once a minute, as each check fetches.
 	checked map[string]time.Time
+
+	fetchMu  sync.Mutex        // guards fetching, not held while git runs
+	fetching map[string]*fetch // the running fetch of each clone, by its dir
+}
+
+// fetch is one git fetch of a clone; done is closed when err is set.
+type fetch struct {
+	done chan struct{}
+	err  error
 }
 
 // NewWorkspaces returns the ticket workspaces.
@@ -78,7 +87,7 @@ func NewWorkspaces(s store.Store, opts WorkspaceOptions) *Workspaces {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}}
+	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}, fetching: map[string]*fetch{}}
 }
 
 // Ensure returns the ticket's worktree, creating it when it does not exist:
@@ -622,10 +631,40 @@ func (w *Workspaces) clone(ctx context.Context, repo string) (string, error) {
 			}
 		}
 	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
+	if err := w.fetch(ctx, dir); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// fetch fetches the remote's branches into the clone in dir. Two git
+// fetches of one clone at once fail to lock the refs they both update, so a
+// caller that finds a fetch of the clone running waits for it and takes its
+// result instead of fetching again.
+func (w *Workspaces) fetch(ctx context.Context, dir string) error {
+	key := dir
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		key = real
+	}
+	w.fetchMu.Lock()
+	if f, ok := w.fetching[key]; ok {
+		w.fetchMu.Unlock()
+		select {
+		case <-f.done:
+			return f.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f := &fetch{done: make(chan struct{})}
+	w.fetching[key] = f
+	w.fetchMu.Unlock()
+	_, f.err = gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches)
+	w.fetchMu.Lock()
+	delete(w.fetching, key)
+	w.fetchMu.Unlock()
+	close(f.done)
+	return f.err
 }
 
 func (w *Workspaces) remote(repo string) string {
