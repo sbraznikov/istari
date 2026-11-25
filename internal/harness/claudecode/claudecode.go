@@ -69,7 +69,8 @@ func DefaultProfiles() map[string]harness.Profile {
 		// dontAsk: a tool that is not allowed is refused, nobody is asked.
 		"refiner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
 		"planner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
-		"reviewer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
+		// The reviewer may see what the main branch has now (spec 7.3).
+		"reviewer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: slices.Concat(readOnly, []string{"Bash(git fetch origin main)"})},
 		"implementer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "acceptEdits",
 			AllowedTools: []string{"Read", "Edit", "Write", "Grep", "Glob", "Bash(istari *)", "Bash(git *)"}},
 	}

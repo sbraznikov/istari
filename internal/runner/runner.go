@@ -373,6 +373,11 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		fail("run: " + err.Error())
 		return
 	}
+	// The roles that submit a structured result may write it to the run's
+	// result file, and no other file (spec sections 7.3 and 7.6).
+	if slices.Contains(resultRoles, slot.Role) {
+		env["ISTARI_RESULT"] = filepath.Join(r.opts.DataDir, "runs", run.ID, "result.yaml")
+	}
 	who := slot.Profile + " (istari)"
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": ghDir,
@@ -395,7 +400,12 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	if result, ok := env["ISTARI_RESULT"]; ok {
+		// "//" starts an absolute path in a rule; Edit's rule covers every
+		// file tool, Write's the tool by name.
+		spec.AllowedTools = append(spec.AllowedTools, "Write(/"+result+")", "Edit(/"+result+")")
+	}
 	if slot.Role == "implementer" {
 		// The implementer may run the repository's checks itself (spec 7.3):
 		// one test while it writes it, not only a whole checkpoint.
@@ -407,6 +417,9 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			spec.AllowedTools = append(spec.AllowedTools, checkTools(checks)...)
 		}
 	}
+	// The brief lists the commands the harness allows (spec 7.3), from the
+	// same list, so the two cannot drift apart.
+	spec.Brief = r.brief(bg, task, tk, run.Dir, conflicts, spec.AllowedTools)
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
@@ -614,8 +627,8 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 }
 
 // brief assembles the run's brief from the ticket and its journal.
-func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts []string) string {
-	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts}
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts, tools []string) string {
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts, AllowedTools: tools}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Brief(in)
@@ -689,6 +702,10 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	_, err = f.WriteString("\n/.istari/skill.md\n")
 	return err
 }
+
+// resultRoles are the roles that submit a structured result and get a result
+// file for it, ISTARI_RESULT (spec section 7.6).
+var resultRoles = []string{"refiner", "planner", "reviewer"}
 
 // checkTools are the tool rules that let an agent run the check commands:
 // each command's program and subcommand with any arguments, so that

@@ -453,6 +453,56 @@ func TestRecoverTakesBackTheClosedTicketsARecoveredOneNeeds(t *testing.T) {
 	}
 }
 
+// needing is a conforming body that needs issue n.
+func needing(n int) string {
+	return strings.Replace(conforming, "- Needs: none", fmt.Sprintf("- Needs: #%d", n), 1)
+}
+
+func TestAClosedNeedIstariNeverTrackedComesInFinished(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		reason string
+		want   core.TicketState
+	}{
+		{"completed", core.TicketDone},
+		{"not_planned", core.TicketCanceled},
+		{"duplicate", core.TicketCanceled},
+	} {
+		t.Run(c.reason, func(t *testing.T) {
+			t.Parallel()
+			f := newSync(t)
+			need := f.gh.Seed("Closed before istari", conforming, "alex")
+			f.gh.HumanClose(need, "alex", c.reason)
+			n := f.gh.Seed("Needs it", needing(need), "alex")
+			f.run(t)
+			if tk := f.ticket(t, n); !slices.Equal(tk.Needs, []string{ghRef(need)}) {
+				t.Fatalf("needs = %v", tk.Needs)
+			}
+			if tk := f.ticket(t, need); tk.State != c.want {
+				t.Fatalf("the need closed as %s is %s, want %s", c.reason, tk.State, c.want)
+			}
+		})
+	}
+}
+
+func TestAnOpenNeedIsSyncedOnItsOwnAndNotFinished(t *testing.T) {
+	t.Parallel()
+	f := newSync(t)
+	// The ticket comes first, so the sync meets its need before the need.
+	n := f.gh.Seed("Needs it", needing(2), "alex")
+	need := f.gh.Seed("Still open", conforming, "alex")
+	f.run(t)
+	if tk := f.ticket(t, need); tk.State == core.TicketDone || tk.State == core.TicketCanceled {
+		t.Fatalf("the open need is %s, want it still open", tk.State)
+	}
+	if transitions := f.transitions(t, need); len(transitions) == 0 || transitions[0].Trigger != "create" {
+		t.Fatalf("transitions of the open need = %+v, want it created as an open ticket", transitions)
+	}
+	if tk := f.ticket(t, n); !slices.Equal(tk.Needs, []string{ghRef(need)}) {
+		t.Fatalf("needs = %v", tk.Needs)
+	}
+}
+
 const raw = "We should add rate limits.\n" // below the standard
 
 func TestOnlyATicketThatWouldBeAdmittedIsRefined(t *testing.T) {

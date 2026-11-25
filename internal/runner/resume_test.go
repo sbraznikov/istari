@@ -30,6 +30,7 @@ func (f *wsFixture) moveMain(t *testing.T, files map[string]string) {
 }
 
 func TestResumingMergesTheMovedMainBranchIntoTheWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 5, "Add limits")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -53,6 +54,7 @@ func TestResumingMergesTheMovedMainBranchIntoTheWorktree(t *testing.T) {
 }
 
 func TestConflictsWithTheMainBranchAreLeftForTheWorker(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 6, "Edit the readme")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -76,6 +78,7 @@ func TestConflictsWithTheMainBranchAreLeftForTheWorker(t *testing.T) {
 }
 
 func TestAfterAKilledRunTheNextOneStartsFromTheCheckpointAndTheConflicts(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	tk, task := f.readyTask(t, 8)
 	ref, _ := tickets.ParseRef(tk.Ref)
@@ -103,6 +106,7 @@ func TestAfterAKilledRunTheNextOneStartsFromTheCheckpointAndTheConflicts(t *test
 }
 
 func TestTheRunnerKnowsWhichTaskItIsWorkingOn(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 9)
 	if _, ok := f.runner.Working(ctx, task.ID); ok {
@@ -134,6 +138,7 @@ func TestTheRunnerKnowsWhichTaskItIsWorkingOn(t *testing.T) {
 }
 
 func TestAMergeThatCannotStartLeavesTheWorktreeAsItWas(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 10, "Edit the readme")
 	w, err := f.ws.Ensure(ctx, tk)

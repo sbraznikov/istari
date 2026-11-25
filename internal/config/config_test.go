@@ -119,6 +119,29 @@ func TestInvalidValueIsNamed(t *testing.T) {
 	}
 }
 
+func TestAProjectWithoutAdmissionIsTrustedAndLabelLoadsAsLabel(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(writeConfig(t, "[[project]]\nname = \"web\"\nadmission = \"label\"\n\n[[project]]\nname = \"api\"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Projects[0].Admission; got != config.AdmissionLabel {
+		t.Errorf("web admission = %q, want label", got)
+	}
+	if got := cfg.Projects[1].Admission.OrDefault(); got != config.AdmissionTrusted {
+		t.Errorf("api admission = %q, want trusted (the default)", got)
+	}
+}
+
+func TestUnknownAdmissionNamesFileAndLine(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "[[project]]\nname = \"web\"\nadmission = \"bogus\"\n")
+	_, err := config.Load(path)
+	assertErrorNames(t, err, path)
+	assertErrorNames(t, err, "line 3")
+	assertErrorNames(t, err, "bogus")
+}
+
 func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Load(writeConfig(t, "[defaults.budget_usd]\nM = 20\n"))
