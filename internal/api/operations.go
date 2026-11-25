@@ -304,6 +304,13 @@ func (s *Server) operations() map[string]operation {
 		}),
 		// Runs (spec sections 7.2 and 9).
 		"run.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.runs.List(ctx) }),
+		// The slots paused because their harness did not start (spec 7.3).
+		"runner.slots": read(func(context.Context, Empty) (any, error) {
+			if s.runner == nil {
+				return []runner.PausedSlot{}, nil
+			}
+			return s.runner.Paused(), nil
+		}),
 		"run.show": read(func(ctx context.Context, r RunRequest) (any, error) { return s.runs.Get(ctx, r.ID) }),
 		"run.logs": read(func(ctx context.Context, r RunLogsRequest) (any, error) { return s.runLogs(ctx, r) }),
 		"run.stop": write(okAgain, func(ctx context.Context, r RunActRequest) (any, error) {
