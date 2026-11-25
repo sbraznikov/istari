@@ -313,19 +313,20 @@ func pipelineDaemon(t *testing.T, pipeline string, agent func(log string) string
 	return d, gh, ticket, log
 }
 
-type reviewerRun struct{ Role, Task, State, Reason string }
+// agentRun is a run of any role as run list shows it.
+type agentRun struct{ Role, Task, State, Reason string }
 
 // endedReviews waits until n reviewer runs have ended and returns them.
-func endedReviews(t *testing.T, d *daemon, log string, n int) []reviewerRun {
+func endedReviews(t *testing.T, d *daemon, log string, n int) []agentRun {
 	t.Helper()
 	return endedRuns(t, d, log, "reviewer", n)
 }
 
 // endedRuns waits until n runs of role have ended and returns them.
-func endedRuns(t *testing.T, d *daemon, log, role string, n int) []reviewerRun {
+func endedRuns(t *testing.T, d *daemon, log, role string, n int) []agentRun {
 	t.Helper()
 	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var runs, ended []reviewerRun
+		var runs, ended []agentRun
 		d.mustCLI(t, &runs, "run", "list")
 		for _, r := range runs {
 			if r.Role == role && r.State == "ended" {
