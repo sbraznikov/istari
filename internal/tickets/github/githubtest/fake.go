@@ -48,6 +48,8 @@ type Server struct {
 	failCommentsOn   string // comments containing it fail
 	failComments     int
 	failCommentsWith int
+	failReviews      int // reviews of a pull request that fail
+	failReviewsWith  int
 	files      map[string]string // repository files on the default branch
 
 	appID           int64

@@ -16,6 +16,7 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 type pendingFixture struct {
@@ -107,6 +108,41 @@ func TestARefinedCommentThatMeetsAnOutageIsKeptAsAPendingWrite(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Kind != runner.PendingComment || !strings.HasPrefix(got[0].Body, "**Refined** — agent:refiner-1: meets") {
 		t.Fatalf("pending = %+v, want the refined comment", got)
+	}
+}
+
+func TestAPendingReviewIsPublishedOnThePullRequestOnceTheHostAnswers(t *testing.T) {
+	f := newPending(t)
+	s, err := store.Open(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	host := vcs.NewClient(f.gh.URL, vcs.StaticToken(f.gh.Token)).WithBackoff([]time.Duration{})
+	pr, err := host.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: f.ref.String(), Head: "istari/1/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := runner.NewPendingWrites(s, runner.PendingOptions{Tracker: f.adapter, Reviews: host, Clock: func() time.Time { return f.now },
+		Logf: func(format string, args ...any) { f.logs = append(f.logs, fmt.Sprintf(format, args...)) }})
+	review := vcs.Review{Standards: vcs.Axis{Summary: "0 findings"}, Spec: vcs.Axis{Summary: "1 finding", Findings: []string{"cache.go:3: no TTL"}}}
+	if err := p.Add(ctx, runner.PendingWrite{Kind: runner.PendingReview, Ticket: f.ref.String(), Repo: githubtest.Repo, Number: pr.Number, Review: &review}); err != nil {
+		t.Fatal(err)
+	}
+	f.gh.FailNext(1)
+	if err := p.Replay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.logs) != 1 || !strings.Contains(f.logs[0], "review on "+f.ref.String()) {
+		t.Fatalf("log = %q, want the review named", f.logs)
+	}
+	f.now = f.now.Add(time.Minute)
+	if err := p.Replay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := f.gh.Issue(pr.Number).Reviews
+	if len(got) != 1 || !strings.Contains(got[0].Body, "cache.go:3: no TTL") {
+		t.Fatalf("reviews = %+v, want the pending review once", got)
 	}
 }
 

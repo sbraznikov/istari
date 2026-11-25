@@ -10,12 +10,14 @@ import (
 
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // The kinds of pending write.
 const (
 	PendingComment = "comment" // a comment on the ticket, such as a journal entry
 	PendingSize    = "size"    // the ticket's size label
+	PendingReview  = "review"  // a review on the ticket's pull request
 )
 
 // pendingKind is the projection kind of a pending write.
@@ -30,7 +32,10 @@ type PendingWrite struct {
 	Ticket    string    `json:"ticket"`
 	Body      string    `json:"body,omitempty"` // a comment's text
 	Size      string    `json:"size,omitempty"`
-	Added     time.Time `json:"added"`
+	Repo      string      `json:"repo,omitempty"`   // a review: the pull request's repository
+	Number    int         `json:"number,omitempty"` // a review: the pull request
+	Review    *vcs.Review `json:"review,omitempty"`
+	Added    time.Time `json:"added"`
 	Next      time.Time `json:"next"` // not tried again before then
 	Tries     int       `json:"tries,omitempty"`
 	Delivered bool      `json:"delivered,omitempty"`
@@ -47,9 +52,15 @@ type PendingTracker interface {
 	SetSize(ctx context.Context, ref tickets.Ref, size string) error
 }
 
+// ReviewPublisher is the code host a pending review is published on.
+type ReviewPublisher interface {
+	PublishReview(ctx context.Context, repo string, n int, r vcs.Review) error
+}
+
 // PendingOptions configures NewPendingWrites.
 type PendingOptions struct {
 	Tracker PendingTracker
+	Reviews ReviewPublisher // nil: no code host
 	Clock   func() time.Time
 	Logf    func(format string, args ...any) // default log.Printf
 }
@@ -147,6 +158,11 @@ func (p *PendingWrites) deliver(ctx context.Context, w PendingWrite) error {
 		_, err = p.opts.Tracker.Comment(ctx, ref, w.Body)
 	case PendingSize:
 		err = p.opts.Tracker.SetSize(ctx, ref, w.Size)
+	case PendingReview:
+		if p.opts.Reviews == nil || w.Review == nil {
+			return fmt.Errorf("no code host to publish the review on")
+		}
+		err = p.opts.Reviews.PublishReview(ctx, w.Repo, w.Number, *w.Review)
 	default:
 		err = fmt.Errorf("unknown kind %q", w.Kind)
 	}

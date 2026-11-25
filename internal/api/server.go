@@ -120,9 +120,6 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
-	if pt, ok := opts.Tracker.(runner.PendingTracker); ok {
-		srv.pending = runner.NewPendingWrites(ns, runner.PendingOptions{Tracker: pt, Clock: opts.Clock})
-	}
 	if len(opts.Repos) > 0 {
 		srv.firstRepo = opts.Repos[0].Repo
 	}
@@ -162,6 +159,13 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	if opts.VCS != nil {
 		srv.vcs = opts.VCS
 		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock)
+	}
+	if pt, ok := opts.Tracker.(runner.PendingTracker); ok {
+		po := runner.PendingOptions{Tracker: pt, Clock: opts.Clock}
+		if opts.VCS != nil {
+			po.Reviews = opts.VCS
+		}
+		srv.pending = runner.NewPendingWrites(ns, po)
 	}
 	var needsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
 	if opts.Tracker != nil && opts.Standards != nil {

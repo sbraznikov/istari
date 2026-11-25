@@ -151,6 +151,46 @@ func TestAPlanWhoseJournalEntryOutlastsTheRetriesCostsNoAttempt(t *testing.T) {
 	}
 }
 
+// outageReviewer submits its report once the test has started the outage.
+const outageReviewer = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = reviewer ]; then
+  while [ ! -e "$log.go" ]; do sleep 0.1; done
+  "$istari" review submit --file - >> "$log" 2>&1 <<'REPORT'
+standards: 0 findings
+spec: 1 finding, a burst is not refused
+findings:
+  - {axis: spec, kind: missing, file: feature.txt, line: 1, source: ticket, quote: A burst is refused., text: nothing refuses a burst}
+REPORT
+  "$istari" complete "reviewed" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAReviewTheCodeHostCannotTakeIsPublishedOnceItAnswers(t *testing.T) {
+	t.Parallel()
+	r := newReviewed(t, outageReviewer)
+	r.gh.FailReviews(4, http.StatusInternalServerError) // the call and its three retries
+	if err := os.WriteFile(r.log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runs := endedReviews(t, r.d, r.log, 1)
+	out, _ := os.ReadFile(r.log)
+	if runs[0].Reason != "completed: reviewed" {
+		t.Fatalf("the reviewer run ended %q, want completed: its report was recorded\nagent log:\n%s", runs[0].Reason, out)
+	}
+	if got := len(r.gh.Issue(r.pr).Reviews); got != 0 {
+		t.Fatalf("%d reviews on the pull request during the outage", got)
+	}
+	r.d.mustCLI(t, nil, "sync")
+	reviews := r.gh.Issue(r.pr).Reviews
+	if len(reviews) != 1 || !strings.Contains(reviews[0].Body, "nothing refuses a burst") {
+		t.Fatalf("reviews = %+v, want the report published once the host answers", reviews)
+	}
+}
+
 func TestARefusalOfTheTrackerStillRefusesTheRefineResult(t *testing.T) {
 	t.Parallel()
 	d, _, _, log := refineDuringOutage(t, 1, http.StatusUnprocessableEntity)
