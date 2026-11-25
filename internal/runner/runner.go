@@ -392,6 +392,11 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
 	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	if result, ok := env["ISTARI_RESULT"]; ok {
+		// "//" starts an absolute path in a rule; Edit's rule covers every
+		// file tool, Write's the tool by name.
+		spec.AllowedTools = append(spec.AllowedTools, "Write(/"+result+")", "Edit(/"+result+")")
+	}
 	if slot.Role == "implementer" {
 		// The implementer may run the repository's checks itself (spec 7.3):
 		// one test while it writes it, not only a whole checkpoint.
