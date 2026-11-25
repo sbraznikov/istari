@@ -238,13 +238,13 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 		if err != nil {
 			return err
 		}
-		onHold, err := t.heldTickets(ctx)
+		withheld, err := t.withheldTickets(ctx)
 		if err != nil {
 			return err
 		}
 		var ready []Task
 		for _, task := range all {
-			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) && !onHold[task.Ticket] {
+			if task.State == TaskReady && (role == "" || task.Role == role) && (projects == nil || slices.Contains(projects, task.Project)) && !withheld[task.Ticket] {
 				ready = append(ready, task)
 			}
 		}
@@ -279,24 +279,26 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 	return lease, err
 }
 
-// heldTickets returns the tickets on hold: their tasks are not handed out
-// (spec section 7.2: a run starts only when there is no hold on the ticket).
-func (t *Tasks) heldTickets(ctx context.Context) (map[string]bool, error) {
+// withheldTickets returns the tickets whose tasks are not handed out: those
+// on hold (spec section 7.2: a run starts only when there is no hold on the
+// ticket) and the finished ones (spec 4.2), whose tasks a store from before
+// they were canceled with the ticket may still have open.
+func (t *Tasks) withheldTickets(ctx context.Context) (map[string]bool, error) {
 	recs, err := t.store.List(ctx, ticketKind)
 	if err != nil {
 		return nil, err
 	}
-	held := map[string]bool{}
+	withheld := map[string]bool{}
 	for _, rec := range recs {
 		ticket, err := decodeTicket(rec)
 		if err != nil {
 			return nil, err
 		}
-		if ticket.Hold != "" {
-			held[ticket.Ref] = true
+		if ticket.Hold != "" || ticket.State.Finished() {
+			withheld[ticket.Ref] = true
 		}
 	}
-	return held, nil
+	return withheld, nil
 }
 
 // priorities returns the priority a task is handed out at: its ticket's, or
@@ -325,7 +327,7 @@ func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, 
 		}
 		seen[ref] = true
 		for _, other := range tickets {
-			if other.State == TicketDone || other.State == TicketCanceled || seen[other.Ref] || !slices.Contains(other.Needs, ref) {
+			if other.State.Finished() || seen[other.Ref] || !slices.Contains(other.Needs, ref) {
 				continue
 			}
 			p = min(p, ofTicket(other.Ref, seen))
@@ -375,6 +377,19 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 		return Lease{}, errorf(CodeTaskClaimed, "task %s is claimed by %s", task.ID, task.Owner)
 	default:
 		return Lease{}, errorf(CodeInvalidState, "task %s is %s, not ready", task.ID, task.State)
+	}
+	// A store from before a finished ticket canceled its tasks may still
+	// have one ready (spec 4.2).
+	if rec, err := t.store.Get(ctx, ticketKind, task.Ticket); err == nil {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return Lease{}, err
+		}
+		if ticket.State.Finished() {
+			return Lease{}, errorf(CodeInvalidState, "task %s belongs to ticket %s, which is %s", task.ID, task.Ticket, ticket.State)
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return Lease{}, err
 	}
 	admitted, err := t.admit(ctx, task)
 	if err != nil {
@@ -520,15 +535,86 @@ func (t *Tasks) Revoke(ctx context.Context, actor, id string) error {
 // Cancel cancels a task from any open state.
 func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
 	return t.byActor(ctx, actor, id, "task.canceled", func(task *Task) (map[string]any, error) {
-		switch task.State {
-		case TaskWaiting, TaskReady, TaskClaimed, TaskBlocked:
-		default:
+		if !task.open() {
 			return nil, errorf(CodeInvalidState, "task %s is %s and cannot be canceled", id, task.State)
 		}
 		task.State = TaskCanceled
 		task.release()
 		return nil, nil
 	})
+}
+
+// CancelOfFinished cancels every open task of a finished ticket, one
+// task.canceled event each, and returns their ids. It repairs a store from
+// before a finished ticket canceled its tasks (spec 4.2); the daemon calls it
+// once at start. A store without such tasks is left as it is.
+func (t *Tasks) CancelOfFinished(ctx context.Context, actor string) ([]string, error) {
+	recs, err := t.store.List(ctx, ticketKind)
+	if err != nil {
+		return nil, err
+	}
+	finished := map[string]bool{}
+	for _, rec := range recs {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return nil, err
+		}
+		finished[ticket.Ref] = ticket.State.Finished()
+	}
+	all, err := t.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var canceled []string
+	for _, task := range all {
+		if !finished[task.Ticket] || !task.open() {
+			continue
+		}
+		err := t.Cancel(ctx, actor, task.ID)
+		if isCode(err, CodeInvalidState) {
+			continue // it finished meanwhile
+		}
+		if err != nil {
+			return canceled, err
+		}
+		canceled = append(canceled, task.ID)
+	}
+	return canceled, nil
+}
+
+// open reports whether the task is not finished: it can still be canceled.
+func (task Task) open() bool {
+	switch task.State {
+	case TaskWaiting, TaskReady, TaskClaimed, TaskBlocked:
+		return true
+	}
+	return false
+}
+
+// cancelTasksOf returns the changes that cancel every open task of a ticket,
+// each conditional on the version it was read at, and their ids. A claimed
+// task loses its lease.
+func cancelTasksOf(ctx context.Context, s store.Store, ticket string) ([]string, []store.Change, error) {
+	recs, err := s.List(ctx, taskKind)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ids []string
+	var changes []store.Change
+	for _, rec := range recs {
+		task, err := decodeTask(rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		if task.Ticket != ticket || !task.open() {
+			continue
+		}
+		task.State = TaskCanceled
+		task.release()
+		ids = append(ids, task.ID)
+		changes = append(changes, mustChange(task))
+	}
+	return ids, changes, nil
 }
 
 // ExpireLeases returns every claimed task whose lease deadline has passed by
