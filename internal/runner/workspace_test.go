@@ -495,12 +495,10 @@ func atOnce(calls []func() error) []error {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, call := range calls {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			errs[i] = call()
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -534,7 +532,7 @@ func TestTenRunsOfOneRepositoryStartingAtOnceAllMergeTheMainBranch(t *testing.T)
 		tks, dirs = append(tks, tk), append(dirs, w.Dir)
 	}
 	f.moveMain(t, map[string]string{"other.go": "package other\n"})
-	f.moveBranches(t, 200)
+	f.moveBranches(t, 1000)
 	for i, err := range f.mergeMainAtOnce(tks) {
 		if err != nil {
 			t.Fatalf("MergeMain of %s: %v", tks[i].Ref, err)

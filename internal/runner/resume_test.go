@@ -164,23 +164,18 @@ func TestWhenTheRemoteCannotBeReachedTheJournalSaysMainWasNotMergedAndWhy(t *tes
 	}
 	gitIn(t, filepath.Join(f.data, "repos", "acme", "web.git"), "remote", "set-url", "origin", filepath.Join(f.root, "nowhere.git"))
 	f.start(t)
+	f.waitEvent(t, journal.EventPrefix+string(journal.Note))
 	ref, _ := tickets.ParseRef(tk.Ref)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range entries {
-			if e.Kind == journal.Note && e.ID == task.ID && strings.Contains(e.Text, "main branch was not merged") && strings.Contains(e.Text, "nowhere.git") {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("journal = %+v; want a note that the main branch was not merged, and why", entries)
-		}
-		time.Sleep(20 * time.Millisecond)
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, e := range entries {
+		if e.Kind == journal.Note && e.ID == task.ID && strings.Contains(e.Text, "main branch was not merged") && strings.Contains(e.Text, "nowhere.git") {
+			return
+		}
+	}
+	t.Fatalf("journal = %+v; want a note that the main branch was not merged, and why", entries)
 }
 
 // failFirstFetch makes the remote refuse the clone's next fetch, and only

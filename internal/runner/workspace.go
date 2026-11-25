@@ -72,8 +72,13 @@ type Workspaces struct {
 	// it is checked again at most once a minute, as each check fetches.
 	checked map[string]time.Time
 
-	fetchMu  sync.Mutex        // guards fetching, not held while git runs
-	fetching map[string]*fetch // the running fetch of each clone, by its dir
+	fetches fetches
+}
+
+// fetches are the git fetches running, one per clone at most.
+type fetches struct {
+	mu      sync.Mutex        // serializes changes of running; not held while git runs
+	running map[string]*fetch // by the clone's git dir
 }
 
 // fetch is one git fetch of a clone; done is closed when err is set.
@@ -87,7 +92,7 @@ func NewWorkspaces(s store.Store, opts WorkspaceOptions) *Workspaces {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}, fetching: map[string]*fetch{}}
+	return &Workspaces{store: s, opts: opts, checked: map[string]time.Time{}, fetches: fetches{running: map[string]*fetch{}}}
 }
 
 // Ensure returns the ticket's worktree, creating it when it does not exist:
@@ -225,7 +230,7 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 		reason, err = w.unsaved(ctx, ws.Dir, "HEAD")
 	case hasRef(ctx, clone, "refs/heads/"+ws.Branch):
 		// The directory is gone; the local branch may hold the only copy.
-		reason, err = w.unsaved(ctx, clone,"refs/heads/"+ws.Branch)
+		reason, err = w.unsaved(ctx, clone, "refs/heads/"+ws.Branch)
 	}
 	if err != nil {
 		return Workspace{}, err
@@ -649,9 +654,10 @@ func (w *Workspaces) fetch(ctx context.Context, dir string) error {
 	if real, err := filepath.EvalSymlinks(key); err == nil {
 		key = real
 	}
-	w.fetchMu.Lock()
-	if f, ok := w.fetching[key]; ok {
-		w.fetchMu.Unlock()
+	fe := &w.fetches
+	fe.mu.Lock()
+	if f, ok := fe.running[key]; ok {
+		fe.mu.Unlock()
 		select {
 		case <-f.done:
 			return f.err
@@ -660,12 +666,12 @@ func (w *Workspaces) fetch(ctx context.Context, dir string) error {
 		}
 	}
 	f := &fetch{done: make(chan struct{})}
-	w.fetching[key] = f
-	w.fetchMu.Unlock()
+	fe.running[key] = f
+	fe.mu.Unlock()
 	_, f.err = gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches)
-	w.fetchMu.Lock()
-	delete(w.fetching, key)
-	w.fetchMu.Unlock()
+	fe.mu.Lock()
+	delete(fe.running, key)
+	fe.mu.Unlock()
 	close(f.done)
 	return f.err
 }
