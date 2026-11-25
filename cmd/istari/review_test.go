@@ -228,6 +228,11 @@ needs = ["implement"]
 // earlyReviewPipeline, whose reviewer submits report.
 func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
+	// The CLI talks to this daemon as a human, even when the tests run
+	// inside an agent's run.
+	for _, v := range []string{"ISTARI_SOCKET", "ISTARI_TOKEN", "ISTARI_ACTOR", "ISTARI_WORKTREE"} {
+		t.Setenv(v, "")
+	}
 	server := gitServer(t)
 	seed := filepath.Join(server, "seed")
 	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {
@@ -242,6 +247,7 @@ func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server,
 
 	gh = githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
+	gh.SetFile(".istari/pipeline.toml", earlyReviewPipeline) // the stages are read from the repository's main branch
 	ticket = gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
 	dataDir := newDataDir(t)
 	log = filepath.Join(t.TempDir(), "agent.log")
