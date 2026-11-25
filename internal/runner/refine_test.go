@@ -69,12 +69,14 @@ func TestAMalformedRefinerResultIsRejected(t *testing.T) {
 }
 
 func TestARefinerResultWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	t.Parallel()
 	data := "verdict: meets\nsize: S\nsize_reason: one file: the limiter\n"
 	_, err := runner.ParseRefine([]byte(data))
 	refusesUnquotedColon(t, err, 3)
 }
 
 func TestARefinerQuestionWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	t.Parallel()
 	data := "verdict: needs_input\nsize: S\nquestions:\n  - Which limit: per user or per key?\n"
 	_, err := runner.ParseRefine([]byte(data))
 	refusesUnquotedColon(t, err, 4)

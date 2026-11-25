@@ -54,12 +54,15 @@ func TestNoRunStartsWhenTheTicketsBudgetIsSpent(t *testing.T) {
 }
 
 func TestATaskBlockedForBudgetLeavesItsTicketHeld(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
 	tk, task := f.readyTask(t, 4)
 	sized(t, f, tk.Ref, "XS")
 	f.start(t)
 	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
 	f.waitTask(t, task.ID, core.TaskBlocked)
+	// The hold follows the block; under parallel tests it can land later.
+	f.waitEvent(t, core.EventTicketHoldSet)
 	held, err := f.tickets.Get(ctx, tk.Ref)
 	if err != nil {
 		t.Fatal(err)
@@ -176,6 +179,7 @@ func implement(t *testing.T, f *runFixture, ref string) core.Task {
 }
 
 func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	parent, task := f.readyTask(t, 50)
 	sized(t, f, parent.Ref, "M")
@@ -192,6 +196,7 @@ func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
 }
 
 func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	parent, task := f.readyTask(t, 60)
 	sized(t, f, parent.Ref, "M")

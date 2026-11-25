@@ -228,6 +228,7 @@ func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchem
 }
 
 func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Role = "reviewer"
 	in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go"}}

@@ -179,12 +179,14 @@ func refusesUnquotedColon(t *testing.T, err error, line int) {
 }
 
 func TestAReportWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	t.Parallel()
 	report := "standards: 1 finding; most serious: duplicated code\nspec: 0 findings\n"
 	_, err := runner.ParseReviewResult([]byte(report))
 	refusesUnquotedColon(t, err, 1)
 }
 
 func TestAnUnquotedColonOnALaterLineIsNamedAfterACommentWithAColon(t *testing.T) {
+	t.Parallel()
 	report := "standards: \"0 findings\"\n" +
 		"spec: \"1 finding\"\n" +
 		"findings:\n" +
