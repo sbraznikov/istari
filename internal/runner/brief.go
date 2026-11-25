@@ -36,6 +36,9 @@ type BriefInput struct {
 	Conflicts []string
 	// Review is what code prepared for the reviewer (spec section 7.7).
 	Review *ReviewInput
+	// AllowedTools are the tools the harness of the run allows (spec 7.3);
+	// the brief lists their shell commands.
+	AllowedTools []string
 }
 
 // Brief assembles the first message of a run from a template, by code alone
@@ -58,20 +61,21 @@ func Brief(in BriefInput) string {
 			strings.Join(in.Conflicts, "\n- ") + "\n\nResolve them, finish the merge with a commit, and make a checkpoint before anything else.\n\n")
 	}
 	head.WriteString("## Next step\n\n" + next + "\n\n")
+	head.WriteString(commandsSection(in.AllowedTools))
 
 	ticket := untrusted("ticket "+in.Ref, "# "+in.Title+"\n\n"+strings.TrimSpace(journal.StripWorkState(in.Body)))
 	if in.Role == "implementer" && in.SelfReview {
 		head.WriteString("## Before istari pr open\n\nReview your own work along two axes, as the reviewer will: Standards (the repository's documented standards and the baseline of code smells) and Spec (what the ticket asked for: missing, extra, wrong). Fix what you find, make a checkpoint, then open the pull request.\n\n")
 	}
 	if in.Role == "planner" {
-		head.WriteString("## Your result\n\nSubmit the plan with `istari plan submit --file - <<'EOF'` … `EOF` (or `--file plan.yaml`) before `istari complete`:\n\n" +
+		head.WriteString("## Your result\n\n" + submitText("istari plan submit", "plan") + "\n\n" +
 			"```yaml\nsummary: the approach in a few lines\nslices: [one test and the minimum code each, in order]\n" +
 			"seams: [{name: the public boundary, catches: what its tests catch, misses: what they miss}]\n" +
 			"zone: [path/that/exists.go, path/to/create.go (new)]\nsize: XS | S | M | L | XL  # only to revise it\nsize_reason: why\n" +
 			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run.\n\n")
 	}
 	if in.Role == "refiner" {
-		pr := "## Your result\n\nSubmit it with `istari refine submit --file - <<'EOF'` … `EOF` (or `--file result.yaml`) before `istari complete`:\n\n" +
+		pr := "## Your result\n\n" + submitText("istari refine submit", "result") + "\n\n" +
 			"```yaml\nverdict: meets | rewrite | needs_input | duplicate\nsize: XS | S | M | L | XL\nsize_reason: why, when it differs from the author's\n" +
 			"deviations: [what falls short]\nassumptions: [what you inferred]\nbody: the rewritten text, ending with the original kept verbatim in <details><summary>Original text</summary> … </details>  # rewrite\n" +
 			"changes: [what you changed]  # rewrite\nquestions: [for the author]  # needs_input\ncard: {problem, state, options: [{letter, gist, consequences, size, risks, changes}], recommendation, recommended, status: proposed}  # duplicate\n```\n\n" +
@@ -196,6 +200,23 @@ func workState(w journal.WorkState) string {
 		line("Open questions", strings.Join(w.OpenQuestions, "; "))
 }
 
+// commandsSection lists the shell commands the run's tools allow and how a
+// denied command behaves (spec 7.3). Without shell rules it is empty.
+func commandsSection(tools []string) string {
+	var cmds []string
+	for _, t := range tools {
+		if c, ok := strings.CutPrefix(t, "Bash("); ok && strings.HasSuffix(c, ")") {
+			cmds = append(cmds, strings.TrimSuffix(c, ")"))
+		}
+	}
+	if len(cmds) == 0 {
+		return ""
+	}
+	return "## Commands you may run\n\nThe shell runs only these commands; any other is denied:\n\n- `" + strings.Join(cmds, "`\n- `") + "`\n\n" +
+		"Run each `istari` command on its own, not chained with other commands by `;`, `&&` or `|`: a chain is denied whole when one of its parts is. " +
+		"A denied command denies only that command: the others, and the `istari` commands that submit your result and `istari complete` above all, still work.\n\n"
+}
+
 var closing = regexp.MustCompile(`(?i)</untrusted`)
 
 // untrusted delimits text from people and tools. Its own closing tags are
@@ -226,7 +247,7 @@ func reviewSection(r *ReviewInput) string {
 			b.WriteString("`" + strings.Join(r.Standards, "`, `") + "`.\n\n")
 		}
 	}
-	b.WriteString("## Your result\n\nSubmit the report with `istari review submit --file - <<'EOF'` … `EOF` before `istari complete`:\n\n" +
+	b.WriteString("## Your result\n\n" + submitText("istari review submit", "report") + "\n\n" +
 		"```yaml\nstandards: \"1 finding; most serious: duplicated code\"  # one quoted line: the number of findings and the most serious one\n" +
 		"spec: \"0 findings\"  # the same for the spec; quote every value that contains \": \"\n" +
 		"findings:\n  - axis: standards | spec\n    kind: standard | smell  # standards; spec: missing | partial | wrong | extra\n" +
@@ -235,4 +256,12 @@ func reviewSection(r *ReviewInput) string {
 		"    quote: verbatim from the source  # a smell's starts with its name\n    text: the finding\n```\n\n" +
 		"Code drops a finding whose place is not in the diff or whose quote is not in its source, and computes the verdict: any finding it accepts returns the ticket for rework.\n\n")
 	return b.String()
+}
+
+// submitText tells a role how to submit its result before istari complete
+// (spec section 7.6): through the result file, whatever its size, or through
+// a heredoc when it is short, since the harness refuses a long command.
+func submitText(command, what string) string {
+	return "Write the " + what + " to your result file, `$ISTARI_RESULT` (the one file you may write), then run `" + command + "` without `--file`, before `istari complete`. " +
+		"A short " + what + ", well under 9,000 characters, may instead go through a heredoc: `" + command + " --file - <<'EOF'` … `EOF`; a longer command is refused. The " + what + ":"
 }

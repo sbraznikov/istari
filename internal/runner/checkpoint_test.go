@@ -70,6 +70,7 @@ func (f *cpFixture) checkpoint(t *testing.T, message string) *journal.Checkpoint
 }
 
 func TestACheckpointCommitsLeftoverWorkWithTheTrailerAndPushesIt(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
 	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt\n")
@@ -95,6 +96,7 @@ func TestACheckpointCommitsLeftoverWorkWithTheTrailerAndPushesIt(t *testing.T) {
 }
 
 func TestFailingTestsMakeTheCheckpointRedWhateverTheAgentSays(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt || { echo MISSING FEATURE; exit 1; }\n")
 	c := f.checkpoint(t, "All tests are green")
@@ -107,6 +109,7 @@ func TestFailingTestsMakeTheCheckpointRedWhateverTheAgentSays(t *testing.T) {
 }
 
 func TestANewTestThatPassesOnThePreviousCodeDoesNotCount(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "always.sh"), "true\n")
 	c := f.checkpoint(t, "Added a test")
@@ -116,6 +119,7 @@ func TestANewTestThatPassesOnThePreviousCodeDoesNotCount(t *testing.T) {
 }
 
 func TestASliceWithoutATestChangeIsFlagged(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
 	if c := f.checkpoint(t, "Changed code only"); !strings.Contains(strings.Join(c.Notes, " "), "no test") {
@@ -124,6 +128,7 @@ func TestASliceWithoutATestChangeIsFlagged(t *testing.T) {
 }
 
 func TestCheckCommandsComeOnlyFromTheMainBranch(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt\n")
 	// The ticket's branch makes its tests always pass: that does not count.
@@ -134,6 +139,7 @@ func TestCheckCommandsComeOnlyFromTheMainBranch(t *testing.T) {
 }
 
 func TestAfterACrashOnlyWorkAfterTheLastCheckpointIsLost(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
 	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt\n")
@@ -155,6 +161,7 @@ func TestAfterACrashOnlyWorkAfterTheLastCheckpointIsLost(t *testing.T) {
 }
 
 func TestACheckpointWithNothingNewIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
 	f.checkpoint(t, "First")
@@ -164,6 +171,7 @@ func TestACheckpointWithNothingNewIsRefused(t *testing.T) {
 }
 
 func TestTestDataAloneIsNoTestChange(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "testdata", "input.txt"), "data\n")
 	if c := f.checkpoint(t, "Fixtures"); !strings.Contains(strings.Join(c.Notes, " "), "no test change") {
@@ -172,6 +180,7 @@ func TestTestDataAloneIsNoTestChange(t *testing.T) {
 }
 
 func TestChecksRunWithoutTheDaemonsSecrets(t *testing.T) {
+	// Not parallel: sets the process environment's GITHUB_TOKEN and ISTARI_TOKEN.
 	t.Setenv("GITHUB_TOKEN", "daemon-secret")
 	t.Setenv("ISTARI_TOKEN", "run-secret")
 	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"env > env.out; test -z \\\"$GITHUB_TOKEN$ISTARI_TOKEN\\\"\"\ntest = \"true\"\n")
@@ -183,6 +192,7 @@ func TestChecksRunWithoutTheDaemonsSecrets(t *testing.T) {
 }
 
 func TestARedPreviousCheckpointCannotJudgeRedFirst(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "broken.sh"), "exit 1\n")
 	f.checkpoint(t, "Broken on purpose") // red
@@ -235,6 +245,7 @@ func (f *cpFixture) slice(t *testing.T, name string) {
 }
 
 func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
+	t.Parallel()
 	f, runs := newLoggedCheckpoints(t)
 	f.slice(t, "first")
 	if c := f.checkpoint(t, "First slice"); c.Checks["test"] != "green" || c.Checks["verify_red"] != "green" {
@@ -252,6 +263,7 @@ func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
 }
 
 func TestTheVerifyRedWorktreeIsRemovedWithTheTicketsWorktree(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	f.slice(t, "first")
 	f.checkpoint(t, "First slice")
@@ -284,6 +296,7 @@ func TestTheVerifyRedWorktreeIsRemovedWithTheTicketsWorktree(t *testing.T) {
 }
 
 func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
+	t.Parallel()
 	f, runs := newLoggedCheckpoints(t)
 	// An ignored file is left behind too: only a full clean removes it.
 	write(t, filepath.Join(f.ws.Dir, ".gitignore"), "leftover\n")
@@ -308,6 +321,7 @@ func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 }
 
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
+	t.Parallel()
 	f := newCheckpoints(t)
 	f.slice(t, "first")
 	c := f.checkpoint(t, "First slice")

@@ -17,6 +17,7 @@ import (
 const description = "## Summary\n\nA cache.\n\n## Evidence\n\n- Before: slow. After: fast.\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** cache\n"
 
 func TestADescriptionNeedsItsSectionsAndADoor(t *testing.T) {
+	t.Parallel()
 	if err := runner.CheckDescription(description); err != nil {
 		t.Fatalf("a full description: %v", err)
 	}
@@ -46,6 +47,7 @@ func prFixture(t *testing.T, pipelineToml string) (*cpFixture, *githubtest.Serve
 }
 
 func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"echo FULL SUITE BROKE; exit 1\"\n")
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
 		t.Fatalf("pr open with red full checks: %v", err)
@@ -56,6 +58,7 @@ func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
 }
 
 func TestPrOpenPushesAndOpensADraftLinkedToTheTicket(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
 	write(t, filepath.Join(f.ws.Dir, "cache.go"), "package cache\n")
 	gitIn(t, f.ws.Dir, "add", ".")
@@ -74,6 +77,7 @@ func TestPrOpenPushesAndOpensADraftLinkedToTheTicket(t *testing.T) {
 }
 
 func TestPrOpenIsRefusedWhileTheWorktreeHasUncommittedChanges(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
 	write(t, filepath.Join(f.ws.Dir, "cache.go"), "package cache\n")
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "istari checkpoint") {
@@ -85,6 +89,7 @@ func TestPrOpenIsRefusedWhileTheWorktreeHasUncommittedChanges(t *testing.T) {
 }
 
 func TestPrOpenJournalsTheFullChecksItRan(t *testing.T) {
+	t.Parallel()
 	f, _, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"echo FULL SUITE BROKE; exit 1\"\n")
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil {
 		t.Fatal("pr open with red full checks was accepted")
@@ -96,6 +101,7 @@ func TestPrOpenJournalsTheFullChecksItRan(t *testing.T) {
 }
 
 func TestPrOpenWithoutAnyCheckSaysSoInTheJournal(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\n")
 	pr, err := prs.Open(ctx, f.run, "Add the cache", description)
 	if err != nil {
@@ -122,6 +128,7 @@ func prJournal(t *testing.T, f *cpFixture) []journal.Entry {
 }
 
 func TestPrOpenInALaterRoundUpdatesTheTicketsPullRequest(t *testing.T) {
+	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
 	first, err := prs.Open(ctx, f.run, "Add the cache", description)
 	if err != nil {
