@@ -185,7 +185,7 @@ func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run R
 	if jerr := c.journal.Append(ctx, ref, note); jerr != nil {
 		return journal.Entry{}, jerr
 	}
-	return journal.Entry{}, fmt.Errorf("checkpoint abandoned after %s: %w", limit, err)
+	return journal.Entry{}, fmt.Errorf("checkpoint: abandoned at its limit of %s: %v", limit, err)
 }
 
 // push pushes a worktree's branch to the ticket's remote branch.
