@@ -118,6 +118,73 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	}
 }
 
+// correctingReviewer submits a report that is no YAML, then a corrected one.
+const correctingReviewer = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = reviewer ]; then
+  printf 'standards: [unclosed\n' | "$istari" review submit --file - >> "$log" 2>&1
+  "$istari" review submit --file - >> "$log" 2>&1 <<'REPORT'
+standards: 0 findings
+spec: 1 finding, a burst is not refused
+findings:
+  - {axis: spec, kind: missing, file: feature.txt, line: 1, source: ticket, quote: A burst is refused., text: nothing refuses a burst}
+REPORT
+  "$istari" complete "reviewed" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAReportCorrectedInTheSameRunCompletesTheReview(t *testing.T) {
+	r := newReviewed(t, correctingReviewer)
+	var reviewers []struct{ Role, State, Reason string }
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		var runs []struct{ Role, State, Reason string }
+		r.d.mustCLI(t, &runs, "run", "list")
+		reviewers = reviewers[:0]
+		for _, run := range runs {
+			if run.Role == "reviewer" {
+				reviewers = append(reviewers, run)
+			}
+		}
+		if len(reviewers) > 0 && reviewers[0].State == "ended" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no reviewer run ended after a minute: %+v\n%s", runs, r.d.stderr)
+		}
+	}
+	out, _ := os.ReadFile(r.log)
+	if !strings.Contains(string(out), "yaml") {
+		t.Fatalf("the first report was not refused:\n%s", out)
+	}
+	if reviewers[0].Reason != "completed: reviewed" {
+		t.Fatalf("the reviewer run ended %q, want it completed: its refused report was corrected\nagent log:\n%s", reviewers[0].Reason, out)
+	}
+	time.Sleep(time.Second) // a failed task would start a second reviewer run
+	var runs []struct{ Role string }
+	r.d.mustCLI(t, &runs, "run", "list")
+	n := 0
+	for _, run := range runs {
+		if run.Role == "reviewer" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("reviewer runs = %d, want one: the corrected review is not done again", n)
+	}
+	entries := 0
+	for _, c := range r.gh.Issue(r.ref.Number).Comments {
+		if strings.Contains(c.Body, "**Review**") {
+			entries++
+		}
+	}
+	if entries != 1 || len(r.gh.Issue(r.pr).Reviews) != 1 {
+		t.Fatalf("review entries = %d, pull request reviews = %d, want one of each", entries, len(r.gh.Issue(r.pr).Reviews))
+	}
+}
+
 // silentReviewer completes without a report.
 const silentReviewer = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
