@@ -359,6 +359,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Checkpoint | a meaningful step of work is complete | implementer — `istari checkpoint`: what is done and what is next. The commit, check results and the list of changed files are added by code |
 | Review result | the review stage is complete | reviewer; details stay in the PR |
 | Transition | the state or the hold changed | istari |
+| Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
 
