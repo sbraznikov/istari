@@ -841,7 +841,7 @@ Review rules:
 - The axes are checked in two independent passes with a clean context, so that one does not influence the other.
 - The reports are published separately, under the headings Standards and Spec. Findings are not merged or ranked across axes: the code can pass one axis and fail the other.
 - A documented repository standard is stronger than the baseline set: if the repository allows something, the code smell is not flagged.
-- A code smell is worded as a judgment call ("possibly feature envy"), because it depends on context. What tools already check is not flagged.
+- A code smell is worded as a judgment call ("possibly feature envy"), because it depends on context. What tools already check is not flagged: the reviewer's brief lists the checks of the main branch's `.istari/pipeline.toml` by name and command (section 12).
 - The comparison is made against the base of the ticket branch relative to the main branch.
 - The result is one line per axis: the number of findings and the most serious one on that axis.
 - The report is submitted in structured form (`istari review submit`): each finding has an axis, a file and line, a kind, and a quote from the ticket or the standard.
@@ -898,12 +898,12 @@ The principle: less model, more deterministic code. The model is non-determinist
 | An agent prepares a decision card | — | schema; at least two options; the recommendation refers to an existing option; sizes are from the scale |
 | An agent makes an assumption | — | the assumption counter and the `max_assumptions` limit; assumptions block auto-merge |
 
-**Checks that are run by code, not by the model.** `.istari/pipeline.toml` defines the commands: type check, fast tests, full suite. The agent can run them itself as often as it likes, but only the result of a run performed by code goes into the journal:
+**Checks that are run by code, not by the model.** `.istari/pipeline.toml` defines the commands as named checks (section 12): type check, fast tests, full suite, and any check of the project's own, such as format, lint or dependencies, each with `at` saying when it runs. The agent can run them itself as often as it likes, but only the result of a run performed by code goes into the journal, which lists every check by its name, green or red, and keeps a red one's output:
 
 | Moment | What is run | Consequence of failure |
 |---|---|---|
-| `istari checkpoint` | type check and fast tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
-| `istari pr open` | full suite | the PR is not opened |
+| `istari checkpoint` | every check at `checkpoint`: type check, fast tests and the project's own checks, with `{files}` and `{dirs}` filled with the slice's tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
+| `istari pr open` | every check at `pr`: the full suite and the project's own checks | the PR is not opened |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
 
 The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter.
@@ -1193,7 +1193,14 @@ slack = { work = "#billing-agents", decisions = "#billing-decisions", owner = "@
   link      = "package"               # how it is linked (section 4.4): package | submodule | path | none; none — soft unavailable
 ```
 
-`.istari/pipeline.toml` — in the repository, versioned together with the code:
+`.istari/pipeline.toml` — in the repository, versioned together with the code. Its `[checks]` (section 7.7) are read from the main branch:
+
+- **Named checks.** Each key of `[checks]` other than `test_files` and `verify_red` is a check: a name and a command, run through `sh -c`, so any language and tool works. `typecheck` and `test` run at every checkpoint, `full` before `istari pr open`; a project without `full` gets `test` there. A check of any other name, such as a format, lint or dependency check, runs at every checkpoint and before `istari pr open`, and a red one fails both the same way a red `test` does.
+- **When a check runs.** A check given as a table, `{ run = "…", at = [...] }`, says when it runs: `at` lists `"checkpoint"`, `"pr"` or both. A string is the same as a table without `at`, which keeps the defaults above.
+- **Test files.** `test_files` lists glob patterns of the project's test files, matched against the whole path from the repository root; `**` matches any number of directories, so `"**/*.check.ts"` is every `.check.ts` file. Without `test_files` the usual conventions apply: a name with `_test.`, `test_`, `.test.`, `.spec.` or `_spec.`, or a directory named `test`, `tests`, `__tests__` or `spec`. It decides everything that asks "is this a test?": the slice's change to tests, `verify_red` and the note "no test change in this slice".
+- **The slice's tests.** A command may carry `{files}`, the test files the slice changed, and `{dirs}`, their directories, each as `./<dir>`; both are shell-quoted. At a checkpoint and in `verify_red` they are filled in, so a checkpoint runs the slice's tests, not the whole suite: `go test -short {dirs}`, `pytest -q {files}`. At a checkpoint whose slice has no test change, such a check does not run and the entry says why. Before `istari pr open` such a check does not run either: the whole suite there is `full`. A command without them runs as it is.
+- **Refusal.** A check table with a key other than `run` and `at`, or without `run`, an `at` value other than `checkpoint` and `pr`, or a check that is neither a string nor a table, is refused when the pipeline loads, with the file and the line.
+
 
 ```toml
 [limits]
@@ -1204,10 +1211,13 @@ questions = "decide"                  # or "hold"
 max_assumptions = 3                   # assumptions per ticket; beyond that — a hold
 self_review = true                    # implementer reviews its own work before opening the PR
 
-[checks]                              # run by code, not by an agent
-typecheck = "go vet ./..."
-test      = "go test ./... -short"
-full      = "go test ./..."
+[checks]                              # run by code, not by an agent; each command through sh -c
+typecheck = "go vet ./..."            # at every checkpoint
+test      = "go test -short {dirs}"   # at every checkpoint; {dirs}, {files}: the slice's tests
+full      = "go test ./..."           # before istari pr open: the whole suite
+format    = "test -z \"$(gofmt -l .)\""                   # any other name: at every checkpoint and before istari pr open
+tidy      = { run = "go mod tidy -diff", at = ["pr"] }   # at: "checkpoint", "pr"
+test_files = ["**/*_test.go"]         # which files are tests; absent — the usual conventions
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
 
 [merge]
