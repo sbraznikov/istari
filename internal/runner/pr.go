@@ -217,14 +217,23 @@ const mainSuffix = ".main"
 // commit: a result the journal has for the tip is used again; otherwise the
 // command runs once in a scratch checkout of the tip.
 func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, main, name, cmd string, entries []journal.Entry) (*journal.MainCheck, error) {
+	tip, err := gitOut(ctx, p.cp.ws.clonePath(ws.Repo), "rev-parse", "refs/remotes/origin/"+main)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if cp := entries[i].Checkpoint; cp != nil && cp.Main != nil && cp.Main.Commit == tip[:min(12, len(tip))] && cp.Main.Check == name {
+			return cp.Main, nil
+		}
+	}
 	dir := ws.Dir + mainSuffix
 	remove, err := p.cp.ws.Scratch(ctx, ticket, dir)
 	if err != nil {
 		return nil, err
 	}
 	defer remove()
-	tip, err := gitOut(ctx, dir, "rev-parse", "HEAD")
-	if err != nil {
+	// Scratch fetched again: the result is of the commit it checked out.
+	if tip, err = gitOut(ctx, dir, "rev-parse", "HEAD"); err != nil {
 		return nil, err
 	}
 	m := &journal.MainCheck{Commit: tip[:min(12, len(tip))], Check: name, Result: "green"}

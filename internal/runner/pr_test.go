@@ -118,6 +118,27 @@ func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
 	}
 }
 
+func TestTheFullCheckRunsOnMainOncePerMainCommit(t *testing.T) {
+	t.Parallel()
+	f, _, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+	for _, attempt := range []string{"break it", "try again"} {
+		write(t, filepath.Join(f.ws.Dir, "broken"), attempt+"\n")
+		gitIn(t, f.ws.Dir, "add", ".")
+		gitIn(t, f.ws.Dir, "commit", "-q", "-m", attempt)
+		if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
+			t.Fatalf("%s: pr open: %v", attempt, err)
+		}
+	}
+	all := runs()
+	if got := f.elsewhere(t, all); len(got) != 1 || len(all) != 3 {
+		t.Fatalf("runs = %v; want two on the branch and one on main", all)
+	}
+	entries := prJournal(t, f)
+	if last := entries[len(entries)-1].Checkpoint; last == nil || last.Main == nil || last.Main.Result != "green" {
+		t.Fatalf("the second entry = %+v, want main's result again", last)
+	}
+}
+
 func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
 	t.Parallel()
 	f, gh, prs, _ := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
