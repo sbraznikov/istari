@@ -367,7 +367,7 @@ func (s *Syncer) recoverOne(ctx context.Context, repo SyncRepo, t Ticket, self s
 	}
 	nt := core.NewTicket{Ref: t.Ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
 	if parent := s.parentOf(t, repo); parent != "" && split[parent] {
-		nt.BudgetOf = parent // a child of a split shares its parent's budget (spec 4.5)
+		nt.BudgetOf = parent // a child of a split inherits its parent's admission (spec 4.5)
 	}
 	if _, err := s.tickets.Recover(ctx, "system", nt, t.State.State, t.State.Hold); err != nil {
 		return err

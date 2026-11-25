@@ -168,3 +168,27 @@ func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
 		t.Fatalf("the split child's run is capped at $%v, want its own S budget of $5", c.spec.MaxBudgetUSD)
 	}
 }
+
+func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	parent, task := f.readyTask(t, 60)
+	sized(t, f, parent.Ref, "M")
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // the planner spends $4 on the parent
+	sized(t, f, parent.Ref, "XL")
+	child := split(t, f, parent.Ref, 61, "S")
+	spendAndFinish(t, f, implement(t, f, child.Ref).ID) // the child spends $4 of its $5
+	// The child's implementer files a ticket (istari ticket create).
+	filed, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: "gh:acme/web#62", Project: "web", Title: "Found", BudgetOf: child.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, filed.Ref, "L")
+	f.fire(t, filed.Ref, "accept", "start")
+	implement(t, f, filed.Ref)
+	g := f.session(t)
+	defer g.Stop(0)
+	if g.spec.MaxBudgetUSD != 1 {
+		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
+	}
+}
