@@ -311,6 +311,13 @@ func (s *Server) operations() map[string]operation {
 			}
 			return s.runner.Paused(), nil
 		}),
+		// The GitHub requests of the last hour by kind and the quota left (#208).
+		"github.requests": read(func(context.Context, Empty) (any, error) {
+			if s.github == nil {
+				return nil, nil
+			}
+			return s.github.Stats(), nil
+		}),
 		"run.show": read(func(ctx context.Context, r RunRequest) (any, error) { return s.runs.Get(ctx, r.ID) }),
 		"run.logs": read(func(ctx context.Context, r RunLogsRequest) (any, error) { return s.runLogs(ctx, r) }),
 		"run.stop": write(okAgain, func(ctx context.Context, r RunActRequest) (any, error) {

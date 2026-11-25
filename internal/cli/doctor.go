@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/project"
@@ -128,6 +129,12 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				}
 				checks = append(checks, c)
 			}
+			// The GitHub requests of the last hour and the quota left, as
+			// the running daemon counted them (#208); a low quota warns.
+			var stats *ratelimit.Stats
+			if err := opts.call(cmd, "github.requests", "", api.Empty{}, &stats); err == nil && stats != nil {
+				checks = append(checks, githubCheck(*stats))
+			}
 			rows := make([][]string, len(checks))
 			for i, c := range checks {
 				status := "ok"
@@ -157,6 +164,38 @@ type doctorCheck struct {
 	OK     bool   `json:"ok"`
 	Warn   bool   `json:"warn,omitempty"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// githubKinds is the order doctor lists the kinds of GitHub requests in.
+var githubKinds = []ratelimit.Kind{ratelimit.KindSync, ratelimit.KindPRWatch, ratelimit.KindJournal, ratelimit.KindLabels, ratelimit.KindFiles, ratelimit.KindOther}
+
+// githubCheck is the row of the daemon's GitHub requests: the last hour's by
+// kind, and the quota of GitHub's last answer. Fewer than ratelimit.Low left
+// warns: the sync and the PR watch wait for the reset.
+func githubCheck(s ratelimit.Stats) doctorCheck {
+	total := 0
+	var kinds []string
+	for _, k := range githubKinds {
+		if n := s.Requests[k]; n > 0 {
+			total += n
+			kinds = append(kinds, fmt.Sprintf("%s %d", k, n))
+		}
+	}
+	detail := fmt.Sprintf("last hour %d", total)
+	if len(kinds) > 0 {
+		detail += " (" + strings.Join(kinds, ", ") + ")"
+	}
+	c := doctorCheck{Name: "github requests", OK: true}
+	if !s.Known() {
+		c.Detail = detail + "; quota not known yet"
+		return c
+	}
+	c.Detail = fmt.Sprintf("%s; %d of %d left until %s", detail, s.Remaining, s.Limit, s.Reset.Local().Format("15:04"))
+	if s.Remaining < ratelimit.Low {
+		c.Warn = true
+		c.Detail += "; the sync and the PR watch wait until then"
+	}
+	return c
 }
 
 // pipelineCheck validates .istari/pipeline.toml of the repository of the
