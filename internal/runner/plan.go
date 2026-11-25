@@ -158,8 +158,11 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 
 // withTable is a split child's body with the table of the ticket standard
 // at its end (spec 4.3): its type and size, the parent's priority and
-// repository.
+// repository unless the child names another.
 func withTable(pt tickets.PlanTicket, priority, repo string) string {
+	if pt.Repo != "" {
+		repo = pt.Repo
+	}
 	return strings.TrimRight(pt.Body, "\n") + "\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n" +
 		fmt.Sprintf("| %s | %s | %s | `%s` |\n", pt.Type, pt.Size, priority, repo)
 }

@@ -218,6 +218,17 @@ func TestSplitChildrenOfAP0ParentCarryTheTableAndMeetTheStandard(t *testing.T) {
 	}
 }
 
+func TestASplitChildNamingAnotherRepositoryHasItInItsTable(t *testing.T) {
+	f := newSplit(t)
+	res, err := f.plans.Check(ctx, f.run, splitPlan(tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "feature", Size: "M", Repo: "acme/lib"}), runner.PlanSettings{MaxSize: "L"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if body := res.Split.Tickets[0].Body; !strings.HasSuffix(body, "| feature | M | P2 | `acme/lib` |\n") {
+		t.Fatalf("the child's body:\n%s\nwant acme/lib and the default priority in its table", body)
+	}
+}
+
 func TestASplitMakesAdmittedChildrenAndLeavesTheParentWithoutTasks(t *testing.T) {
 	f := newSplit(t)
 	gh, parent, ref, k, tasks, plans, run := f.gh, f.parent, f.ref, f.tickets, f.tasks, f.plans, f.run
