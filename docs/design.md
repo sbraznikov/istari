@@ -238,6 +238,7 @@ canceled — from any open state
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 
 ### 4.3 Default pipeline
@@ -744,6 +745,14 @@ claude --print "$(cat brief.md)" \
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
+
+**When the harness does not start.** If `Start` returns an error (the program is missing, cannot be executed, or exits before the session begins), no agent has run. The Runner does not fail the task: it waits a few seconds and releases it to `ready` without spending an attempt (section 4.2). Each Runner slot counts its start failures in a row; a successful start resets the count. After three in a row the slot stops claiming tasks for a minute, so it does not hand the same tasks round in a loop, and the daemon log says so with the slot and the error:
+
+```
+runner implementer-2: paused for 1m: the harness did not start: claudecode: start claude: fork/exec /Users/pc/.local/bin/claude: no such file or directory
+```
+
+While a slot is paused, `istari doctor` shows a failing `runner slots` row with the slot, the error and the time it tries again. After the minute the slot claims again; if the harness starts, it works as before.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
 
