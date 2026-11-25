@@ -771,6 +771,15 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	default:
 		target, kind, label, c.what = local, "labeled", "istari:hold:"+tracker.Hold, "the hold label"
 	}
+	if kind == "closed" {
+		merged, err := s.merged(ctx, x.tk.Ref, true)
+		if err != nil {
+			return err
+		}
+		if merged {
+			return s.finishMerged(ctx, x)
+		}
+	}
 	who, err := s.provider.LastActor(ctx, x.t.Ref, kind, label)
 	if err != nil {
 		return err
@@ -824,6 +833,29 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	if errors.As(err, new(*core.Error)) {
 		return s.revert(ctx, x, c, err.Error())
 	}
+	if err != nil {
+		return err
+	}
+	x.report.Transitioned++
+	if err := s.push(ctx, x, next); err != nil {
+		return err
+	}
+	x.report.Pushed++
+	return nil
+}
+
+// merged tells whether the ticket's pull request is merged (SyncOptions.Merged).
+func (s *Syncer) merged(ctx context.Context, ref string, fresh bool) (bool, error) {
+	if s.opts.Merged == nil {
+		return false, nil
+	}
+	return s.opts.Merged(ctx, ref, fresh)
+}
+
+// finishMerged moves a ticket whose pull request a human merged to done
+// (T11, spec 4.8): the issue that merge closed is not a cancel.
+func (s *Syncer) finishMerged(ctx context.Context, x *syncing) error {
+	next, err := s.tickets.Fire(ctx, "system", x.tk.Ref, "merged")
 	if err != nil {
 		return err
 	}

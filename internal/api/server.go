@@ -108,7 +108,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent})
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
@@ -299,6 +299,19 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 		}
 	}
 	return out
+}
+
+// merged tells sync whether a ticket's pull request is merged (spec 4.8):
+// fresh asks GitHub while the PR watch has not seen it closed yet.
+func (s *Server) merged(ctx context.Context, ref string, fresh bool) (bool, error) {
+	switch {
+	case s.watch == nil:
+		return false, nil
+	case fresh:
+		return s.watch.Merged(ctx, ref)
+	default:
+		return s.watch.SeenMerged(ctx, ref)
+	}
 }
 
 // RunVCS polls the tracked pull requests every interval until ctx ends: their

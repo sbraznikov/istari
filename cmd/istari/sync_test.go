@@ -301,3 +301,11 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *tes
 	h.d.mustCLI(t, nil, "sync")
 	h.finished(t)
 }
+
+func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirst(t *testing.T) {
+	h := newHumanMerge(t)
+	h.gh.HumanMerge(h.pr, "alex")
+	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n, before the watch polls again
+	h.d.mustCLI(t, nil, "sync")
+	h.finished(t)
+}
