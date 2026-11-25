@@ -570,3 +570,37 @@ func TestATaskOfAFinishedTicketIsHandedOutToNobody(t *testing.T) {
 		})
 	}
 }
+
+func TestCancelOfFinishedCancelsTheOpenTasksOfFinishedTicketsOnce(t *testing.T) {
+	t.Parallel()
+	for name, triggers := range map[string][]string{"canceled": {"cancel"}, "done": toDone} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tickets := f.staleTask(t, triggers...)
+			if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#2", "web"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_2", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
+				t.Fatal(err)
+			}
+			canceled, err := f.tasks.CancelOfFinished(ctx, "system")
+			if err != nil || len(canceled) != 1 || canceled[0] != "t_1" {
+				t.Fatalf("CancelOfFinished = %v, %v; want [t_1]", canceled, err)
+			}
+			if got := f.state(t, "t_1"); got != core.TaskCanceled {
+				t.Errorf("t_1 is %s, want canceled", got)
+			}
+			if got := f.state(t, "t_2"); got != core.TaskReady {
+				t.Errorf("t_2 of the open ticket is %s, want ready", got)
+			}
+			before := len(f.events(t, store.Filter{}))
+			if canceled, err := f.tasks.CancelOfFinished(ctx, "system"); err != nil || len(canceled) != 0 {
+				t.Fatalf("second CancelOfFinished = %v, %v; want nothing", canceled, err)
+			}
+			if after := len(f.events(t, store.Filter{})); after != before {
+				t.Fatalf("the second call appended %d events", after-before)
+			}
+		})
+	}
+}

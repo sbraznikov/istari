@@ -544,6 +544,44 @@ func (t *Tasks) Cancel(ctx context.Context, actor, id string) error {
 	})
 }
 
+// CancelOfFinished cancels every open task of a finished ticket, one
+// task.canceled event each, and returns their ids. It repairs a store from
+// before a finished ticket canceled its tasks (spec 4.2); the daemon calls it
+// once at start. A store without such tasks is left as it is.
+func (t *Tasks) CancelOfFinished(ctx context.Context, actor string) ([]string, error) {
+	recs, err := t.store.List(ctx, ticketKind)
+	if err != nil {
+		return nil, err
+	}
+	finished := map[string]bool{}
+	for _, rec := range recs {
+		ticket, err := decodeTicket(rec)
+		if err != nil {
+			return nil, err
+		}
+		finished[ticket.Ref] = ticket.State.Finished()
+	}
+	all, err := t.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	canceled := []string{}
+	for _, task := range all {
+		if !finished[task.Ticket] || !task.open() {
+			continue
+		}
+		err := t.Cancel(ctx, actor, task.ID)
+		if isCode(err, CodeInvalidState) {
+			continue // it finished meanwhile
+		}
+		if err != nil {
+			return canceled, err
+		}
+		canceled = append(canceled, task.ID)
+	}
+	return canceled, nil
+}
+
 // open reports whether the task is not finished: it can still be canceled.
 func (task Task) open() bool {
 	switch task.State {
