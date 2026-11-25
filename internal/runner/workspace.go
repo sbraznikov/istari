@@ -222,10 +222,10 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 	var reason string
 	switch {
 	case worktree:
-		reason, err = unsaved(ctx, ws.Dir, "HEAD")
+		reason, err = w.unsaved(ctx, ws.Dir, "HEAD")
 	case hasRef(ctx, clone, "refs/heads/"+ws.Branch):
 		// The directory is gone; the local branch may hold the only copy.
-		reason, err = unsaved(ctx, clone, "refs/heads/"+ws.Branch)
+		reason, err = w.unsaved(ctx, clone,"refs/heads/"+ws.Branch)
 	}
 	if err != nil {
 		return Workspace{}, err
@@ -265,7 +265,7 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 // unsaved says what removing would lose, or "": in dir, a worktree,
 // uncommitted changes; in dir, a worktree or the clone, commits of rev that
 // the remote has on no branch. The remote is fetched first.
-func unsaved(ctx context.Context, dir, rev string) (string, error) {
+func (w *Workspaces) unsaved(ctx context.Context, dir, rev string) (string, error) {
 	if rev == "HEAD" {
 		status, err := gitOut(ctx, dir, "status", "--porcelain")
 		if err != nil {
@@ -275,7 +275,7 @@ func unsaved(ctx context.Context, dir, rev string) (string, error) {
 			return "uncommitted changes", nil
 		}
 	}
-	if _, err := gitOut(ctx, dir, "fetch", "-q", "origin", remoteBranches); err != nil {
+	if err := w.fetch(ctx, dir); err != nil {
 		return "", err
 	}
 	// Commits are safe once the remote has them on some branch: the ticket
@@ -415,7 +415,7 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 // removeUnrecorded removes a worktree directory istari has no record of,
 // unless it holds unsaved work. Its clone is the one git names for it.
 func (w *Workspaces) removeUnrecorded(ctx context.Context, o Workspace) (Workspace, error) {
-	reason, err := unsaved(ctx, o.Dir, "HEAD")
+	reason, err := w.unsaved(ctx, o.Dir, "HEAD")
 	if err != nil || reason != "" {
 		o.State, o.Reason = WorkspaceKept, reason
 		return o, err
@@ -637,13 +637,16 @@ func (w *Workspaces) clone(ctx context.Context, repo string) (string, error) {
 	return dir, nil
 }
 
-// fetch fetches the remote's branches into the clone in dir. Two git
-// fetches of one clone at once fail to lock the refs they both update, so a
-// caller that finds a fetch of the clone running waits for it and takes its
-// result instead of fetching again.
+// fetch fetches the remote's branches into the clone of dir, the clone or
+// one of its worktrees. Two git fetches of one clone at once fail to lock
+// the refs they both update, so a caller that finds a fetch of the clone
+// running waits for it and takes its result instead of fetching again.
 func (w *Workspaces) fetch(ctx context.Context, dir string) error {
-	key := dir
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
+	key, err := gitOut(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if real, err := filepath.EvalSymlinks(key); err == nil {
 		key = real
 	}
 	w.fetchMu.Lock()

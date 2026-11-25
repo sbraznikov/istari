@@ -489,18 +489,17 @@ func (f *wsFixture) moveBranches(t *testing.T, n int) {
 	gitIn(t, seed, "reset", "-q", "--hard", "HEAD~")
 }
 
-// mergeMainAtOnce runs MergeMain for every ticket at the same moment and
-// returns the error of each.
-func (f *wsFixture) mergeMainAtOnce(tks []core.Ticket) []error {
-	errs := make([]error, len(tks))
+// atOnce starts every call at the same moment and returns the error of each.
+func atOnce(calls []func() error) []error {
+	errs := make([]error, len(calls))
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for i, tk := range tks {
+	for i, call := range calls {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = f.ws.MergeMain(ctx, tk.Ref)
+			errs[i] = call()
 		}()
 	}
 	close(start)
@@ -508,7 +507,21 @@ func (f *wsFixture) mergeMainAtOnce(tks []core.Ticket) []error {
 	return errs
 }
 
+// mergeMainAtOnce runs MergeMain for every ticket at the same moment and
+// returns the error of each.
+func (f *wsFixture) mergeMainAtOnce(tks []core.Ticket) []error {
+	var calls []func() error
+	for _, tk := range tks {
+		calls = append(calls, func() error {
+			_, err := f.ws.MergeMain(ctx, tk.Ref)
+			return err
+		})
+	}
+	return atOnce(calls)
+}
+
 func TestTenRunsOfOneRepositoryStartingAtOnceAllMergeTheMainBranch(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	var tks []core.Ticket
 	var dirs []string
@@ -528,6 +541,35 @@ func TestTenRunsOfOneRepositoryStartingAtOnceAllMergeTheMainBranch(t *testing.T)
 		}
 		if !exists(filepath.Join(dirs[i], "other.go")) {
 			t.Fatalf("main's new file is not in the worktree of %s", tks[i].Ref)
+		}
+	}
+}
+
+func TestARemovalAndAMergeOfOneRepositoryAtOnceBothFetch(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaces(t)
+	var calls []func() error
+	for n := range 10 {
+		tk := f.ticket(t, 40+n, "Fetch at once")
+		if _, err := f.ws.Ensure(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+		if n%2 == 0 {
+			calls = append(calls, func() error {
+				_, err := f.ws.MergeMain(ctx, tk.Ref)
+				return err
+			})
+		} else {
+			calls = append(calls, func() error {
+				_, err := f.ws.Remove(ctx, tk)
+				return err
+			})
+		}
+	}
+	f.moveBranches(t, 1000)
+	for _, err := range atOnce(calls) {
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }
