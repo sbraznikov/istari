@@ -28,7 +28,11 @@ type fakeHarness struct {
 	mu      sync.Mutex
 	started chan fakeSession
 	events  []harness.Event
+	fail    error // Start returns it while set
 }
+
+// failStart makes Start return err until it is called with nil.
+func (h *fakeHarness) failStart(err error) { h.mu.Lock(); h.fail = err; h.mu.Unlock() }
 
 type fakeSession struct {
 	spec   harness.RunSpec
@@ -47,6 +51,12 @@ func newFakeHarness(name string, events ...harness.Event) *fakeHarness {
 func (h *fakeHarness) Name() string                { return h.name }
 func (h *fakeHarness) Check(context.Context) error { return nil }
 func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Session, error) {
+	h.mu.Lock()
+	fail := h.fail
+	h.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
 	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}}
 	for _, e := range h.events {
 		s.out <- e
