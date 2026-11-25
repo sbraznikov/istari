@@ -384,10 +384,7 @@ func (s *Server) operations() map[string]operation {
 				err = s.refines.Apply(ctx, run, res)
 			}
 			if err != nil {
-				if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-					return nil, rerr
-				}
-				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+				return nil, s.refuse(ctx, run, err)
 			}
 			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 				return nil, err
@@ -467,6 +464,12 @@ func (s *Server) operations() map[string]operation {
 		"sync.run": read(func(ctx context.Context, _ Empty) (any, error) {
 			if s.syncer == nil {
 				return nil, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker to sync"}
+			}
+			if s.pending != nil {
+				// What waits for the tracker goes first: it was written earlier.
+				if err := s.pending.Replay(ctx); err != nil {
+					return nil, err
+				}
 			}
 			return s.syncer.Sync(ctx)
 		}),

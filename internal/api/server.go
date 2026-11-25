@@ -55,6 +55,7 @@ type Server struct {
 	reviews   *runner.Reviews
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
+	pending   *runner.PendingWrites // nil without a tracker that takes comments and sizes
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
@@ -119,6 +120,9 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
+	if pt, ok := opts.Tracker.(runner.PendingTracker); ok {
+		srv.pending = runner.NewPendingWrites(ns, runner.PendingOptions{Tracker: pt, Clock: opts.Clock})
+	}
 	if len(opts.Repos) > 0 {
 		srv.firstRepo = opts.Repos[0].Repo
 	}
@@ -181,6 +185,12 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			var jt journal.Tracker
 			if t, ok := opts.Tracker.(journal.Tracker); ok {
 				jt = t
+			}
+			// A write the tracker cannot take now is kept and written later
+			// (spec sections 4.2 and 5).
+			if qt, ok := opts.Tracker.(runner.QueueTracker); ok {
+				q := srv.pending.Queuing(qt)
+				rt, jt = q, q
 			}
 			srv.refines = runner.NewRefines(rt, journal.New(jt, ns, opts.Clock), srv.tickets, opts.Standards)
 		}
@@ -340,6 +350,26 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 	for {
 		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("istari: pull requests: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// RunPending delivers the pending tracker writes every interval until ctx
+// ends (spec section 5). Without a tracker it returns at once.
+func (s *Server) RunPending(ctx context.Context, every time.Duration) {
+	if s.pending == nil {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		if err := s.pending.Replay(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("istari: pending writes: %v", err)
 		}
 		select {
 		case <-ctx.Done():

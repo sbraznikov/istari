@@ -126,6 +126,8 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	go func() { defer background.Done(); srv.RunWorkspaces(bgCtx) }()
 	background.Add(1)
 	go func() { defer background.Done(); srv.RunVCS(bgCtx, time.Minute) }()
+	background.Add(1)
+	go func() { defer background.Done(); srv.RunPending(bgCtx, time.Minute) }()
 	if srv.Runner() != nil {
 		background.Add(1)
 		go func() { defer background.Done(); srv.Runner().Run(bgCtx) }()

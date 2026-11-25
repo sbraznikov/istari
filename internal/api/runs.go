@@ -3,12 +3,36 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 )
+
+// CodeTrackerUnavailable answers a submit whose tracker write met an outage:
+// the run ends without spending an attempt (spec section 4.2).
+const CodeTrackerUnavailable = "tracker_unavailable"
+
+// refuse answers a submit that code could not take. A tracker outage is not
+// the agent's fault: the run yields, its task is handed out again without
+// spending an attempt, and what could not be written waits as a pending
+// write. Any other refusal rejects the run (spec section 4.2).
+func (s *Server) refuse(ctx context.Context, run runner.Run, err error) error {
+	if errors.Is(err, tickets.ErrUnavailable) {
+		if _, yerr := s.runs.Yield(ctx, run.ID, err.Error()); yerr != nil {
+			return yerr
+		}
+		return &core.Error{Code: CodeTrackerUnavailable, Message: err.Error() +
+			". Your result is not refused and costs no attempt: istari writes what is pending once the tracker answers and hands the task out again. Stop and end your run without istari complete"}
+	}
+	if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
+		return rerr
+	}
+	return &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+}
 
 // RunLogs is a piece of a run's transcript.
 type RunLogs struct {
