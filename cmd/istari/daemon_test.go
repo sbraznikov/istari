@@ -198,6 +198,15 @@ func TestADaemonRestartedPausedOnAPausedHandOutStarts(t *testing.T) {
 	}
 }
 
+func TestADaemonStartedPausedWithoutAnActorRefusesToStart(t *testing.T) {
+	t.Parallel()
+	dataDir := newDataDir(t)
+	_, stderr, code := run(t, "daemon", "--config", writeDaemonConfig(t, dataDir), "--paused", "--actor", "")
+	if code != 2 || !strings.Contains(stderr, "--actor") {
+		t.Fatalf("daemon --paused --actor '': exit %d %q, want 2 naming --actor", code, stderr)
+	}
+}
+
 type sseEvent struct {
 	ID, Type string
 	Data     json.RawMessage

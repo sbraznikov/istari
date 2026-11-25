@@ -70,6 +70,9 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			}
 			daemonOpts.Defaults = cfg.Defaults
 			if paused {
+				if opts.Actor == "" {
+					return usageError{errors.New("--paused records the pause in the name of --actor: pass a non-empty --actor")}
+				}
 				daemonOpts.PausedBy = opts.Actor
 			}
 			return api.RunDaemon(ctx, daemonOpts)
