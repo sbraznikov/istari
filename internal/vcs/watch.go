@@ -44,7 +44,8 @@ type Tracked struct {
 	Checks   string `json:"checks,omitempty"` // as Status.Checks, or ChecksNone
 	SHA      string `json:"sha,omitempty"`    // the head commit the checks are of
 	// Pushed is when istari last pushed to the pull request (Track or
-	// Pushed): the no-CI window runs from here.
+	// Pushed): the no-CI window runs from here. Zero: tracked before the
+	// window existed; the next poll starts the window at its own time.
 	Pushed time.Time `json:"pushed"`
 	Review   string `json:"review,omitempty"`
 	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
@@ -199,6 +200,10 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		payload map[string]any
 	}
 	var changes []change
+	if t.Pushed.IsZero() { // tracked before the window existed: it starts now
+		t.Pushed = w.clock().UTC()
+		changes = append(changes, change{"vcs.window", map[string]any{"number": t.Number, "from": t.Pushed}})
+	}
 	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
 	checks := s.Checks
 	if checks == "" && s.HeadSHA != "" && !w.clock().Before(t.Pushed.Add(NoCIWindow)) {

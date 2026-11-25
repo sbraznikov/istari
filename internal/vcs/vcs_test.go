@@ -455,7 +455,9 @@ func checksEvents(t *testing.T, s store.Store, ticket string) string {
 	var got []string
 	for _, e := range events {
 		var p struct{ Checks, SHA string }
-		json.Unmarshal(e.Payload, &p)
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
 		got = append(got, p.Checks+"@"+p.SHA)
 	}
 	return strings.Join(got, " ")
@@ -520,6 +522,46 @@ func TestAPushRestartsTheNoCIWindowAndLaterChecksReplaceNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := checksEvents(t, s, ticket), "none@old111 none@new222 pending@new222 success@new222"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPullRequestTrackedBeforeTheNoCIWindowExistedStartsItsWindowAtTheFirstPoll(t *testing.T) {
+	t.Parallel()
+	gh, s, w, _, _, now := noCIFixture(t)
+	ticket := "gh:" + githubtest.Repo + "#4"
+	pr, err := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/4/y", Base: "main", Title: "Y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(map[string]any{"ticket": ticket, "repo": githubtest.Repo, "number": pr.Number}) // stored with no pushed key
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, store.Event{Type: "vcs.tracked", At: *now, Actor: "system", Ticket: ticket},
+		store.Change{Kind: "pull_request", ID: ticket, Data: legacy}); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "leg444") // no check runs, no statuses
+	*now = now.Add(time.Hour)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@leg444"; got != want {
 		t.Fatalf("checks events = %s, want %s", got, want)
 	}
 }
