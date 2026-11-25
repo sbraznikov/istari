@@ -110,7 +110,7 @@ func (c *Checkpoints) check(ctx context.Context, run Run, message string) (journ
 	if head == prev {
 		return journal.Entry{}, &core.Error{Code: core.CodeInvalidState, Message: "nothing changed since the last checkpoint"}
 	}
-	entry.Commit = head[:min(12, len(head))]
+	entry.Commit = shortCommit(head)
 	var tests, gone []string // the slice's tests, as they are now; the test files it removed
 	if out, err := gitOut(ctx, run.Dir, "diff", "--name-status", "-M", prev, head); err == nil && out != "" {
 		for _, line := range strings.Split(out, "\n") {
