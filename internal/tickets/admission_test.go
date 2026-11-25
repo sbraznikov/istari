@@ -35,6 +35,7 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 }
 
 func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex")
 	parent := f.gh.Seed("Parent", conforming, "alex")
 	f.gh.SetPermission("alex", "write")
