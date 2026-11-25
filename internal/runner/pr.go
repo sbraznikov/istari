@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -59,14 +60,15 @@ func lastCheckpoint(entries []journal.Entry) *journal.CheckpointEntry {
 // PullRequests opens the pull requests of tickets (spec section 7.7: opening
 // is gated by the full check suite run by code).
 type PullRequests struct {
-	cp     *Checkpoints
-	client *vcs.Client
-	watch  *vcs.Watcher
+	cp      *Checkpoints
+	client  *vcs.Client
+	watch   *vcs.Watcher
+	tickets *core.Tickets // holds a ticket whose main branch fails its checks too
 }
 
 // NewPullRequests returns the opener.
-func NewPullRequests(cp *Checkpoints, c *vcs.Client, w *vcs.Watcher) *PullRequests {
-	return &PullRequests{cp: cp, client: c, watch: w}
+func NewPullRequests(cp *Checkpoints, c *vcs.Client, w *vcs.Watcher, t *core.Tickets) *PullRequests {
+	return &PullRequests{cp: cp, client: c, watch: w, tickets: t}
 }
 
 // Open runs the full checks of the main branch's pipeline in the run's
@@ -141,6 +143,17 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		if entry.Main, err = p.onMain(ctx, run.Ticket, ws, main, name, full, entries); err != nil {
 			return vcs.Opened{}, err
 		}
+		if entry.Main.Result == "red" {
+			question := fmt.Sprintf("%s fails `%s` at %s", main, name, entry.Main.Commit)
+			entry.Notes = append(entry.Notes, question+" as well: the failure is not the ticket's")
+			if err := record(fullRed); err != nil {
+				return vcs.Opened{}, err
+			}
+			if err := p.ask(ctx, run, ref, question); err != nil {
+				return vcs.Opened{}, err
+			}
+			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s; a human is asked and the ticket is held needs_input: end your run, do not try again:\n%s", question, output)
+		}
 		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err
 		}
@@ -178,6 +191,21 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	}
 	entry.PR = pr.URL
 	return pr, record(fmt.Sprintf("pull request #%d %s", pr.Number, done))
+}
+
+// ask raises a question for a human in the ticket's journal and holds the
+// ticket needs_input until it is answered (spec 4.1).
+func (p *PullRequests) ask(ctx context.Context, run Run, ref tickets.Ref, question string) error {
+	q := journal.Entry{Kind: journal.Question, Actor: "system", ID: run.ID + "-main", Text: question}
+	if err := p.cp.journal.Append(ctx, ref, q); err != nil {
+		return err
+	}
+	_, err := p.tickets.SetHold(ctx, "system", run.Ticket, "needs_input")
+	var ce *core.Error
+	if errors.As(err, &ce) && ce.Code == core.CodeTicketHeld {
+		return nil
+	}
+	return err
 }
 
 // mainSuffix marks the scratch worktree, next to the ticket's own, in which

@@ -44,7 +44,7 @@ func prFixture(t *testing.T, pipelineToml string) (*cpFixture, *githubtest.Serve
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, nil))
+	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, nil), f.tickets)
 }
 
 func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
@@ -118,6 +118,40 @@ func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
 	}
 }
 
+func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
+	t.Parallel()
+	f, gh, prs, _ := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
+	_, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err == nil || !strings.Contains(err.Error(), "end your run") {
+		t.Fatalf("pr open with a full check red on main too: %v", err)
+	}
+	main := strings.TrimSpace(gitIn(t, filepath.Join(f.root, "remotes", "acme", "web.git"), "rev-parse", "--short=12", "main"))
+	entries := prJournal(t, f)
+	var cp *journal.CheckpointEntry
+	var question string
+	for _, e := range entries {
+		if e.Checkpoint != nil {
+			cp = e.Checkpoint
+		}
+		if e.Kind == journal.Question {
+			question = e.Text
+		}
+	}
+	if cp == nil || cp.Main == nil || cp.Main.Commit != main || cp.Main.Result != "red" || !strings.Contains(cp.Main.Output, "FULL SUITE BROKE") ||
+		!strings.Contains(strings.Join(cp.Notes, "\n"), main) {
+		t.Fatalf("the entry = %+v, want main %s red with its output", cp, main)
+	}
+	if question != "main fails `full` at "+main {
+		t.Fatalf("question = %q", question)
+	}
+	if tk, err := f.tickets.Get(ctx, f.tk.Ref); err != nil || tk.Hold != "needs_input" {
+		t.Fatalf("ticket = %+v, %v; want it held needs_input", tk, err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
 func TestPrOpenPushesAndOpensADraftLinkedToTheTicket(t *testing.T) {
 	t.Parallel()
 	f, gh, prs := prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"true\"\n")
@@ -156,7 +190,7 @@ func TestPrOpenJournalsTheFullChecksItRan(t *testing.T) {
 		t.Fatal("pr open with red full checks was accepted")
 	}
 	entries := prJournal(t, f)
-	if len(entries) != 1 || entries[0].Checkpoint == nil || entries[0].Checkpoint.Checks["full"] != "red" || !strings.Contains(entries[0].Checkpoint.Failures["full"], "FULL SUITE BROKE") {
+	if len(entries) == 0 || entries[0].Checkpoint == nil || entries[0].Checkpoint.Checks["full"] != "red" || !strings.Contains(entries[0].Checkpoint.Failures["full"], "FULL SUITE BROKE") {
 		t.Fatalf("journal = %+v", entries)
 	}
 }
