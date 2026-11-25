@@ -260,6 +260,10 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	if tk.Hold != "" {
 		return nil
 	}
+	if tk.State != core.TicketDone && tk.State != core.TicketCanceled && exhausted(tk.Ref, all) {
+		_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
+		return err
+	}
 	r := roundOf(tk.Ref, all)
 	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
@@ -443,6 +447,15 @@ func resumeFrom(state core.TicketState) func(TaskSpec) bool {
 
 // maxRefines bounds how often a ticket below the standard is refined.
 const maxRefines = 3
+
+// exhausted tells whether a task of the ticket has used up its attempts
+// (task.attempts_exhausted, spec 4.1): it holds the ticket until a human
+// retries it. Refine tasks are bounded by maxRefines instead.
+func exhausted(ref string, all []core.Task) bool {
+	return slices.ContainsFunc(all, func(t core.Task) bool {
+		return t.Ticket == ref && t.State == core.TaskFailed && t.Attempts >= t.MaxAttempts && !strings.HasPrefix(StageOf(t), "refine-")
+	})
+}
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):
 // green ends the pull request's draft, completes the verify task and fires
