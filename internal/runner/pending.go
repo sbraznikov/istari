@@ -28,18 +28,18 @@ const pendingKind = "pending_write"
 // adapter's retries: it is kept and delivered later by the daemon (spec
 // sections 4.2 and 5).
 type PendingWrite struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Ticket    string    `json:"ticket"`
-	Body      string    `json:"body,omitempty"` // a comment's text
-	Size      string    `json:"size,omitempty"`
-	Repo      string      `json:"repo,omitempty"`   // a review: the pull request's repository
-	Number    int         `json:"number,omitempty"` // a review: the pull request
-	Review    *vcs.Review `json:"review,omitempty"`
-	Added    time.Time `json:"added"`
-	Next      time.Time `json:"next"` // not tried again before then
-	Tries     int       `json:"tries,omitempty"`
-	Done      bool      `json:"done,omitempty"` // delivered, or dropped as refused
+	ID     string      `json:"id"`
+	Kind   string      `json:"kind"`
+	Ticket string      `json:"ticket"`
+	Body   string      `json:"body,omitempty"` // a comment's text
+	Size   string      `json:"size,omitempty"`
+	Repo   string      `json:"repo,omitempty"`   // a review: the pull request's repository
+	Number int         `json:"number,omitempty"` // a review: the pull request
+	Review *vcs.Review `json:"review,omitempty"`
+	Added  time.Time   `json:"added"`
+	Next   time.Time   `json:"next"` // not tried again before then
+	Tries  int         `json:"tries,omitempty"`
+	Done   bool        `json:"done,omitempty"` // delivered, or dropped as refused
 
 	version int64
 }
@@ -225,7 +225,7 @@ func (p *PendingWrites) commit(ctx context.Context, w PendingWrite, typ string) 
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]string{"id": w.ID, "kind": w.Kind})
+	payload, _ := json.Marshal(map[string]string{"id": w.ID, "kind": w.Kind}) // a map of strings always marshals
 	_, err = p.store.Append(ctx, store.Event{Type: typ, Actor: "system", Ticket: w.Ticket, Payload: payload},
 		store.Change{Kind: pendingKind, ID: w.ID, Data: data, IfVersion: w.version})
 	return err

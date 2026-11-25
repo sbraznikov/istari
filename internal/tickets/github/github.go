@@ -43,22 +43,19 @@ type Options struct {
 	HTTPClient *http.Client
 	// Backoff are the waits before each retry of a write that met a server
 	// error, a rate limit or a network error (spec section 5); its length is
-	// the number of retries. nil: DefaultBackoff; empty: no retry.
+	// the number of retries. nil: tickets.DefaultBackoff; empty: no retry.
 	Backoff []time.Duration
 }
 
-// DefaultBackoff retries a write three times within about seven seconds.
-var DefaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
-
 // Provider talks to GitHub Issues.
 type Provider struct {
-	base   string
-	token  string
+	base    string
+	token   string
 	http    *http.Client
 	backoff []time.Duration
 	mu      sync.Mutex
-	labels map[string]bool // "owner/repo\x00label" known to exist
-	self   string          // the token's login, once known
+	labels  map[string]bool // "owner/repo\x00label" known to exist
+	self    string          // the token's login, once known
 }
 
 var (
@@ -131,7 +128,7 @@ func New(opts Options) *Provider {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.HTTPClient = &client
 	if opts.Backoff == nil {
-		opts.Backoff = DefaultBackoff
+		opts.Backoff = tickets.DefaultBackoff
 	}
 	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient,
 		backoff: opts.Backoff, labels: map[string]bool{}}
@@ -754,24 +751,15 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 			return nil, err
 		}
 	}
-	res, err := p.send(ctx, method, path, data, out)
-	if method == http.MethodGet {
-		return res, err
-	}
-	for _, wait := range p.backoff {
-		if !transient(err) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return nil, errors.Join(err, ctx.Err())
-		case <-time.After(wait):
-		}
+	var res *http.Response
+	send := func() (err error) {
 		res, err = p.send(ctx, method, path, data, out)
+		return err
 	}
-	if transient(err) {
-		err = fmt.Errorf("%w: %w", tickets.ErrUnavailable, err)
+	if method == http.MethodGet {
+		return res, send()
 	}
+	err := tickets.RetryWrite(ctx, p.backoff, transient, send)
 	return res, err
 }
 
@@ -825,7 +813,7 @@ func (p *Provider) send(ctx context.Context, method, path string, data []byte, o
 		if e.Message == "" {
 			e.Message = strconv.Quote(string(reply))
 		}
-		limited := res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests
+		limited := tickets.RateLimited(res.StatusCode, res.Header)
 		if limited {
 			e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
 		}

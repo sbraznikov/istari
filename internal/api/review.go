@@ -38,11 +38,13 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 		return nil, s.yieldReview(ctx, run, early)
 	}
 	if err != nil {
-		return nil, s.refuse(ctx, run, err)
+		return nil, s.rejectOrYield(ctx, run, err)
 	}
-	if err := s.reviews.Record(ctx, run, checked); errors.Is(err, tickets.ErrUnavailable) {
-		return nil, s.refuse(ctx, run, err)
-	} else if err != nil {
+	err = s.reviews.Record(ctx, run, checked)
+	if errors.Is(err, tickets.ErrUnavailable) {
+		return nil, s.rejectOrYield(ctx, run, err)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
@@ -144,7 +146,7 @@ func (s *Server) publishReview(ctx context.Context, ticket string, c runner.Revi
 		if aerr := s.pending.Add(ctx, w); aerr != nil {
 			return errors.Join(err, aerr)
 		}
-		return fmt.Errorf("%w; kept as a pending write", err)
+		return fmt.Errorf("kept as a pending write: %w", err)
 	}
 	return err
 }

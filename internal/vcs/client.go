@@ -27,15 +27,12 @@ type Client struct {
 	backoff []time.Duration
 }
 
-// DefaultBackoff retries a write three times within about seven seconds.
-var DefaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
-
 // NewClient returns a client; baseURL "" means api.github.com.
 func NewClient(baseURL string, tokens Tokens) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}, backoff: DefaultBackoff}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}, backoff: tickets.DefaultBackoff}
 }
 
 // WithBackoff sets the waits before each retry of a write that met a server
@@ -336,25 +333,11 @@ func (c *Client) request(ctx context.Context, repo, method, url string, body, ou
 	if body != nil {
 		data, _ = json.Marshal(body)
 	}
-	err := c.send(ctx, repo, method, url, data, out)
+	send := func() error { return c.send(ctx, repo, method, url, data, out) }
 	if method == http.MethodGet {
-		return err
+		return send()
 	}
-	for _, wait := range c.backoff {
-		if !errors.Is(err, errTransient) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(wait):
-		}
-		err = c.send(ctx, repo, method, url, data, out)
-	}
-	if errors.Is(err, errTransient) {
-		return fmt.Errorf("%w: %w", tickets.ErrUnavailable, err)
-	}
-	return err
+	return tickets.RetryWrite(ctx, c.backoff, func(err error) bool { return errors.Is(err, errTransient) }, send)
 }
 
 // errTransient marks a server error, a rate limit or a network error: the
@@ -395,8 +378,7 @@ func (c *Client) send(ctx context.Context, repo, method, url string, data []byte
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
 		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
-		limited := res.StatusCode == http.StatusTooManyRequests || res.Header.Get("X-RateLimit-Remaining") == "0"
-		if res.StatusCode >= 500 || limited {
+		if tickets.TransientStatus(res.StatusCode, res.Header) {
 			return transientError{err}
 		}
 		return err

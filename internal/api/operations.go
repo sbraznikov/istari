@@ -384,7 +384,7 @@ func (s *Server) operations() map[string]operation {
 				err = s.refines.Apply(ctx, run, res)
 			}
 			if err != nil {
-				return nil, s.refuse(ctx, run, err)
+				return nil, s.rejectOrYield(ctx, run, err)
 			}
 			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 				return nil, err

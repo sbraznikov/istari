@@ -103,7 +103,7 @@ func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, erro
 	}
 	answer, err := s.applyPlan(ctx, run, r.Plan)
 	if err != nil {
-		return nil, s.refuse(ctx, run, err)
+		return nil, s.rejectOrYield(ctx, run, err)
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 		return nil, err

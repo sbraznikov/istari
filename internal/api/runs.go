@@ -16,11 +16,11 @@ import (
 // the run ends without spending an attempt (spec section 4.2).
 const CodeTrackerUnavailable = "tracker_unavailable"
 
-// refuse answers a submit that code could not take. A tracker outage is not
-// the agent's fault: the run yields, its task is handed out again without
+// rejectOrYield ends a submit that code could not take. A tracker outage is
+// not the agent's fault: the run yields, its task is handed out again without
 // spending an attempt, and what could not be written waits as a pending
 // write. Any other refusal rejects the run (spec section 4.2).
-func (s *Server) refuse(ctx context.Context, run runner.Run, err error) error {
+func (s *Server) rejectOrYield(ctx context.Context, run runner.Run, err error) error {
 	if errors.Is(err, tickets.ErrUnavailable) {
 		if _, yerr := s.runs.Yield(ctx, run.ID, err.Error()); yerr != nil {
 			return yerr
