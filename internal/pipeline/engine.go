@@ -256,7 +256,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	if tk.Hold != "" {
 		return nil
 	}
-	if exhausted(tk.Ref, all) {
+	if tk.State != core.TicketDone && tk.State != core.TicketCanceled && exhausted(tk.Ref, all) {
 		_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
 		return err
 	}

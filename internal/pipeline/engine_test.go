@@ -778,6 +778,21 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicket(t *testing.T) {
 	}
 }
 
+func TestAFinishedTicketWithAnExhaustedTaskIsNotHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts)
+	if _, err := f.tickets.Fire(ctx, "human:alex", ref, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t) // fails if the engine tries to hold a canceled ticket
+	if hold := f.hold(t, ref); hold != "" {
+		t.Fatalf("hold = %q on a canceled ticket, want none", hold)
+	}
+}
+
 func TestATaskFailedBelowItsLimitDoesNotHoldTheTicket(t *testing.T) {
 	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
