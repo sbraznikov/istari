@@ -53,6 +53,9 @@ type Standards interface {
 type Conformance struct {
 	Deviations []string // empty: the ticket meets the standard
 	Hash       string   // digest of the required sections, for T15
+	// Priority is the priority the ticket's table states, "" when it states
+	// none: it becomes the stored priority on admission (spec 4.5).
+	Priority string
 }
 
 // SyncOptions configures a Syncer.
@@ -67,6 +70,8 @@ type SyncOptions struct {
 	// Parent reads the ticket a ticket's text names as its parent; istari
 	// recover gives split parents their children with it. nil: none.
 	Parent func(body, repo string) string
+	// Note adds a note to the ticket's journal; nil: the sync notes nothing.
+	Note func(ctx context.Context, ref Ref, text string) error
 	// Merged tells whether a ticket's pull request is merged (spec 4.8): an
 	// issue its merge closed is not a cancel. fresh asks the code host when
 	// the PR watch has not seen the pull request closed yet; otherwise only
@@ -468,6 +473,9 @@ type baseRecord struct {
 	// Sponsor is the trusted member who asked to admit the ticket while it
 	// fell short of the standard: it is refined, then admitted by them.
 	Sponsor string `json:"sponsor,omitempty"`
+	// PriorityNoted is the pair "stored/table" of priorities whose
+	// difference the journal last noted, so it says so once.
+	PriorityNoted string `json:"priority_noted,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -826,6 +834,9 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 			x.base.Sponsor = who
 			return s.revert(ctx, x, c, "the ticket does not meet the standard yet ("+strings.Join(conf.Deviations, "; ")+"); it is refined first and admitted as soon as it does")
 		}
+		if err := s.tablePriority(ctx, x, conf); err != nil {
+			return err
+		}
 	} else {
 		allowed, err := s.provider.CanWrite(ctx, x.repo.Repo, who)
 		if err != nil {
@@ -983,10 +994,13 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil || len(conf.Deviations) > 0 {
 			return err
 		}
-		return s.admit(ctx, x, actor, conf.Hash)
+		return s.admit(ctx, x, actor, conf)
 	case core.TicketReady:
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil {
+			return err
+		}
+		if err := s.notePriority(ctx, x, conf); err != nil {
 			return err
 		}
 		switch {
@@ -1005,24 +1019,66 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 			}
 			x.report.Pushed++
 		}
+	case core.TicketDone, core.TicketCanceled:
+	default:
+		conf, err := s.conformance(ctx, x.repo, x.t)
+		if err != nil {
+			return err
+		}
+		return s.notePriority(ctx, x, conf)
 	}
 	return nil
 }
 
-// admit fires T2 and writes the new state out, remembering the hash.
-func (s *Syncer) admit(ctx context.Context, x *syncing, actor, hash string) error {
+// admit fires T2 and writes the new state out, remembering the hash. A ticket
+// without a stored priority takes its table's, set by its author (spec 4.5).
+func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Conformance) error {
+	if err := s.tablePriority(ctx, x, conf); err != nil {
+		return err
+	}
 	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
 	if err != nil {
 		return err
 	}
 	x.report.Transitioned++
-	x.base.Hash = hash
+	x.base.Hash = conf.Hash
 	x.base.Sponsor = "" // a request admits once: an edit after it is checked again (T15)
 	if err := s.push(ctx, x, next); err != nil {
 		return err
 	}
 	x.report.Pushed++
 	return nil
+}
+
+// tablePriority makes the table's priority the stored one, set by the
+// ticket's author, when the ticket has none yet (spec 4.5).
+func (s *Syncer) tablePriority(ctx context.Context, x *syncing, conf Conformance) error {
+	if x.tk.Priority != "" || conf.Priority == "" {
+		return nil
+	}
+	tk, err := s.tickets.SetPriority(ctx, "human:"+x.t.Author, x.tk.Ref, conf.Priority)
+	if err == nil {
+		x.tk = tk
+	}
+	return err
+}
+
+// notePriority says once in the journal that the table's priority differs
+// from the stored one, naming both; the stored priority stays (spec 4.5).
+func (s *Syncer) notePriority(ctx context.Context, x *syncing, conf Conformance) error {
+	if s.opts.Note == nil || conf.Priority == "" || x.tk.Priority == "" || conf.Priority == x.tk.Priority {
+		return nil
+	}
+	pair := x.tk.Priority + "/" + conf.Priority
+	if x.base.PriorityNoted == pair {
+		return nil
+	}
+	text := fmt.Sprintf("The ticket's priority is %s, its table says %s. The priority stays %s: the table's is taken only when the ticket is admitted; change the label `priority:` to change it.", x.tk.Priority, conf.Priority, x.tk.Priority)
+	if err := s.opts.Note(ctx, x.t.Ref, text); err != nil {
+		return err
+	}
+	x.base.PriorityNoted = pair
+	return s.record(ctx, x, EventSyncObserved, "system", x.tk, map[string]any{"priority": x.tk.Priority, "table_priority": conf.Priority})
 }
 
 // repoOf returns the synced repository of ref.
@@ -1069,24 +1125,26 @@ func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority strin
 func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inherit := false
+	var parent core.Ticket
 	if budgetOf != "" {
-		parent, err := s.tickets.Get(ctx, budgetOf)
-		if err != nil {
+		var err error
+		if parent, err = s.tickets.Get(ctx, budgetOf); err != nil {
 			return err
 		}
-		inherit = parent.State != core.TicketNew && parent.State != core.TicketCanceled
 	}
 	var errs []error
 	for _, ref := range refs {
-		if err := s.created(ctx, ref, budgetOf, inherit); err != nil {
+		if err := s.created(ctx, ref, parent); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit bool) error {
+// created mirrors one ticket istari created; parent is the ticket an agent
+// was working on, zero for none. The ticket takes its table's priority at
+// once, or the parent's when the table states none (spec 4.5).
+func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error {
 	repo, ok := s.repoOf(ref)
 	if !ok {
 		return nil // a repository istari does not sync
@@ -1095,10 +1153,28 @@ func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit 
 	if err != nil {
 		return err
 	}
+	conf, err := s.conformance(ctx, repo, t)
+	if err != nil {
+		return err
+	}
+	inherit := parent.Ref != "" && parent.State != core.TicketNew && parent.State != core.TicketCanceled
+	nt := core.NewTicket{Ref: ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
 	if inherit {
-		_, err := s.tickets.CreateWith(ctx, "human:"+t.Author, core.NewTicket{Ref: ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL, BudgetOf: budgetOf})
-		var ce *core.Error
-		if err != nil && !(errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket) {
+		nt.BudgetOf = parent.Ref
+	}
+	tk, err := s.tickets.CreateWith(ctx, "human:"+t.Author, nt)
+	var ce *core.Error
+	switch {
+	case errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket:
+		// istari has it already
+	case err != nil:
+		return err
+	default:
+		own := conf
+		if own.Priority == "" {
+			own.Priority = parent.Priority
+		}
+		if err := s.tablePriority(ctx, &syncing{repo: repo, t: t, tk: tk}, own); err != nil {
 			return err
 		}
 	}
@@ -1109,19 +1185,17 @@ func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit 
 	if !inherit {
 		return nil
 	}
-	tk, err := s.tickets.Get(ctx, ref.String())
-	if err != nil || tk.State != core.TicketNew {
+	if tk, err = s.tickets.Get(ctx, ref.String()); err != nil || tk.State != core.TicketNew {
 		return err
 	}
-	conf, err := s.conformance(ctx, repo, t)
-	if err != nil || len(conf.Deviations) > 0 {
-		return err // it waits for the refiner like any other
+	if len(conf.Deviations) > 0 {
+		return nil // it waits for the refiner like any other
 	}
 	base, version, err := s.base(ctx, ref.String())
 	if err != nil {
 		return err
 	}
-	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf.Hash)
+	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf)
 }
 
 // Ready admits a ticket by hand (istari ticket ready): login must be a
@@ -1176,5 +1250,5 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 		x.base.Sponsor = login
 		return s.record(ctx, x, EventAdmissionRequested, "human:"+login, tk, map[string]any{"deviations": conf.Deviations})
 	}
-	return s.admit(ctx, x, "human:"+login, conf.Hash)
+	return s.admit(ctx, x, "human:"+login, conf)
 }
