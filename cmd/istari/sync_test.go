@@ -123,8 +123,9 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	if !admitted {
 		t.Fatalf("transitions = %+v, want accept by human:alex", events)
 	}
-	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
-		t.Fatalf("issue labels = %v, want [istari:ready]: the admission is written at once", labels)
+	// The table's priority becomes the stored one on admission (spec 4.5).
+	if labels := gh.Issue(n).Labels; len(labels) != 2 || labels[0] != "istari:ready" || labels[1] != "priority:P1" {
+		t.Fatalf("issue labels = %v, want [istari:ready priority:P1]: the admission is written at once", labels)
 	}
 }
 
