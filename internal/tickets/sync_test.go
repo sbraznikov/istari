@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -149,11 +151,16 @@ func TestWithFewRequestsLeftTheSyncWaitsUntilTheReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	transport := ratelimit.New(ratelimit.Options{})
+	now := time.Date(2026, 11, 25, 19, 12, 0, 0, time.UTC)
+	reset := now.Add(20 * time.Minute)
+	// The hold's waits: each asks its duration on asked and ends when the
+	// test releases it.
+	asked, release := make(chan time.Duration), make(chan time.Time)
+	after := func(d time.Duration) <-chan time.Time { asked <- d; return release }
+	transport := ratelimit.New(ratelimit.Options{Clock: func() time.Time { return now }, After: after})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token, HTTPClient: &http.Client{Transport: transport}})
 	syncer := tickets.NewSyncer(adapter, core.NewTickets(s, core.TicketOptions{}), s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Hold: transport.Hold})
 	gh.Seed("t", "", "bob")
-	reset := time.Now().Truncate(time.Second).Add(2 * time.Second)
 	gh.SetRateLimit(50, reset)
 	lists := func() int {
 		return len(slices.DeleteFunc(gh.Counted(), func(r string) bool { return r != "GET /repos/"+githubtest.Repo+"/issues" }))
@@ -161,19 +168,55 @@ func TestWithFewRequestsLeftTheSyncWaitsUntilTheReset(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Go(func() { syncer.Run(ctx, 10*time.Millisecond) })
+	wg.Go(func() { syncer.Run(ctx, time.Millisecond) })
 	defer wg.Wait()
 	defer cancel()
-	deadline := reset.Add(5 * time.Second)
-	for lists() < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	if d := <-asked; d != 20*time.Minute {
+		t.Errorf("the sync waits %v, want 20m: until the reset", d)
 	}
-	second := time.Now()
-	if lists() < 2 {
-		t.Fatalf("lists of the issues by %v = %d, want a second sync after the reset", deadline, lists())
+	if n := lists(); n != 1 {
+		t.Fatalf("lists of the issues before the reset = %d, want only the first sync's", n)
 	}
-	if second.Before(reset) {
-		t.Errorf("the second sync came at %v, want not before the reset %v", second, reset)
+	release <- reset
+	<-asked // the second sync is done and the next one waits again
+	if n := lists(); n != 2 {
+		t.Errorf("lists of the issues after the reset = %d, want a second sync", n)
+	}
+}
+
+// Not parallel: sets the output of the standard logger.
+func TestASyncRefusedForTheRateLimitIsLaterNotAFailure(t *testing.T) {
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	now := time.Date(2026, 11, 25, 19, 12, 0, 0, time.UTC)
+	asked := make(chan time.Duration)
+	after := func(d time.Duration) <-chan time.Time { asked <- d; return nil }
+	transport := ratelimit.New(ratelimit.Options{Clock: func() time.Time { return now }, After: after})
+	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token, HTTPClient: &http.Client{Transport: transport}})
+	syncer := tickets.NewSyncer(adapter, core.NewTickets(s, core.TicketOptions{}), s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Hold: transport.Hold})
+	gh.SetRateLimit(0, now.Add(5*time.Minute)) // every request is refused with 403
+
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { syncer.Run(ctx, time.Millisecond) })
+	d := <-asked // the first sync was refused; the next one waits
+	cancel()
+	wg.Wait()
+	if d != 5*time.Minute {
+		t.Errorf("the next sync waits %v, want 5m: until the reset", d)
+	}
+	if strings.Contains(logged.String(), "ticket sync:") {
+		t.Errorf("log = %q, want no sync failure for a refusal of the rate limit", logged.String())
+	}
+	if got := strings.Count(logged.String(), "\n"); got != 1 || !strings.Contains(logged.String(), "19:17:00") {
+		t.Errorf("log = %q, want one line that the sync waits until 19:17:00", logged.String())
 	}
 }
 

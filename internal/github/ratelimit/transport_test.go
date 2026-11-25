@@ -177,24 +177,59 @@ func TestALowQuotaHoldsTheLoopsUntilTheResetAndIsLoggedOnce(t *testing.T) {
 	var logged strings.Builder
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	clk := &clock{now: reset.Add(-30 * time.Millisecond)}
-	tr := ratelimit.New(ratelimit.Options{Clock: clk.Now})
+	clk := &clock{now: reset.Add(-20 * time.Minute)}
+	wait := &timer{}
+	tr := ratelimit.New(ratelimit.Options{Clock: clk.Now, After: wait.After})
 	get(t, &http.Client{Transport: tr}, context.Background(), srv.URL+"/x", ratelimit.KindSync)
 
 	for _, loop := range []string{"the ticket sync", "the PR watch"} {
-		began := time.Now()
 		if err := tr.Hold(context.Background(), loop); err != nil {
 			t.Fatalf("Hold(%s): %v", loop, err)
 		}
-		if waited := time.Since(began); waited < 30*time.Millisecond {
-			t.Errorf("Hold(%s) waited %v, want until the reset 30ms away", loop, waited)
-		}
+	}
+	if want := []time.Duration{20 * time.Minute, 20 * time.Minute}; !slices.Equal(wait.waits, want) {
+		t.Errorf("the holds waited %v, want %v: until the reset", wait.waits, want)
 	}
 	if got := strings.Count(logged.String(), "\n"); got != 1 {
 		t.Errorf("log = %q, want one line", logged.String())
 	}
 	if !strings.Contains(logged.String(), "50") || !strings.Contains(logged.String(), "20:20:00") {
 		t.Errorf("log = %q, want the remaining 50 and the reset 20:20:00", logged.String())
+	}
+}
+
+// timer is a test wait: it records each duration asked for and ends at once.
+type timer struct {
+	mu    sync.Mutex // serializes waits
+	waits []time.Duration
+}
+
+func (w *timer) After(d time.Duration) <-chan time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.waits = append(w.waits, d)
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
+func TestARefusalForTheSecondaryLimitHoldsTheLoopsForItsRetryAfter(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "4000")
+		w.Header().Set("X-RateLimit-Reset", "1795638000")
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	wait := &timer{}
+	tr := ratelimit.New(ratelimit.Options{Clock: (&clock{now: start}).Now, After: wait.After})
+	get(t, &http.Client{Transport: tr}, context.Background(), srv.URL+"/x", ratelimit.KindSync)
+	if err := tr.Hold(context.Background(), "the ticket sync"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []time.Duration{time.Minute}; !slices.Equal(wait.waits, want) {
+		t.Errorf("Hold waited %v, want %v", wait.waits, want)
 	}
 }
 

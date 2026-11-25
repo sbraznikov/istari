@@ -158,7 +158,9 @@ func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 		if s.opts.Hold != nil && s.opts.Hold(ctx, "the ticket sync") != nil {
 			return // ctx ended
 		}
-		if _, err := s.Sync(ctx); err != nil && ctx.Err() == nil {
+		// A refusal for the rate limit is "later" (#208): the next Hold waits
+		// for the reset and says so.
+		if _, err := s.Sync(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ratelimit.ErrRateLimited) {
 			log.Printf("istari: ticket sync: %v", err)
 		}
 		select {

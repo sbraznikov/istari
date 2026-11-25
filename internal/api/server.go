@@ -352,7 +352,8 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 		if s.github != nil && s.github.Hold(ctx, "the PR watch") != nil {
 			return // ctx ended
 		}
-		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
+		// A refusal for the rate limit is "later" (#208): the next Hold waits.
+		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ratelimit.ErrRateLimited) {
 			log.Printf("istari: pull requests: %v", err)
 		}
 		select {

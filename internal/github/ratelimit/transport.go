@@ -53,12 +53,15 @@ const Window = time.Hour
 type Options struct {
 	Base  http.RoundTripper // nil: http.DefaultTransport
 	Clock func() time.Time  // nil: time.Now
+	// After is how Hold waits a duration; nil: time.After.
+	After func(time.Duration) <-chan time.Time
 }
 
 // Transport is an http.RoundTripper that counts GitHub requests.
 type Transport struct {
 	base  http.RoundTripper
 	clock func() time.Time
+	after func(time.Duration) <-chan time.Time
 
 	mu     sync.Mutex // serializes the fields below
 	sent   []sent     // oldest first, within Window
@@ -144,7 +147,10 @@ func New(opts Options) *Transport {
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	return &Transport{base: opts.Base, clock: opts.Clock}
+	if opts.After == nil {
+		opts.After = time.After
+	}
+	return &Transport{base: opts.Base, clock: opts.Clock, after: opts.After}
 }
 
 // RoundTrip implements http.RoundTripper. A GET whose earlier answer had an
@@ -171,6 +177,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	defer t.mu.Unlock()
 	if q, ok := quotaOf(res.Header); ok {
 		t.quota = q
+	}
+	if RateLimited(res) {
+		t.refused(res.Header)
 	}
 	if res.StatusCode == http.StatusNotModified {
 		if !asked {
@@ -209,6 +218,19 @@ func (t *Transport) store(key string, res *http.Response) (*http.Response, error
 type readCloser struct {
 	io.Reader
 	io.Closer
+}
+
+// refused records GitHub refusing a request for its rate limit: nothing is
+// left until Retry-After (the secondary limit) or else the quota's reset, so
+// that Hold waits for it; t.mu is held.
+func (t *Transport) refused(h http.Header) {
+	t.quota.remaining = 0
+	if secs, err := strconv.Atoi(h.Get("Retry-After")); err == nil {
+		t.quota.reset = t.clock().Add(time.Duration(secs) * time.Second)
+	}
+	if !t.quota.reset.After(t.clock()) {
+		t.quota.reset = t.clock().Add(time.Minute) // GitHub said neither: a minute, as it advises
+	}
 }
 
 // cacheKey is the key of a GET's cached answer: the URL, what it accepts
@@ -285,12 +307,10 @@ func (t *Transport) Hold(ctx context.Context, loop string) error {
 	if first {
 		log.Printf("istari: GitHub requests: %d of the hour's quota left; %s and the other background loops wait until %s", q.remaining, loop, q.reset.Format("15:04:05 UTC"))
 	}
-	timer := time.NewTimer(q.reset.Sub(now))
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-t.after(q.reset.Sub(now)):
 		return nil
 	}
 }
