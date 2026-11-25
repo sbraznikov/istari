@@ -133,7 +133,7 @@ func (f *runFixture) session(t *testing.T) fakeSession {
 	select {
 	case s := <-f.h.started:
 		return s
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second): // preparing a run under -race and parallel load takes over 10s
 		t.Fatal("the harness was not started")
 		return fakeSession{}
 	}

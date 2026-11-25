@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -23,8 +24,27 @@ type daemon struct {
 	socket  string
 	config  string
 	cmd     *exec.Cmd
-	stderr  *bytes.Buffer
+	stderr  *lockedBuffer
 	client  *http.Client
+}
+
+// lockedBuffer is the daemon's stderr: the daemon process writes it while a
+// test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // newDataDir returns a short directory under /tmp: unix socket paths are
@@ -68,7 +88,7 @@ func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 // data_dir is dataDir; env are extra environment variables of the daemon.
 func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) *daemon {
 	t.Helper()
-	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &bytes.Buffer{}}
+	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &lockedBuffer{}}
 	d.cmd = exec.Command(binary, "daemon", "--config", d.config)
 	d.cmd.Env = append(os.Environ(), env...)
 	d.cmd.Stderr = d.stderr
