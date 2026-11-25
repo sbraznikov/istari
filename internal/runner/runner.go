@@ -364,6 +364,11 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		fail("run: " + err.Error())
 		return
 	}
+	// The roles that submit a structured result may write it to the run's
+	// result file, and no other file (spec sections 7.3 and 7.6).
+	if slices.Contains(resultRoles, slot.Role) {
+		env["ISTARI_RESULT"] = filepath.Join(r.opts.DataDir, "runs", run.ID, "result.yaml")
+	}
 	who := slot.Profile + " (istari)"
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": ghDir,
@@ -658,6 +663,10 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	_, err = f.WriteString("\n/.istari/skill.md\n")
 	return err
 }
+
+// resultRoles are the roles that submit a structured result and get a result
+// file for it, ISTARI_RESULT (spec section 7.6).
+var resultRoles = []string{"refiner", "planner", "reviewer"}
 
 // checkTools are the tool rules that let an agent run the check commands:
 // each command's program and subcommand with any arguments, so that
