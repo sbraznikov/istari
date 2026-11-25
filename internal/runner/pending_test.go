@@ -1,17 +1,21 @@
 package runner_test
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 type pendingFixture struct {
@@ -74,6 +78,35 @@ func TestAPendingCommentWaitsForTheTrackerAndIsDeliveredOnce(t *testing.T) {
 	}
 	if left, err := p.List(ctx); err != nil || len(left) != 0 {
 		t.Fatalf("pending after delivery = %+v, %v", left, err)
+	}
+}
+
+func TestARefinedCommentThatMeetsAnOutageIsKeptAsAPendingWrite(t *testing.T) {
+	f := newPending(t)
+	p := f.open(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "other.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	k := core.NewTickets(s, core.TicketOptions{})
+	if _, err := k.Create(ctx, "human:bob", f.ref.String(), "web"); err != nil {
+		t.Fatal(err)
+	}
+	queued := p.Queuing(f.adapter)
+	r := runner.NewRefines(queued, journal.New(queued, s, nil), k, nil)
+	f.gh.FailComments("**Refined**", 1, http.StatusBadGateway)
+	run := runner.Run{ID: "r_1", Ticket: f.ref.String(), Role: "refiner", Profile: "refiner-1"}
+	err = r.Apply(ctx, run, runner.RefineResult{Verdict: "meets", Size: "S"})
+	if !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("apply during an outage: %v, want ErrUnavailable", err)
+	}
+	got, err := p.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Kind != runner.PendingComment || !strings.HasPrefix(got[0].Body, "**Refined** — agent:refiner-1: meets") {
+		t.Fatalf("pending = %+v, want the refined comment", got)
 	}
 }
 

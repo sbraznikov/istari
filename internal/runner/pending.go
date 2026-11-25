@@ -153,6 +153,46 @@ func (p *PendingWrites) deliver(ctx context.Context, w PendingWrite) error {
 	return err
 }
 
+// QueueTracker is the tracker Queuing wraps: what refining and the journal
+// write through.
+type QueueTracker interface {
+	RefineTracker
+	Comments(ctx context.Context, ref tickets.Ref) ([]tickets.Comment, error)
+}
+
+// Queuing is a tracker whose comments and size labels are kept as pending
+// writes when the tracker is unavailable. The error still reports the
+// outage, so that the caller can end the run without spending an attempt.
+type Queuing struct {
+	QueueTracker
+	pending *PendingWrites
+}
+
+// Queuing wraps t so that its unavailable writes become pending writes.
+func (p *PendingWrites) Queuing(t QueueTracker) *Queuing { return &Queuing{QueueTracker: t, pending: p} }
+
+// Comment comments, or keeps the comment for later while the tracker is unavailable.
+func (q *Queuing) Comment(ctx context.Context, ref tickets.Ref, body string) (tickets.CommentRef, error) {
+	c, err := q.QueueTracker.Comment(ctx, ref, body)
+	return c, q.keep(ctx, err, PendingWrite{Kind: PendingComment, Ticket: ref.String(), Body: body})
+}
+
+// SetSize sets the size label, or keeps it for later while the tracker is unavailable.
+func (q *Queuing) SetSize(ctx context.Context, ref tickets.Ref, size string) error {
+	err := q.QueueTracker.SetSize(ctx, ref, size)
+	return q.keep(ctx, err, PendingWrite{Kind: PendingSize, Ticket: ref.String(), Size: size})
+}
+
+func (q *Queuing) keep(ctx context.Context, err error, w PendingWrite) error {
+	if !errors.Is(err, tickets.ErrUnavailable) {
+		return err
+	}
+	if aerr := q.pending.Add(ctx, w); aerr != nil {
+		return errors.Join(err, fmt.Errorf("keeping the %s for later: %w", w, aerr))
+	}
+	return err
+}
+
 func (p *PendingWrites) commit(ctx context.Context, w PendingWrite, typ string) error {
 	data, err := json.Marshal(w)
 	if err != nil {

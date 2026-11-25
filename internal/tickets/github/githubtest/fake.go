@@ -44,6 +44,10 @@ type Server struct {
 	dropLabels bool
 	failNext   int
 	failStatus int
+
+	failCommentsOn   string // comments containing it fail
+	failComments     int
+	failCommentsWith int
 	files      map[string]string // repository files on the default branch
 
 	appID           int64
@@ -423,6 +427,11 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct{ Body string }
 	json.NewDecoder(r.Body).Decode(&req)
+	if s.failComments > 0 && strings.Contains(req.Body, s.failCommentsOn) {
+		s.failComments--
+		s.write(w, s.failCommentsWith, map[string]string{"message": http.StatusText(s.failCommentsWith)})
+		return
+	}
 	c := s.addComment(i, s.TokenUser, req.Body)
 	s.write(w, http.StatusCreated, map[string]any{"id": c.ID, "html_url": fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", Repo, i.Number, c.ID)})
 }
@@ -587,6 +596,14 @@ func (s *Server) FailNextWith(n, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failNext, s.failStatus = n, status
+}
+
+// FailComments makes the next n comments that contain text answer status;
+// every other request is answered as usual.
+func (s *Server) FailComments(text string, n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCommentsOn, s.failComments, s.failCommentsWith = text, n, status
 }
 
 // SetPageSize sets how many items a page holds.
