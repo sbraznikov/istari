@@ -47,6 +47,7 @@ type Server struct {
 	dropLabels bool
 	failNext   int
 	files      map[string]string // repository files on the default branch
+	commits    int               // commits on the default branch: its head
 
 	appID           int64
 	appKey          *rsa.PublicKey
@@ -134,6 +135,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		s.write(w, http.StatusOK, map[string]string{"login": s.TokenUser})
 	})
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
+	mux.HandleFunc("GET "+repo+"/commits/{ref}", s.commit)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
 	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
 	mux.HandleFunc("PATCH "+repo+"/pulls/{n}", s.updatePull)
@@ -527,11 +529,23 @@ func (s *Server) contents(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(body))
 }
 
-// SetFile puts a file on the repository's default branch.
+// SetFile puts a file on the repository's default branch, in a new commit.
 func (s *Server) SetFile(path, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.files[path] = body
+	s.commits++
+}
+
+// commit answers the SHA of the default branch's head for the ref HEAD, with
+// the media type that asks for the bare SHA.
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("ref") != "HEAD" || r.Header.Get("Accept") != "application/vnd.github.sha" {
+		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "the fake answers only HEAD as a bare SHA"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "%040x", s.commits)
 }
 
 // HumanEditBody replaces an issue's body as login would.

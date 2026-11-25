@@ -52,9 +52,10 @@ type Provider struct {
 	base   string
 	token  string
 	http   *http.Client
-	mu     sync.Mutex
+	mu     sync.Mutex      // serializes labels, self and files
 	labels map[string]bool // "owner/repo\x00label" known to exist
 	self   string          // the token's login, once known
+	files  map[string]file // "owner/repo\x00path" as the default branch's head had it
 }
 
 var (
@@ -132,7 +133,7 @@ func New(opts Options) *Provider {
 	client := *opts.HTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.HTTPClient = &client
-	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}}
+	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}, files: map[string]file{}}
 }
 
 // Capabilities implements tickets.Provider.
@@ -530,15 +531,52 @@ func (p *Provider) Self(ctx context.Context) (string, error) {
 }
 
 // ReadFile implements tickets.Files with the contents API's raw media type.
+// A file is read once per commit of the default branch (#208): every call
+// asks for the branch's head, a conditional read that does not count against
+// the quota while the head stays, and an answer of the same head, the file or
+// its absence, is given again. Without a head (an empty repository) the file
+// is read each time.
 func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, error) {
 	if err := checkRepo(repo); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ratelimit.WithKind(ctx, ratelimit.KindFiles), http.MethodGet, p.base+fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), nil)
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindFiles)
+	key := repo + "\x00" + path
+	head, headErr := p.raw(ctx, "/repos/"+repo+"/commits/HEAD", "application/vnd.github.sha")
+	if headErr == nil {
+		p.mu.Lock()
+		f, ok := p.files[key]
+		p.mu.Unlock()
+		if ok && f.head == string(head) {
+			return f.data, f.err
+		}
+	}
+	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")
+	if err != nil {
+		err = fmt.Errorf("github: read %s in %s: %w", path, repo, err)
+	}
+	if headErr == nil && (err == nil || errors.Is(err, tickets.ErrNotFound)) {
+		p.mu.Lock()
+		p.files[key] = file{head: string(head), data: data, err: err}
+		p.mu.Unlock()
+	}
+	return data, err
+}
+
+// file is a file of the default branch as its head commit had it.
+type file struct {
+	head string
+	data []byte
+	err  error // ErrNotFound: the commit has no such file
+}
+
+// raw GETs path with the media type accept and returns the body as it is.
+func (p *Provider) raw(ctx context.Context, path, accept string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github.raw+json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	res, err := p.http.Do(req)
@@ -551,7 +589,7 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github: read %s in %s: %w", path, repo, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(data))})
+		return nil, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(data))}
 	}
 	return data, nil
 }

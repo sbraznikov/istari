@@ -23,6 +23,47 @@ func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
 
+func TestAFileOfMainIsReadOncePerMainCommit(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	fake.SetFile(".istari/pipeline.toml", "one")
+	fake.SetFile(".istari/ticket-standard.toml", "std")
+	contentReads := func() int {
+		n := 0
+		for _, r := range fake.Counted() {
+			if strings.HasPrefix(r, "GET /repos/acme/web/contents/") {
+				n++
+			}
+		}
+		return n
+	}
+	read := func(path, want string) {
+		t.Helper()
+		got, err := p.ReadFile(ctx, "acme/web", path)
+		if err != nil || string(got) != want {
+			t.Fatalf("ReadFile(%s) = %q, %v, want %q", path, got, err, want)
+		}
+	}
+	for range 3 {
+		read(".istari/pipeline.toml", "one")
+	}
+	read(".istari/ticket-standard.toml", "std")
+	for range 2 {
+		if _, err := p.ReadFile(ctx, "acme/web", ".istari/missing.toml"); !errors.Is(err, tickets.ErrNotFound) {
+			t.Fatalf("ReadFile of a missing file: %v, want ErrNotFound", err)
+		}
+	}
+	if got := contentReads(); got != 3 {
+		t.Errorf("counted content reads on one main commit = %d, want 3 (one per file)", got)
+	}
+	fake.SetFile(".istari/pipeline.toml", "two") // a new main commit
+	read(".istari/pipeline.toml", "two")
+	read(".istari/pipeline.toml", "two")
+	if got := contentReads(); got != 4 {
+		t.Errorf("counted content reads after a new main commit = %d, want 4", got)
+	}
+}
+
 func stateLabels(labels []string) []string {
 	var out []string
 	for _, l := range labels {
