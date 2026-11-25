@@ -57,8 +57,8 @@ type Server struct {
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
 	github    *ratelimit.Transport // nil: no counts, no hold
-	firstRepo string         // the first configured repository: where a plan goes without its own
-	repos     map[string]bool // the configured repositories: only their tickets get worktrees
+	firstRepo string               // the first configured repository: where a plan goes without its own
+	repos     map[string]bool      // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
 	changed   *notifier
 	clock     func() time.Time

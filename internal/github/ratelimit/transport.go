@@ -60,18 +60,18 @@ type Transport struct {
 	base  http.RoundTripper
 	clock func() time.Time
 
-	mu    sync.Mutex // serializes the fields below
-	sent  []sent     // oldest first, within Window
-	quota  quota
-	logged time.Time // the reset whose wait Hold logged
+	mu     sync.Mutex // serializes the fields below
+	sent   []sent     // oldest first, within Window
+	quota  quota      // of the last answer that carried it
+	logged time.Time  // the reset whose wait Hold logged
 	cache  cache
 }
 
-// The ETag cache is bounded: at most maxCached answers of at most
-// maxCachedBody bytes each; the oldest goes first.
+// The ETag cache is bounded: answers of at most maxCachedBody bytes, at most
+// maxCachedBytes of them together; the oldest goes first.
 const (
-	maxCached     = 2048
-	maxCachedBody = 1 << 20
+	maxCachedBody  = 1 << 20
+	maxCachedBytes = 32 << 20
 )
 
 // entry is a cached answer.
@@ -100,6 +100,7 @@ func (e entry) response(req *http.Request, fresh http.Header) *http.Response {
 type cache struct {
 	entries map[string]entry
 	order   []string
+	bytes   int // of the bodies held
 }
 
 func (c *cache) get(key string) (entry, bool) {
@@ -111,11 +112,15 @@ func (c *cache) put(key string, e entry) {
 	if c.entries == nil {
 		c.entries = map[string]entry{}
 	}
-	if _, ok := c.entries[key]; !ok {
+	if old, ok := c.entries[key]; ok {
+		c.bytes -= len(old.body)
+	} else {
 		c.order = append(c.order, key)
 	}
 	c.entries[key] = e
-	for len(c.order) > maxCached {
+	c.bytes += len(e.body)
+	for c.bytes > maxCachedBytes {
+		c.bytes -= len(c.entries[c.order[0]].body)
 		delete(c.entries, c.order[0])
 		c.order = c.order[1:]
 	}
@@ -147,13 +152,15 @@ func New(opts Options) *Transport {
 // quota, and the caller gets the earlier answer back as a 200.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	key, cacheable := cacheKey(req)
+	var cached entry
+	asked := false // sent with the ETag of cached
 	if cacheable {
 		t.mu.Lock()
-		e, ok := t.cache.get(key)
+		cached, asked = t.cache.get(key)
 		t.mu.Unlock()
-		if ok {
+		if asked {
 			req = req.Clone(req.Context())
-			req.Header.Set("If-None-Match", e.etag)
+			req.Header.Set("If-None-Match", cached.etag)
 		}
 	}
 	res, err := t.base.RoundTrip(req)
@@ -166,12 +173,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.quota = q
 	}
 	if res.StatusCode == http.StatusNotModified {
-		if e, ok := t.cache.get(key); ok && cacheable {
-			res.Body.Close()
-			return e.response(req, res.Header), nil
+		if !asked {
+			return res, nil // the caller's own conditional request
 		}
-		return res, nil
+		res.Body.Close()
+		return cached.response(req, res.Header), nil
 	}
+	t.prune()
 	t.sent = append(t.sent, sent{at: t.clock(), kind: kindOf(req.Context())})
 	if cacheable && res.StatusCode == http.StatusOK && res.Header.Get("ETag") != "" {
 		return t.store(key, res)

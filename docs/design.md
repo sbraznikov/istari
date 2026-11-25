@@ -550,6 +550,7 @@ type TicketProvider interface {
 - The mapping of istari states to tracker states is in the adapter config. For GitHub these are labels, for Linear and Jira they are native statuses.
 - Echo suppression: the adapter marks its own writes and ignores webhooks about them.
 - The ticket tracker and the code hosting are independent adapters: tickets can be in Linear while PRs are in GitHub.
+- GitHub's request quota (5,000 REST requests an hour per token) is shared by the ticket sync, the PR watch, the journal, labels, file reads and the operator's own `gh`. All of the daemon's GitHub clients send through one transport that counts the requests by kind and reads `X-RateLimit-*`; `istari doctor` shows the last hour's counts and the quota left in a `github requests` row. Repeated reads are conditional (`If-None-Match` with the last ETag), so an unchanged answer (304) costs nothing; done and canceled tickets and merged or closed pull requests are not read again; a `.istari/` file of the default branch is read once per commit of that branch. While fewer than 100 requests are left, the sync and the PR watch wait until `X-RateLimit-Reset` and the daemon logs it once; a 403 or 429 for the rate limit means "later", not that the request was wrong.
 
 ---
 

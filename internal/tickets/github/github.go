@@ -548,7 +548,7 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 		f, ok := p.files[key]
 		p.mu.Unlock()
 		if ok && f.head == string(head) {
-			return f.data, f.err
+			return slices.Clone(f.data), f.err
 		}
 	}
 	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")

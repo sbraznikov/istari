@@ -56,7 +56,7 @@ type Server struct {
 	checks          map[string][]Check   // commit → check runs
 	statuses        map[string]string    // commit → combined status
 	deletedBranches []string
-	counted         []string // "METHOD path" of the requests that count against the quota
+	counted         []string  // "METHOD path" of the requests that count against the quota
 	remaining       int       // the quota the answers report, with reset
 	reset           time.Time // zero: no X-RateLimit-* headers
 }
