@@ -42,6 +42,19 @@ type SyncRepo struct {
 	// Trusted are the logins admitted without a human, who may also admit
 	// others' tickets; empty means everyone with write access (spec 4.5).
 	Trusted []string
+	// LabelOnly is the project's admission = "label": a trusted author alone
+	// does not admit a ticket, only a trusted member's manual admission or
+	// inheritance from an admitted ticket does (spec 4.5).
+	LabelOnly bool
+}
+
+// authorAdmits tells whether the ticket's author alone admits it: the
+// project admits by author and the author is trusted.
+func (s *Syncer) authorAdmits(ctx context.Context, repo SyncRepo, author string) (bool, error) {
+	if repo.LabelOnly {
+		return false, nil
+	}
+	return s.trusted(ctx, repo, author)
 }
 
 // Standards checks tickets against their repository's ticket standard.
@@ -230,7 +243,7 @@ func (s *Syncer) Refinable(ctx context.Context, refText string) (bool, error) {
 	if sponsored, err := s.sponsored(ctx, repo, base); err != nil || sponsored {
 		return sponsored, err
 	}
-	return s.trusted(ctx, repo, tk.Author)
+	return s.authorAdmits(ctx, repo, tk.Author)
 }
 
 // sponsored tells whether a trusted member asked to admit the ticket and is
@@ -897,8 +910,9 @@ func (s *Syncer) conformance(ctx context.Context, repo SyncRepo, t Ticket) (Conf
 	return s.opts.Standards.Check(ctx, repo.Repo, t)
 }
 
-// admission admits a new ticket of a trusted author that meets the standard
-// (T2 by the system), and returns a ready ticket whose required sections
+// admission admits a new ticket that meets the standard (T2) when a trusted
+// member asked to, it inherits an admitted ticket's admission, or its author
+// admits it (see authorAdmits), and returns a ready ticket whose required sections
 // changed to new (T15).
 func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	if s.opts.Standards == nil || x.tk.Hold != "" {
@@ -911,10 +925,15 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil {
 			return err
 		}
-		if sponsored {
+		switch {
+		case sponsored:
 			actor = "human:" + x.base.Sponsor
-		} else if trusted, err := s.trusted(ctx, x.repo, x.t.Author); err != nil || !trusted {
-			return err
+		case x.tk.BudgetOf != "":
+			// an agent created it for an admitted ticket: it inherits that admission
+		default:
+			if admits, err := s.authorAdmits(ctx, x.repo, x.t.Author); err != nil || !admits {
+				return err
+			}
 		}
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil || len(conf.Deviations) > 0 {
