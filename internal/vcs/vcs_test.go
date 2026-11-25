@@ -219,15 +219,14 @@ func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
 		t.Fatalf("first push: %v", err)
 	}
 	old := git(t, work, "rev-parse", "HEAD")
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
 	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "work, rebased")
 	if err := vcs.Push(ctx, forced); err != nil {
 		t.Fatalf("forced push of the rebased work: %v", err)
 	}
 	// Someone else puts the branch back on the commit istari pushed first:
 	// a commit istari knows, which the worktree's HEAD does not contain.
-	other := filepath.Join(root, "other")
-	git(t, root, "clone", "-q", "-b", own, remote, other)
-	git(t, other, "fetch", "-q", "origin", old)
 	git(t, other, "push", "-q", "--force", "origin", old+":refs/heads/"+own)
 	git(t, work, "commit", "-q", "--allow-empty", "-m", "more")
 	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote a commit its own did not contain")
