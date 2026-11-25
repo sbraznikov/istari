@@ -195,7 +195,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | T8 | `in_review` | `review_passed` | `awaiting_approval` | system, based on reviewer findings | the accepted reviewer report contains no findings; CI is green |
 | T9 | `awaiting_approval` | `changes_requested` | `in_progress` | human via GitHub review | — |
 | T10 | `awaiting_approval` | `merge_failed` | `in_progress` | system | a conflict or red CI after the branch is updated. The repeat review is limited to the conflict resolution (section 4.9) |
-| T11 | `awaiting_approval` | `merged` | `done` | system or human, depending on the merge mode (section 4.8) | required checks have passed; human approval, if the mode requires it |
+| T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
 | T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed |
 | T14 | `canceled` | `reopen` | `new` | human | — |
@@ -218,7 +218,7 @@ any unfinished state ──► canceled ──► new (reopen)
 
 - Only Core performs transitions. Every transition is a `ticket.transitioned` event with the fields `from`, `to`, `trigger`, `actor`, so the ticket history can be fully reconstructed from the log.
 - The ticket state changes only through the events in the table. Task states (section 4.2) are a finer level inside a single ticket state.
-- In GitHub Issues the state is stored as exactly one label `istari:<state>`, and a hold as the label `istari:hold:<reason>`. `done` closes the issue as completed, `canceled` as not planned. In Linear and Jira native statuses are used, according to the mapping table in the adapter config.
+- In GitHub Issues the state is stored as exactly one label `istari:<state>`, and a hold as the label `istari:hold:<reason>`. `done` closes the issue as completed, `canceled` as not planned. A closed issue is read as a human's cancel (T13) only when the ticket's PR is not merged: an issue closed by the merge of its PR (`Closes #n`) fires T11 instead (section 4.8). In Linear and Jira native statuses are used, according to the mapping table in the adapter config.
 - A manual label edit in the tracker is treated as a transition request. If the transition is allowed and the author has the right to perform it, it is applied; otherwise istari restores the label and explains the reason in a comment.
 
 ### 4.2 Task states
@@ -325,6 +325,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket author is a trusted member of the project;
 - the ticket was created by an agent while working on an already admitted ticket, as a child of a split (T5) or filed during the work; it inherits the parent's admission, and its budget as below;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
+
+**The table's priority.** The priority in the ticket's table becomes its stored priority (section 4.9) when the ticket is admitted and has none yet; the author is recorded as the one who set it. A ticket created with `istari ticket create` gets its table's priority at once. A ticket the planner creates by splitting its ticket gets the parent's priority, unless its own table states another one. From then on the stored priority is the source: a later edit of the table does not change it. When the table and the stored priority differ, the journal says so once, naming both; nothing else happens, and the difference is not a deviation from the standard.
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 
@@ -459,6 +461,13 @@ The merge mode is set in the config (`[defaults.merge]`, overridden in the repos
 
 A PR that fails at least one condition waits for a human as in `after_approval` mode. The reason is shown in the ticket card in Slack and on the Decisions tab.
 
+**A human merges first.** In every mode a human may merge the ticket's PR before istari does, also while the ticket is still in `in_progress` or `in_review`. When istari sees that the PR is merged, the ticket moves to `done` (T11, actor `system`), whoever merged it; istari's own review and approval steps that had not run yet are skipped, because the human who merged had the last word. istari sees the merge in two places, whichever comes first:
+
+- the PR watch records `vcs.closed` with `merged: true`;
+- sync finds the ticket's issue closed (GitHub closes it through `Closes #n`). Before reading a closed issue as a cancel (T13), sync asks whether the ticket's PR is merged; if it is, it fires T11 instead, and the issue stays closed as completed with the label `istari:done`.
+
+A ticket that is already `done` ignores the second sighting. A ticket that an earlier version canceled because of a human's merge (its PR merged, its issue closed by that merge) is repaired to `done` on the next sync through T11 from `canceled`, with a `ticket.transitioned` event in the log. A PR closed without a merge changes nothing; a closed issue of a ticket without a merged PR is still a cancel (T13). Merges made outside GitHub are not seen.
+
 **After the merge** in any mode: the ticket is closed, the branch is deleted, the worktree is deleted (section 7.2), dependent tickets get a readiness signal.
 
 **The merge method** is set by the `method` parameter: `squash`, `merge` or `rebase`.
@@ -477,7 +486,7 @@ Nobody assigns tasks, so the links between tickets, their order and their confli
 | `P3` | when there is time |
 
 - The priority is set by a human: the ticket author or a project member. Agents do not change it. If the author did not specify a priority, code substitutes the default value from the config.
-- In the tracker it is stored as a `priority:P1` label or as a native priority field.
+- In the tracker it is stored as a `priority:P1` label or as a native priority field. It is first taken from the ticket's table on admission or creation (section 4.5); after that the stored priority is the source, and a later edit of the table does not override it.
 - The queue is ordered by priority, and by age when priorities are equal.
 - Priority is inherited down the dependencies: if a `P0` is waiting for a `P3` ticket, that ticket is executed as `P0`. Otherwise urgent work would be stuck behind non-urgent work.
 - Priority does not interrupt work in progress: a `P0` gets the next free slot.
@@ -677,7 +686,7 @@ For each task the Runner:
 | plan, implement, review stages | all runs of the ticket work in the same worktree, one after another |
 | hold, pause, waiting for review | the worktree is kept |
 | return for rework (T7, T9, T10) | the same worktree is used |
-| PR approved and merged, ticket in `done` (T11) | the worktree and the local branch are deleted |
+| PR merged, by istari or by a human, ticket in `done` (T11) | the worktree and the local branch are deleted |
 | ticket cancelled (T13) | the worktree and the local branch are deleted; the branch in the remote repository stays until the PR is closed |
 | the worktree is lost or corrupted | recreated from the ticket branch (section 4.6) |
 
