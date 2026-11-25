@@ -129,7 +129,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		}
 	}
 	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 {
-		judged, passed, err := c.onPrevious(ctx, ws.Repo, run.Dir, prev, prevTest, tests, gone, cmd)
+		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, cmd)
 		switch {
 		case err != nil:
 			return journal.Entry{}, err
@@ -218,32 +218,19 @@ func (w *Workspaces) checks(ctx context.Context, repo string) (map[string]string
 }
 
 // onPrevious runs the test command on the previous checkpoint's code in a
-// scratch checkout with the slice's tests in place, which must fail. The
-// previous code must pass on its own for red first to be judged: prevTest is
-// its recorded test result; without one it runs there as it is first. It
-// reports whether it could judge, and whether the slice's tests passed there.
-func (c *Checkpoints) onPrevious(ctx context.Context, repo, dir, prev, prevTest string, tests, gone []string, cmd string) (judged, passed bool, err error) {
+// ticket's verify_red worktree with the slice's tests in place, which must
+// fail. The previous code must pass on its own for red first to be judged:
+// prevTest is its recorded test result; without one it runs there as it is
+// first. It reports whether it could judge, and whether the slice's tests
+// passed there.
+func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, cmd string) (judged, passed bool, err error) {
 	if prevTest == "red" {
 		return false, false, nil
 	}
-	scratch, err := os.MkdirTemp("", "istari-red-")
+	scratch, err := c.ws.redCheckout(ctx, ws, prev)
 	if err != nil {
 		return false, false, err
 	}
-	os.Remove(scratch)
-	clone := c.ws.clonePath(repo)
-	c.ws.mu.Lock()
-	_, err = gitOut(ctx, clone, "worktree", "add", "--detach", scratch, prev)
-	c.ws.mu.Unlock()
-	if err != nil {
-		return false, false, err
-	}
-	defer func() {
-		c.ws.mu.Lock()
-		defer c.ws.mu.Unlock()
-		gitOut(context.WithoutCancel(ctx), clone, "worktree", "remove", "--force", scratch)
-		os.RemoveAll(scratch)
-	}()
 	if prevTest == "" {
 		if ok, _ := runCheck(ctx, scratch, cmd); !ok {
 			return false, false, nil

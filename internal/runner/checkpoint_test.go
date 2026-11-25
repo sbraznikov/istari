@@ -195,15 +195,18 @@ func TestARedPreviousCheckpointCannotJudgeRedFirst(t *testing.T) {
 }
 
 // newLoggedCheckpoints makes a fixture whose test command writes the
-// directory of each of its runs to a log outside the repository.
+// directory of each of its runs to a log outside the repository, as one
+// line, and "left <dir>" when it finds the file "leftover" that it leaves
+// behind in every run.
 func newLoggedCheckpoints(t *testing.T) (*cpFixture, func() []string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "runs.log")
-	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"pwd -P >> "+log+"; sh run-tests.sh\"\nverify_red = true\n")
+	test := "pwd -P >> " + log + "; test -e leftover && echo left $(pwd -P) >> " + log + "; touch leftover; sh run-tests.sh"
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \""+test+"\"\nverify_red = true\n")
 	runs := func() []string {
 		data, _ := os.ReadFile(log)
 		os.Remove(log)
-		return strings.Fields(string(data))
+		return strings.Split(strings.TrimSpace(string(data)), "\n")
 	}
 	return f, runs
 }
@@ -217,7 +220,7 @@ func (f *cpFixture) elsewhere(t *testing.T, runs []string) []string {
 	}
 	var out []string
 	for _, r := range runs {
-		if r != dir {
+		if r != dir && r != "left "+dir {
 			out = append(out, r)
 		}
 	}
@@ -245,5 +248,29 @@ func TestAGreenPreviousCheckpointIsNotRunAgainWithoutTheNewTests(t *testing.T) {
 	}
 	if got := f.elsewhere(t, runs()); len(got) != 1 {
 		t.Fatalf("the test command ran %d times on the previous code (%v), want once", len(got), got)
+	}
+}
+
+func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
+	f, runs := newLoggedCheckpoints(t)
+	// An ignored file is left behind too: only a full clean removes it.
+	write(t, filepath.Join(f.ws.Dir, ".gitignore"), "leftover\n")
+	f.slice(t, "first")
+	f.checkpoint(t, "First slice")
+	first := f.elsewhere(t, runs())
+	// The first slice of a branch has no recorded result: the previous code
+	// runs as it is, then with the new tests.
+	if len(first) < 2 || first[0] != first[1] {
+		t.Fatalf("first checkpoint ran on the previous code in %v, want twice in one directory", first)
+	}
+	red := first[0]
+	ticketDir, _ := filepath.EvalSymlinks(f.ws.Dir)
+	if filepath.Dir(red) != filepath.Dir(ticketDir) {
+		t.Fatalf("verify_red ran in %s, want next to the ticket's worktree %s", red, ticketDir)
+	}
+	f.slice(t, "second")
+	f.checkpoint(t, "Second slice")
+	if second := f.elsewhere(t, runs()); strings.Join(second, " ") != red {
+		t.Fatalf("second checkpoint ran on the previous code as %v, want once in %s and nothing left over", second, red)
 	}
 }
