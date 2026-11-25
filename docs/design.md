@@ -325,6 +325,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket was created by an agent while working on an already admitted ticket; it inherits the parent's admission and budget;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
 
+**The table's priority.** The priority in the ticket's table becomes its stored priority (section 4.9) when the ticket is admitted and has none yet; the author is recorded as the one who set it. A ticket created with `istari ticket create` gets its table's priority at once. A ticket the planner creates by splitting its ticket gets the parent's priority, unless its own table states another one. From then on the stored priority is the source: a later edit of the table does not change it. When the table and the stored priority differ, the journal says so once, naming both; nothing else happens, and the difference is not a deviation from the standard.
+
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
 
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
@@ -471,7 +473,7 @@ Nobody assigns tasks, so the links between tickets, their order and their confli
 | `P3` | when there is time |
 
 - The priority is set by a human: the ticket author or a project member. Agents do not change it. If the author did not specify a priority, code substitutes the default value from the config.
-- In the tracker it is stored as a `priority:P1` label or as a native priority field.
+- In the tracker it is stored as a `priority:P1` label or as a native priority field. It is first taken from the ticket's table on admission or creation (section 4.5); after that the stored priority is the source, and a later edit of the table does not override it.
 - The queue is ordered by priority, and by age when priorities are equal.
 - Priority is inherited down the dependencies: if a `P0` is waiting for a `P3` ticket, that ticket is executed as `P0`. Otherwise urgent work would be stuck behind non-urgent work.
 - Priority does not interrupt work in progress: a `P0` gets the next free slot.
