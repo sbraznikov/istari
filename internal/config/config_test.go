@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/config"
 )
@@ -149,6 +150,28 @@ func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.key, c.got, c.want)
 		}
+	}
+}
+
+func TestTheStopCheckpointTimeoutIsADuration(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(writeConfig(t, "[daemon]\nstop_checkpoint_timeout = \"20m\"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Daemon.StopCheckpoint(); got != 20*time.Minute {
+		t.Errorf("daemon.stop_checkpoint_timeout = %s, want 20m", got)
+	}
+	cfg, err = config.Load(writeConfig(t, "[daemon]\nmax_concurrent_runs = 2\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Daemon.StopCheckpoint(); got != 0 {
+		t.Errorf("an absent daemon.stop_checkpoint_timeout = %s, want 0 (the runner's default)", got)
+	}
+	for _, bad := range []string{"soon", "0s", "-5m"} {
+		_, err := config.Load(writeConfig(t, "[daemon]\nstop_checkpoint_timeout = \""+bad+"\"\n"))
+		assertErrorNames(t, err, "daemon.stop_checkpoint_timeout")
 	}
 }
 

@@ -113,6 +113,7 @@ func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
 		return runner.RunnerOptions{}
 	}
 	opts.Budgets = cfg.Defaults.BudgetUSD // every run is capped by its ticket's budget
+	opts.StopCheckpoint = cfg.Daemon.StopCheckpoint()
 	opts.Guard = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook git-guard"
 	defaults := harness.Defaults()
 	roles := make([]string, 0, len(defaults))
