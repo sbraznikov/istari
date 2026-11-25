@@ -101,7 +101,8 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir)
 	if err != nil {
 		return vcs.Opened{}, err
-	} else if !based {
+	}
+	if !based {
 		return vcs.Opened{}, fmt.Errorf("pr: the branch is not based on the current %s: merge origin/%s, resolve, make a checkpoint, then open the pull request", main, main)
 	}
 	head, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
