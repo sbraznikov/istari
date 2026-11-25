@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -23,8 +24,27 @@ type daemon struct {
 	socket  string
 	config  string
 	cmd     *exec.Cmd
-	stderr  *bytes.Buffer
+	stderr  *syncBuffer
 	client  *http.Client
+}
+
+// syncBuffer is a buffer the daemon's stderr is copied into while a test
+// reads it.
+type syncBuffer struct {
+	mu sync.Mutex // serializes the daemon's writes and the test's reads of b
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 // newDataDir returns a short directory under /tmp: unix socket paths are
@@ -75,7 +95,7 @@ func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) 
 // `istari daemon`, such as --paused.
 func startDaemonWithArgs(t *testing.T, dataDir, config string, args []string, env ...string) *daemon {
 	t.Helper()
-	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &bytes.Buffer{}}
+	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &syncBuffer{}}
 	d.cmd = exec.Command(binary, append([]string{"daemon", "--config", d.config}, args...)...)
 	d.cmd.Env = append(os.Environ(), env...)
 	d.cmd.Stderr = d.stderr
@@ -370,6 +390,39 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	again.call(t, "ticket.list", map[string]any{}, &tickets)
 	if len(tickets) != 1 || tickets[0].Ref != "gh:acme/web#1" {
 		t.Fatalf("tickets after restart = %v", tickets)
+	}
+}
+
+// sleepingAgent is a harness binary whose run lives until it is killed.
+const sleepingAgent = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+echo '{"type":"system","subtype":"init","session_id":"s1","model":"m","cwd":"/w","tools":[]}'
+exec sleep 30
+`
+
+func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
+	t.Parallel()
+	d := startAgentDaemon(t, sleepingAgent)
+	type listed struct{ ID, State, Reason string }
+	var runs []listed
+	for deadline := time.Now().Add(20 * time.Second); len(runs) == 0 || runs[0].State != "running"; time.Sleep(50 * time.Millisecond) {
+		d.mustCLI(t, &runs, "run", "list")
+		if time.Now().After(deadline) {
+			t.Fatalf("no run started: %+v\nstderr: %s", runs, d.stderr)
+		}
+	}
+	left := runs[0].ID
+	d.cmd.Process.Kill() // the daemon dies with its run still recorded running
+	d.cmd.Wait()
+
+	again := startDaemonWithConfig(t, d.dataDir, d.config, d.env...)
+	again.mustCLI(t, &runs, "run", "list")
+	if len(runs) != 1 || runs[0].ID != left || runs[0].State != "ended" || runs[0].Reason != "the daemon restarted" {
+		t.Fatalf("runs after the restart = %+v, want %s ended because the daemon restarted", runs, left)
+	}
+	_, stderr, code := again.cli(t, "run", "stop", left)
+	if code == 0 || !strings.Contains(stderr, "run "+left+" has ended: the daemon restarted") {
+		t.Fatalf("run stop = exit %d, %q; want that the run has ended", code, stderr)
 	}
 }
 

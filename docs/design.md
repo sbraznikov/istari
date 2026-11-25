@@ -194,7 +194,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | T7 | `in_review` | `changes_requested` | `in_progress` | system, based on reviewer findings | the accepted reviewer report contains findings; there have been fewer than `max_review_rounds` rounds, otherwise hold |
 | T8 | `in_review` | `review_passed` | `awaiting_approval` | system, based on reviewer findings | the accepted reviewer report contains no findings; CI is green |
 | T9 | `awaiting_approval` | `changes_requested` | `in_progress` | human via GitHub review | — |
-| T10 | `awaiting_approval` | `merge_failed` | `in_progress` | system | a conflict or red CI after the branch is updated. The repeat review is limited to the conflict resolution (section 4.9) |
+| T10 | `in_review`, `awaiting_approval` | `merge_failed` | `in_progress` | system | the PR watch sees GitHub report the PR `mergeable: false` (`dirty`) at istari's head, or the merge queue meets a conflict or red CI after the branch is updated (section 4.9). The round's open tasks are canceled and a conflict round starts from `implement`; a `mergeable` that is still unknown (`null`) changes nothing until GitHub answers. The journal records the conflict once. The repeat review is limited to the conflict resolution (sections 4.8, 4.9) |
 | T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
 | T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
@@ -211,7 +211,7 @@ A hold set on a ticket with a running run stops the run with a checkpoint, as a 
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
-| `needs_input` | an agent asked a question and stopped, or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
+| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7); or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
@@ -263,6 +263,7 @@ Rules:
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
 - A PR without CI: when the PR's head commit still has no checks (no check runs, no commit statuses) 10 minutes after istari's last push to it, the repository is read as having no CI, and the ticket gets the hold `needs_input` in `in_progress` instead of waiting silently. The full suite that `istari pr open` runs is not taken as the CI result: auto-merge (section 4.8) is tied to CI. A human adds CI (checks that appear later replace "no checks", and verify goes on once the hold is cleared), merges by hand (T11), or cancels; a hold cleared while there are still no checks is set again.
+- A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first. A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
@@ -331,6 +332,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket author is a trusted member of the project;
 - the ticket was created by an agent while working on an already admitted ticket, as a child of a split (T5) or filed during the work; it inherits the parent's admission, and its budget as below;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
+
+The T2 event names the condition that admitted the ticket in its payload: `rule` is `trusted_author`, `agent` with `parent`, the admitted ticket it was created on, or `human_admission`. The `create` transition (T1) of a ticket an agent creates has the agent as its actor, whatever login the tracker shows as the issue's author.
 
 **The table's priority.** The priority in the ticket's table becomes its stored priority (section 4.9) when the ticket is admitted and has none yet; the author is recorded as the one who set it. A ticket created with `istari ticket create` gets its table's priority at once. A ticket the planner creates by splitting its ticket gets the parent's priority, unless its own table states another one. From then on the stored priority is the source: a later edit of the table does not change it. When the table and the stored priority differ, the journal says so once, naming both; nothing else happens, and the difference is not a deviation from the standard.
 
@@ -475,6 +478,8 @@ A PR that fails at least one condition waits for a human as in `after_approval` 
 - sync finds the ticket's issue closed (GitHub closes it through `Closes #n`). Before reading a closed issue as a cancel (T13), sync asks whether the ticket's PR is merged; if it is, it fires T11 instead, and the issue stays closed as completed with the label `istari:done`.
 
 A ticket that is already `done` ignores the second sighting. A ticket that an earlier version canceled because of a human's merge (its PR merged, its issue closed by that merge) is repaired to `done` on the next sync through T11 from `canceled`, with a `ticket.transitioned` event in the log. A PR closed without a merge changes nothing; a closed issue of a ticket without a merged PR is still a cancel (T13). Merges made outside GitHub are not seen.
+
+**A pull request in conflict.** A merge into the main branch can leave the open PR of another ticket in conflict. The PR watch reads GitHub's `mergeable` and `mergeable_state` with the PR, again whenever the head or the base moved; `dirty` means conflicts. A ticket in `in_review` or `awaiting_approval` whose PR is `dirty` at istari's current head returns to `in_progress` through T10 `merge_failed`: the open tasks of its round (review, approve, merge) are canceled, and a conflict round starts from `implement`, whose run merges the main branch and resolves the conflict first (section 4.6, step 2). The journal records the conflict once per head, naming the PR and the head; GitHub does not name the files, so the implement run, whose merge finds them, records them in the journal once and its brief lists them. The review of the conflict round looks only at the conflict resolution. While GitHub has not computed `mergeable` yet (`null`), nothing changes; a reading for a head istari has already replaced is stale and ignored. A ticket in `in_progress` is left alone: its next run merges the main branch anyway. A conflict round does not count against `max_review_rounds` (section 4.3).
 
 **After the merge** in any mode: the ticket is closed, the branch is deleted, the worktree is deleted (section 7.2), dependent tickets get a readiness signal.
 
@@ -710,6 +715,8 @@ Rules:
 
 This is the same "claim, not get assigned" model as in Board: nobody decides that a task will go to `implementer-2`; the first free slot takes it. The task is claimed by the Runner slot itself in ordinary code, not by the model inside the harness: it takes the ready task of its role with the highest priority (the oldest one on a tie), obtains a lease on it and only then starts the harness. The model starts working with a task already in hand and cannot take someone else's.
 
+**Runs left running by a restart.** A run's process lives only as long as the daemon that started it. When the daemon starts, before any slot starts a run, it ends every run still recorded as `running`: the daemon lock proves that no other daemon owns it. Each such run becomes `ended` with the reason "the daemon restarted", in one `run.exited` event per run. Its task is not resumed by this: its lease runs out and the task is handed out again (section 4.2). `istari run stop` on such a run answers that it has ended, with its reason.
+
 **How the agent knows who it is and what to do.** From three things the Runner passes at start:
 
 | What | How it is passed | Content |
@@ -918,8 +925,17 @@ The principle: less model, more deterministic code. The model is non-determinist
 | Moment | What is run | Consequence of failure |
 |---|---|---|
 | `istari checkpoint` | type check and fast tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
-| `istari pr open` | full suite | the PR is not opened |
+| `istari pr open` | full suite | the PR is not opened; see below for whose failure it is |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
+
+**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command once on the tip of the main branch, as last fetched, in a scratch worktree, and records that result in the journal entry together with the main commit. The result is kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
+
+| Main branch | Journal entry | What follows |
+|---|---|---|
+| green | the branch's failure and output, as before | the failure is the ticket's: the agent fixes it |
+| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again |
+
+A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch.
 
 The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter.
 

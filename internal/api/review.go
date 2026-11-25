@@ -92,11 +92,13 @@ func (e *notInReview) Error() string {
 // without spending an attempt (spec section 4.2), and notes it once per task
 // in the ticket's journal.
 func (s *Server) yieldReview(ctx context.Context, run runner.Run, early *notInReview) error {
-	if _, err := s.runs.Yield(ctx, run.ID, early.Error()); err != nil {
-		return err
-	}
+	// The note comes first: once the run yields, the task is handed out
+	// again, and the next early run must find the note already written.
 	if err := s.noteEarlyReview(ctx, run, early.state); err != nil {
 		log.Printf("istari: review of %s: noting the early hand-out: %v", run.Ticket, err)
+	}
+	if _, err := s.runs.Yield(ctx, run.ID, early.Error()); err != nil {
+		return err
 	}
 	return &core.Error{Code: core.CodeInvalidState, Message: early.Error() +
 		". Stop and end your run without a result, without istari complete: istari asks for the review again once the ticket is in review"}
