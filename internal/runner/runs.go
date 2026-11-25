@@ -61,6 +61,7 @@ type Run struct {
 	Usage      harness.Usage `json:"usage"`
 	Completed  string        `json:"completed,omitempty"` // what the agent said with istari complete
 	Rejected   string        `json:"rejected,omitempty"`  // why code rejected what the agent submitted: the run fails
+	Yielded    string        `json:"yielded,omitempty"`   // why code refused a submission for the ticket's state: the run ends without a result
 	ExitCode   int           `json:"exit_code"`
 	Reason     string        `json:"reason,omitempty"` // how the run ended
 
@@ -170,6 +171,14 @@ func (r *Runs) Complete(ctx context.Context, id, message string) (Run, error) {
 // malformed result: the task fails when the run ends, whatever it says.
 func (r *Runs) Reject(ctx context.Context, id, reason string) (Run, error) {
 	return r.update(ctx, id, "run.rejected", map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Rejected = reason })
+}
+
+// Yield records that code refused what the run's agent submitted because of
+// the ticket's state, not the submission: the run ends without a result and
+// its task is released, without spending an attempt (spec section 4.2). A
+// rejection still wins over it.
+func (r *Runs) Yield(ctx context.Context, id, reason string) (Run, error) {
+	return r.update(ctx, id, "run.yielded", map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Yielded = reason })
 }
 
 // create records a new run and its token.

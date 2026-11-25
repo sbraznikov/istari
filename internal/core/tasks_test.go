@@ -78,6 +78,7 @@ func assertCode(t *testing.T, err error, code string) {
 }
 
 func TestTwoConcurrentClaimsOfOneTaskExactlyOneWins(t *testing.T) {
+	t.Parallel()
 	for round := range 20 {
 		f := newFixture(t)
 		f.create(t, "t_1", "implementer")
@@ -126,6 +127,7 @@ func (f *fixture) complete(t *testing.T, id string) {
 }
 
 func TestATaskWithUnfinishedNeedsWaitsUntilAllAreCompleted(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "plan", "planner")
 	f.create(t, "verify", "verifier")
@@ -146,6 +148,7 @@ func TestATaskWithUnfinishedNeedsWaitsUntilAllAreCompleted(t *testing.T) {
 }
 
 func TestAFailedOrCanceledPrerequisiteReadiesNothing(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "implement", "implementer")
 	f.create(t, "plan", "planner")
@@ -171,6 +174,7 @@ func TestAFailedOrCanceledPrerequisiteReadiesNothing(t *testing.T) {
 }
 
 func TestInvalidNeedsAreRejected(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "plan", "planner")
 	for _, tc := range []struct {
@@ -201,6 +205,7 @@ func (f *fixture) events(t *testing.T, filter store.Filter) []store.Event {
 }
 
 func TestAnExpiredLeaseReturnsTheTaskToReadyAndTheOldOwnerLosesIt(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	old := f.claim(t, "t_1")
@@ -240,6 +245,7 @@ func TestAnExpiredLeaseReturnsTheTaskToReadyAndTheOldOwnerLosesIt(t *testing.T) 
 }
 
 func TestEveryOperationAppendsExactlyOneMatchingEvent(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	var lease core.Lease
 	steps := []struct {
@@ -300,6 +306,7 @@ func TestEveryOperationAppendsExactlyOneMatchingEvent(t *testing.T) {
 }
 
 func TestBlockNeedsAKnownKindAndUnblockReturnsToReady(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	lease := f.claim(t, "t_1")
@@ -325,6 +332,7 @@ func TestBlockNeedsAKnownKindAndUnblockReturnsToReady(t *testing.T) {
 }
 
 func TestClaimReadyTakesTheOldestReadyTaskOfTheRole(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_b", "implementer")
 	f.clock.Advance(time.Second)
@@ -342,6 +350,7 @@ func TestClaimReadyTakesTheOldestReadyTaskOfTheRole(t *testing.T) {
 }
 
 func TestExhaustingAttemptsLeavesTheTaskFailed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	for attempt := 1; attempt <= core.DefaultMaxAttempts; attempt++ {
@@ -365,6 +374,7 @@ func TestExhaustingAttemptsLeavesTheTaskFailed(t *testing.T) {
 }
 
 func TestAnOwnerPastItsDeadlineLosesTheClaimBeforeExpiryRuns(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	lease := f.claim(t, "t_1")
@@ -391,6 +401,7 @@ func slowTasks(t *testing.T) *core.Tasks {
 }
 
 func TestATaskCreatedWhileItsNeedCompletesIsNotLeftWaiting(t *testing.T) {
+	t.Parallel()
 	tasks := slowTasks(t)
 	if _, err := tasks.Create(ctx, "system", core.NewTask{ID: "plan", Ticket: "gh:acme/web#1", Role: "planner"}); err != nil {
 		t.Fatal(err)
@@ -420,6 +431,7 @@ func TestATaskCreatedWhileItsNeedCompletesIsNotLeftWaiting(t *testing.T) {
 }
 
 func TestATaskWhoseLastNeedsCompleteTogetherBecomesReady(t *testing.T) {
+	t.Parallel()
 	tasks := slowTasks(t)
 	for _, nt := range []core.NewTask{
 		{ID: "a", Ticket: "gh:acme/web#1", Role: "implementer"},
@@ -452,6 +464,7 @@ func TestATaskWhoseLastNeedsCompleteTogetherBecomesReady(t *testing.T) {
 }
 
 func TestDuplicateNeedsAreRejected(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "plan", "planner")
 	_, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "review", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"plan", "plan"}})
@@ -459,6 +472,7 @@ func TestDuplicateNeedsAreRejected(t *testing.T) {
 }
 
 func TestClaimReadyWithoutARoleTakesTheOldestReadyTaskOfAnyRole(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_r", "reviewer")
 	f.clock.Advance(time.Second)
@@ -470,6 +484,7 @@ func TestClaimReadyWithoutARoleTakesTheOldestReadyTaskOfAnyRole(t *testing.T) {
 }
 
 func TestLeaseOfReturnsTheCurrentLeaseToItsOwnerOnly(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	lease := f.claim(t, "t_1")
@@ -482,6 +497,7 @@ func TestLeaseOfReturnsTheCurrentLeaseToItsOwnerOnly(t *testing.T) {
 }
 
 func TestRetryReturnsAFailedTaskToReadyWithFreshAttempts(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	assertCode(t, f.tasks.Retry(ctx, "human:alex", "t_1"), core.CodeInvalidState) // not failed
@@ -503,6 +519,7 @@ func TestRetryReturnsAFailedTaskToReadyWithFreshAttempts(t *testing.T) {
 }
 
 func TestRevokingALeaseReturnsTheTaskAtOnceAndTheOldLeaseIsDead(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.create(t, "t_1", "implementer")
 	assertCode(t, f.tasks.Revoke(ctx, "human:alex", "t_1"), core.CodeInvalidState) // not claimed

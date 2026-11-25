@@ -41,6 +41,7 @@ func mustCreate(t *testing.T, tasks *core.Tasks, id, project, role string) {
 }
 
 func TestNoMoreThanMaxConcurrentTasksAreClaimedAtOnce(t *testing.T) {
+	t.Parallel()
 	const limit, workers = 2, 8
 	tasks := limitedTasks(t, core.Limits{Total: limit}, 10*time.Millisecond)
 	for i := range workers {
@@ -85,6 +86,7 @@ func TestNoMoreThanMaxConcurrentTasksAreClaimedAtOnce(t *testing.T) {
 }
 
 func TestLimitsPerProjectAndPerRole(t *testing.T) {
+	t.Parallel()
 	tasks := newLimitedTasks(t, core.Limits{PerProject: map[string]int{"web": 1}, PerRole: map[string]int{"reviewer": 1}})
 	mustCreate(t, tasks, "web_1", "web", "implementer")
 	mustCreate(t, tasks, "web_2", "web", "implementer")
@@ -112,6 +114,7 @@ func TestLimitsPerProjectAndPerRole(t *testing.T) {
 }
 
 func TestPauseStopsHandOutButNotRunningTasks(t *testing.T) {
+	t.Parallel()
 	tasks := newLimitedTasks(t, core.Limits{})
 	mustCreate(t, tasks, "web_1", "web", "implementer")
 	mustCreate(t, tasks, "web_2", "web", "implementer")
@@ -152,6 +155,7 @@ func TestPauseStopsHandOutButNotRunningTasks(t *testing.T) {
 }
 
 func TestClaimReadySkipsTasksThatCannotBeHandedOutAndTakesTheNext(t *testing.T) {
+	t.Parallel()
 	tasks := newLimitedTasks(t, core.Limits{PerRole: map[string]int{"reviewer": 1}})
 	// Created in this order; the clock is fixed, so ties go by id.
 	mustCreate(t, tasks, "a_web", "web", "implementer") // first, but its project is paused

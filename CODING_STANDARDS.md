@@ -79,7 +79,7 @@ Each rule says where it comes from: **[repo]** is a convention of this code base
 - **S7.5** `t.Fatal` when later checks would be meaningless, `t.Error` otherwise; never `t.Fatal` from another goroutine. [TC] [GSB] [TESTING]
 - **S7.6** Setup helpers call `t.Helper()`, fail with `t.Fatal`, and use `t.TempDir`, `t.Cleanup`, `t.Setenv`. [GSD] [TESTING]
 - **S7.7** Real implementations over doubles: SQLite in a temp dir, the production client against a fake server (`githubtest`), scripts standing in for external binaries. No mock libraries. [GSB] [repo]
-- **S7.8** Tests do not depend on the machine: no user config, no real network, no tools beyond `git`, `sh` and the binary under test. [repo]
+- **S7.8** Tests do not depend on the machine: no user config, no real network, no tools beyond `git`, `sh` and the binary under test, and no `ISTARI_*` variables of the run that started them (an agent's `ISTARI_SOCKET` and `ISTARI_TOKEN` point at the real daemon). [repo]
 - **S7.9** A table test only when the cases share the same logic; cases are named, not indexed. [TC] [GSD]
 - **S7.10** In-process concurrency is tested without sleeping (`testing/synctest`, or by waiting on the event). A test across processes may poll, with a deadline and a message that shows the state. [SYNC] [GO125] [repo]
 - **S7.11** Output that istari does not own (JSON of a library, GitHub's) is parsed and compared, not compared byte for byte. [TC] [GSD] [GO127]

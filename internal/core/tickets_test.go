@@ -83,8 +83,10 @@ func bringTo(t *testing.T, tickets *core.Tickets, state core.TicketState) {
 }
 
 func TestEveryRowOfTheTransitionTable(t *testing.T) {
+	t.Parallel()
 	for _, row := range transitionTable {
 		t.Run(row.id+"_"+string(row.from)+"_"+row.trigger, func(t *testing.T) {
+			t.Parallel()
 			tickets, s := newTickets(t, nil)
 			bringTo(t, tickets, row.from)
 			before, _ := s.Read(ctx, "", store.Filter{}, 0)
@@ -113,6 +115,7 @@ func TestEveryRowOfTheTransitionTable(t *testing.T) {
 }
 
 func TestCreateIsT1(t *testing.T) {
+	t.Parallel()
 	tickets, s := newTickets(t, nil)
 	ticket, err := tickets.Create(ctx, "human:alex", ref, "web")
 	if err != nil || ticket.State != core.TicketNew {
@@ -147,6 +150,7 @@ func inTable(from core.TicketState, trigger string) bool {
 }
 
 func TestEveryPairOutsideTheTableIsRejectedAndAppendsNothing(t *testing.T) {
+	t.Parallel()
 	for _, from := range allStates {
 		for _, trigger := range allTriggers {
 			if inTable(from, trigger) {
@@ -169,6 +173,7 @@ func TestEveryPairOutsideTheTableIsRejectedAndAppendsNothing(t *testing.T) {
 }
 
 func TestACanceledTicketReopensToNew(t *testing.T) {
+	t.Parallel()
 	tickets, _ := newTickets(t, nil)
 	bringTo(t, tickets, core.TicketCanceled)
 	if got, err := tickets.Fire(ctx, "human:alex", ref, "reopen"); err != nil || got.State != core.TicketNew {
@@ -177,6 +182,7 @@ func TestACanceledTicketReopensToNew(t *testing.T) {
 }
 
 func TestAHoldCanBeSetOnAnyUnfinishedStateAndLeavesTheStateAlone(t *testing.T) {
+	t.Parallel()
 	for _, state := range allStates {
 		tickets, _ := newTickets(t, nil)
 		bringTo(t, tickets, state)
@@ -199,6 +205,7 @@ func TestAHoldCanBeSetOnAnyUnfinishedStateAndLeavesTheStateAlone(t *testing.T) {
 }
 
 func TestHoldReasonsAndHeldTransitions(t *testing.T) {
+	t.Parallel()
 	tickets, _ := newTickets(t, nil)
 	bringTo(t, tickets, core.TicketReady)
 	if _, err := tickets.SetHold(ctx, "system", ref, "sleepy"); err == nil {
@@ -228,6 +235,7 @@ func TestHoldReasonsAndHeldTransitions(t *testing.T) {
 }
 
 func TestMissingTicketsAndMissingHolds(t *testing.T) {
+	t.Parallel()
 	tickets, _ := newTickets(t, nil)
 	_, err := tickets.Fire(ctx, "system", ref, "accept")
 	assertCode(t, err, core.CodeNotFound)
@@ -237,6 +245,7 @@ func TestMissingTicketsAndMissingHolds(t *testing.T) {
 }
 
 func TestTwoConcurrentTransitionsOfOneTicketExactlyOneWins(t *testing.T) {
+	t.Parallel()
 	for round := range 20 {
 		tickets, s := newTickets(t, nil)
 		bringTo(t, tickets, core.TicketReady)
@@ -269,6 +278,7 @@ func TestTwoConcurrentTransitionsOfOneTicketExactlyOneWins(t *testing.T) {
 }
 
 func TestAGuardKeyThatIsNoTransitionIsRejected(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("NewTickets accepted a guard for the unknown transition t3")
@@ -278,6 +288,7 @@ func TestAGuardKeyThatIsNoTransitionIsRejected(t *testing.T) {
 }
 
 func TestReplayRejectsAnInvalidHistory(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
 	ev := func(ticket, typ, payload string) store.Event {
 		return store.Event{Type: typ, Ticket: ticket, At: at, Payload: json.RawMessage(payload)}
@@ -296,6 +307,7 @@ func TestReplayRejectsAnInvalidHistory(t *testing.T) {
 }
 
 func TestAGuardThatRefusesBlocksItsTransitionOnly(t *testing.T) {
+	t.Parallel()
 	refuse := errors.New("there is no free slot")
 	tickets, s := newTickets(t, core.Guards{
 		"T3": func(context.Context, core.Ticket) error { return refuse },
@@ -313,6 +325,7 @@ func TestAGuardThatRefusesBlocksItsTransitionOnly(t *testing.T) {
 }
 
 func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
+	t.Parallel()
 	tickets, s := newTickets(t, nil)
 	for _, r := range []string{ref, "gh:acme/web#999"} { // another ticket shares the log
 		if _, err := tickets.Create(ctx, "human:alex", r, "web"); err != nil {
@@ -357,6 +370,7 @@ func TestTheHistoryOfATicketCanBeRebuiltFromTheLog(t *testing.T) {
 }
 
 func TestClearHoldCanInsistOnTheReason(t *testing.T) {
+	t.Parallel()
 	tickets, _ := newTickets(t, nil)
 	bringTo(t, tickets, core.TicketReady)
 	if _, err := tickets.SetHold(ctx, "system", ref, "attempts_exhausted"); err != nil {
@@ -370,6 +384,7 @@ func TestClearHoldCanInsistOnTheReason(t *testing.T) {
 }
 
 func TestARecoveredTicketStartsInTheStateAndHoldTheTrackerHas(t *testing.T) {
+	t.Parallel()
 	tickets, s := newTickets(t, nil)
 	tk, err := tickets.Recover(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Limits", BudgetOf: "gh:acme/web#1"}, core.TicketInProgress, "needs_input")
 	if err != nil {

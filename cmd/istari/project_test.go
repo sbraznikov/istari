@@ -65,6 +65,7 @@ func snapshot(t *testing.T, root string) map[string]string {
 }
 
 func TestInitCreatesTheIstariFilesAndRegistersTheProjectOnce(t *testing.T) {
+	t.Parallel()
 	repo := gitRepo(t, "git@github.com:acme/web.git", nil)
 	config := filepath.Join(t.TempDir(), "config.toml")
 	os.WriteFile(config, []byte("# my installation\n[daemon]\nmax_concurrent_runs = 2\n"), 0o600)
@@ -111,6 +112,7 @@ func TestInitCreatesTheIstariFilesAndRegistersTheProjectOnce(t *testing.T) {
 }
 
 func TestInitOutsideAGitRepositoryFails(t *testing.T) {
+	t.Parallel()
 	config := filepath.Join(t.TempDir(), "config.toml")
 	if _, stderr, code := istariIn(t, t.TempDir(), config, "init"); code != 1 || !strings.Contains(stderr, "git") {
 		t.Fatalf("init outside git: exit %d %q, want 1 mentioning git", code, stderr)
@@ -129,6 +131,7 @@ type repoList struct {
 }
 
 func TestRepoAddProposesDoneWhenAndBothRepositoriesResolveToTheProject(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		service  map[string]string
@@ -142,6 +145,7 @@ func TestRepoAddProposesDoneWhenAndBothRepositoriesResolveToTheProject(t *testin
 		{"nothing", nil, "merged", "none", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			service := gitRepo(t, "git@github.com:acme/service.git", tc.service)
 			component := gitRepo(t, "git@github.com:acme/component.git", map[string]string{"go.mod": "module github.com/acme/component\n"})
 			config := filepath.Join(t.TempDir(), "config.toml")
@@ -176,6 +180,7 @@ func TestRepoAddProposesDoneWhenAndBothRepositoriesResolveToTheProject(t *testin
 }
 
 func TestRepoAddWithAnExplicitChoiceAndRepoRemove(t *testing.T) {
+	t.Parallel()
 	service := gitRepo(t, "git@github.com:acme/service.git", nil)
 	component := gitRepo(t, "git@github.com:acme/component.git", nil)
 	config := filepath.Join(t.TempDir(), "config.toml")
@@ -207,6 +212,7 @@ func TestRepoAddWithAnExplicitChoiceAndRepoRemove(t *testing.T) {
 }
 
 func TestRepoAddRunsFromThePrimaryRepository(t *testing.T) {
+	t.Parallel()
 	service := gitRepo(t, "git@github.com:acme/service.git", nil)
 	component := gitRepo(t, "git@github.com:acme/component.git", nil)
 	lib := gitRepo(t, "git@github.com:acme/lib.git", nil)
