@@ -74,8 +74,9 @@ type Ticket struct {
 	// Needs are the tickets this one waits for (spec section 4.9), as its
 	// text names them.
 	Needs []string `json:"needs,omitempty"`
-	// BudgetOf is the ticket whose budget this one shares: it was created by
-	// an agent at work on that ticket (spec section 4.5).
+	// BudgetOf is the ticket this one was created from by an agent at work
+	// on it, and whose admission it inherits. It shares that ticket's budget
+	// unless it is one of that ticket's Children (spec section 4.5).
 	BudgetOf string `json:"budget_of,omitempty"`
 	// Children are the tickets a split made of this one (T5); it is done
 	// when they all are (T12).

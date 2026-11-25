@@ -37,7 +37,7 @@ func ParseRefine(data []byte) (RefineResult, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&r); err != nil {
-		return RefineResult{}, fmt.Errorf("refine result: %w", err)
+		return RefineResult{}, yamlError("refine result", data, err)
 	}
 	return r, r.validate()
 }
