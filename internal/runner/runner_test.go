@@ -424,6 +424,27 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 	}
 }
 
+func TestANeedThatAppearsMidRunStopsTheRunWithACheckpoint(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		DataDir: f.data, Projects: []string{"web"}, Lease: 600 * time.Millisecond,
+		Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+		Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
+	})
+	tk, task := f.readyTask(t, 16)
+	f.start(t)
+	s := f.session(t)
+	os.WriteFile(filepath.Join(s.spec.Workdir, "waiting-work.txt"), []byte("x\n"), 0o644)
+	if _, err := f.tickets.SetHold(ctx, "system", tk.Ref, "waiting_dependency"); err != nil { // the engine saw an open need
+		t.Fatal(err)
+	}
+	f.waitTask(t, task.ID, core.TaskReady)
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 || events[0].Ticket != tk.Ref {
+		t.Fatalf("checkpoints = %d, want one for the stopped run", len(events))
+	}
+}
+
 func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)

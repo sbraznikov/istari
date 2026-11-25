@@ -235,7 +235,7 @@ func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 }
 
 func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task) error {
-	if (tk.State == core.TicketReady || tk.State == core.TicketPlanning) && (tk.Hold == "" || tk.Hold == waitingDependency) {
+	if beforeReview(tk.State) && (tk.Hold == "" || tk.Hold == waitingDependency) {
 		// T3 needs the tickets in needs completed, and so does the work
 		// after it when needs appear later (spec 4.1). A ticket that waits
 		// for them says so with the hold waiting_dependency, which goes when
@@ -251,7 +251,9 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			return err
 		case waiting:
 			return nil
-		case tk.Hold == waitingDependency:
+		case tk.Hold == waitingDependency && !e.childCanceled(ctx, tk):
+			// A canceled child holds its parent the same way; that hold
+			// waits for a human.
 			if _, err := e.tickets.ClearHold(ctx, e.opts.Actor, tk.Ref, waitingDependency); err != nil {
 				return err
 			}
@@ -407,6 +409,17 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 }
 
 const waitingDependency = "waiting_dependency"
+
+// childCanceled tells whether one of the ticket's children is canceled.
+func (e *Engine) childCanceled(ctx context.Context, tk core.Ticket) bool {
+	return slices.ContainsFunc(tk.Children, func(c string) bool { return e.state(ctx, c) == core.TicketCanceled })
+}
+
+// beforeReview tells whether a ticket in state has no pull request under
+// review yet: an open need holds it (spec 4.1).
+func beforeReview(state core.TicketState) bool {
+	return state == core.TicketReady || state == core.TicketPlanning || state == core.TicketInProgress
+}
 
 // resumeFrom tells, for a ticket past planning, the stages its state still
 // has ahead, in pipeline order: in_progress from the implementer's stage,

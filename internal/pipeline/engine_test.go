@@ -29,6 +29,7 @@ func (f files) ReadFile(_ context.Context, repo, path string) ([]byte, error) {
 }
 
 type engineFixture struct {
+	store   store.Store
 	tasks   *core.Tasks
 	tickets *core.Tickets
 	engine  *pipeline.Engine
@@ -41,7 +42,7 @@ func newEngine(t *testing.T, global config.Defaults, repoFiles files) *engineFix
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	f := &engineFixture{tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
+	f := &engineFixture{store: s, tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: global, Files: repoFiles})
 	return f
 }
@@ -383,6 +384,29 @@ func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
 	}
 }
 
+func TestAnInProgressTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if _, err := f.tickets.SetNeeds(ctx, "agent:implementer-1", ref, []string{need}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "waiting_dependency" {
+		t.Fatalf("an in_progress ticket with an open need = %s, hold %q; want in_progress on waiting_dependency", tk.State, tk.Hold)
+	}
+	if l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err == nil {
+		t.Fatalf("the held ticket's implement task was handed out: %+v", l)
+	}
+}
+
 func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
 	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
@@ -502,8 +526,12 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
+	f.reconcile(t)
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "waiting_dependency" {
 		t.Fatalf("a parent with a canceled child has hold %q, want waiting_dependency", tk.Hold)
+	}
+	if cleared, _ := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: core.EventTicketHoldCleared}, 0); len(cleared) != 0 {
+		t.Fatalf("the canceled child's hold was cleared %d times; a human clears it", len(cleared))
 	}
 }
 
