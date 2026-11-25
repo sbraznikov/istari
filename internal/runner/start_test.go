@@ -76,9 +76,17 @@ func TestThreeStartFailuresInARowPauseTheSlotAndTheLogSaysWhy(t *testing.T) {
 	if want := "runner implementer-1: paused for 400ms: the harness did not start: " + errMissing.Error(); !strings.Contains(line, want) {
 		t.Fatalf("log line = %q, want it to contain %q", line, want)
 	}
-	time.Sleep(200 * time.Millisecond) // within the pause
-	if claims := f.events(t, "task.claimed"); len(claims) != 3 {
-		t.Fatalf("%d claims while the slot is paused, want the 3 before the pause", len(claims))
+	// The fourth claim comes only once the pause is over.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(f.events(t, "task.claimed")) < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d claims, want a fourth after the pause", len(f.events(t, "task.claimed")))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	released, claims := f.events(t, "task.released"), f.events(t, "task.claimed")
+	if gap := claims[3].At.Sub(released[2].At); gap < 400*time.Millisecond {
+		t.Fatalf("the fourth claim came %s after the third release, want the pause of 400ms", gap)
 	}
 	if got, _ := f.tasks.Get(ctx, task.ID); got.Attempts != 0 {
 		t.Fatalf("attempts = %d, want 0", got.Attempts)

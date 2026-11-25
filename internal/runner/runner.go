@@ -345,9 +345,9 @@ type ending struct {
 	save     bool // checkpoint the work before the task ends
 }
 
-// execute runs one claimed task to its end. startErr is why its harness did
-// not start, if it did not.
-func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (startErr error) {
+// execute runs one claimed task to its end. It returns why the harness did
+// not start, if it did not; any other ending is settled with the task.
+func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error {
 	// The task's fate is settled even when ctx ends meanwhile.
 	bg := context.WithoutCancel(ctx)
 	fail := func(reason string) {
@@ -362,7 +362,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	task, err := r.tasks.Get(bg, lease.Task)
 	if err != nil {
 		fail(err.Error())
-		return
+		return nil
 	}
 	tk, err := r.tickets.Get(bg, task.Ticket)
 	if err != nil {
@@ -371,18 +371,18 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	h, err := harness.Get(slot.Harness.Harness)
 	if err != nil {
 		fail(err.Error())
-		return
+		return nil
 	}
 	budget, capped, err := r.budgetLeft(bg, tk)
 	if err != nil {
 		fail("budget: " + err.Error())
-		return
+		return nil
 	}
 	if capped && budget <= 0 {
 		if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
 			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
 		}
-		return
+		return nil
 	}
 	run := Run{
 		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
@@ -396,14 +396,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 		remove, err := r.ws.Scratch(bg, task.Ticket, run.Dir)
 		if err != nil {
 			fail("workspace: " + err.Error())
-			return
+			return nil
 		}
 		defer remove()
 	} else {
 		ws, err := r.ws.Ensure(bg, tk)
 		if err != nil {
 			fail("workspace: " + err.Error())
-			return
+			return nil
 		}
 		run.Dir = ws.Dir
 		// The implementer's run pulls the main branch in; conflicts are its
@@ -419,7 +419,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	token, err := r.runs.create(bg, &run)
 	if err != nil {
 		fail("run: " + err.Error())
-		return
+		return nil
 	}
 	env := map[string]string{
 		"ISTARI_PROFILE": slot.Profile, "ISTARI_ROLE": slot.Role, "ISTARI_TICKET": task.Ticket,
@@ -434,7 +434,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	ghDir := filepath.Join(r.opts.DataDir, "runs", run.ID, "gh")
 	if err := os.MkdirAll(ghDir, 0o700); err != nil {
 		fail("run: " + err.Error())
-		return
+		return nil
 	}
 	who := slot.Profile + " (istari)"
 	for k, v := range map[string]string{
@@ -453,7 +453,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, err.Error())
 		fail(err.Error())
-		return
+		return nil
 	}
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
@@ -475,7 +475,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 	if err != nil {
 		log.Printf("istari: runner %s: task %s: the lease ran out while the run was prepared: %v", slot.Profile, lease.Task, err)
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the lease ran out while the run was prepared")
-		return
+		return nil
 	}
 	lease = renewed
 	sess, err := h.Start(bg, spec)
@@ -487,8 +487,8 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) (star
 		case <-ctx.Done():
 		case <-time.After(r.opts.StartRetry):
 		}
-		if err := r.tasks.Release(bg, lease); err != nil {
-			log.Printf("istari: runner %s: release %s: %v", slot.Profile, lease.Task, err)
+		if rerr := r.tasks.Release(bg, lease); rerr != nil {
+			log.Printf("istari: runner %s: release %s: %v", slot.Profile, lease.Task, rerr)
 		}
 		return err
 	}
