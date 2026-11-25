@@ -13,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 var ctx = context.Background()
@@ -441,6 +442,47 @@ func TestAHeldInProgressTicketGoesOnInItsRoundWhenItsNeedIsDone(t *testing.T) {
 	}
 	if got := pipeline.RoundOf(core.Task{ID: l.Task}); got != 1 {
 		t.Fatalf("the handed-out implement task is of round %d, want 1", got)
+	}
+}
+
+func TestAnInReviewTicketThatGainsAnOpenNeedIsNotHeldAndNotedOnce(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	j := journal.New(nil, f.store, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Journal: j})
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	if _, err := f.tickets.Fire(ctx, "agent:implementer-1", ref, "pr_ready"); err != nil { // istari pr open
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetNeeds(ctx, "human:alex", ref, []string{need}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("an in_review ticket with an open need = %s, hold %q; want in_review, no hold", tk.State, tk.Hold)
+	}
+	r, _ := tickets.ParseRef(ref)
+	entries, err := j.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, e := range entries {
+		if e.Kind == journal.Note && strings.Contains(e.Text, "after its pull request was opened") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("journal = %+v; want one note that the ticket got open needs after its pull request was opened", entries)
 	}
 }
 

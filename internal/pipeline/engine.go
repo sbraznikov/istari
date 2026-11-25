@@ -15,6 +15,7 @@ import (
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 // Files reads a repository's files on its default branch.
@@ -49,6 +50,10 @@ type EngineOptions struct {
 	// a human may merge it before istari's own merge stage, and the ticket
 	// then finishes through T11 (spec 4.8). nil: only istari merges.
 	Merged func(ctx context.Context, ref string) (bool, error)
+	// Journal is where the engine notes what it does not act on: a ticket
+	// that got open needs after its pull request was opened (spec 4.1).
+	// nil: nothing is noted.
+	Journal *journal.Journal
 	// CacheFor is how long a repository's pipeline file is kept; 0: a minute.
 	CacheFor time.Duration
 	Clock    func() time.Time
@@ -241,10 +246,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		// for them says so with the hold waiting_dependency, which goes when
 		// they are done; a need that never will be (canceled) leaves the hold
 		// for a human to change the needs.
-		waiting := false
-		for _, need := range tk.Needs {
-			waiting = waiting || e.state(ctx, need) != core.TicketDone
-		}
+		waiting := e.needOpen(ctx, tk)
 		switch {
 		case waiting && tk.Hold == "":
 			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, waitingDependency)
@@ -258,6 +260,12 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 				return err
 			}
 			tk.Hold = ""
+		}
+	}
+	if (tk.State == core.TicketInReview || tk.State == core.TicketAwaitingApproval) && e.needOpen(ctx, tk) {
+		// Its pull request is open: istari does not stop it, a human decides.
+		if err := e.noteOnce(ctx, tk.Ref, lateNeeds); err != nil {
+			return err
 		}
 	}
 	if tk.Hold != "" {
@@ -409,6 +417,35 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 }
 
 const waitingDependency = "waiting_dependency"
+
+// lateNeeds is the journal note on a ticket that got open needs after its
+// pull request was opened.
+const lateNeeds = "this ticket got open needs after its pull request was opened; it is not held waiting_dependency (spec 4.1): a human decides whether it waits"
+
+// needOpen tells whether one of the ticket's needs is not done.
+func (e *Engine) needOpen(ctx context.Context, tk core.Ticket) bool {
+	return slices.ContainsFunc(tk.Needs, func(n string) bool { return e.state(ctx, n) != core.TicketDone })
+}
+
+// noteOnce adds a note to the ticket's journal unless it has it already, so
+// the engine's reconciles stay idempotent.
+func (e *Engine) noteOnce(ctx context.Context, ref, text string) error {
+	if e.opts.Journal == nil {
+		return nil
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		return err
+	}
+	entries, err := e.opts.Journal.Stored(ctx, r)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(entries, func(en journal.Entry) bool { return en.Kind == journal.Note && en.Text == text }) {
+		return nil
+	}
+	return e.opts.Journal.Append(ctx, r, journal.Entry{Kind: journal.Note, Actor: e.opts.Actor, Text: text})
+}
 
 // childCanceled tells whether one of the ticket's children is canceled.
 func (e *Engine) childCanceled(ctx context.Context, tk core.Ticket) bool {
