@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 // Event types of pull requests (spec section 3.1: the VCS adapter's checks
@@ -43,17 +45,32 @@ type Tracked struct {
 // Watcher polls tracked pull requests and turns changes of their checks and
 // reviews into events.
 type Watcher struct {
-	client *Client
-	store  store.Store
-	clock  func() time.Time
+	client  *Client
+	store   store.Store
+	clock   func() time.Time
+	journal *journal.Journal
+}
+
+// WatchOption configures a Watcher.
+type WatchOption func(*Watcher)
+
+// WithJournal has the watcher record a CI failure entry in the ticket's
+// journal when it sees a red head (spec 4.3). Without it, a red head is only
+// a vcs.checks event.
+func WithJournal(j *journal.Journal) WatchOption {
+	return func(w *Watcher) { w.journal = j }
 }
 
 // NewWatcher returns a watcher.
-func NewWatcher(c *Client, s store.Store, clock func() time.Time) *Watcher {
+func NewWatcher(c *Client, s store.Store, clock func() time.Time, opts ...WatchOption) *Watcher {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Watcher{client: c, store: s, clock: clock}
+	w := &Watcher{client: c, store: s, clock: clock}
+	for _, o := range opts {
+		o(w)
+	}
+	return w
 }
 
 // Track starts watching a ticket's pull request.
@@ -187,9 +204,13 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 	}
 	var changes []change
 	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
+	var failed error // a CI failure entry that could not be recorded; the event goes on regardless
 	if s.Checks != "" && !stale && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
 		t.Checks, t.SHA = s.Checks, s.HeadSHA
 		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
+		if s.Checks == "failure" {
+			failed = w.recordFailure(ctx, t)
+		}
 	}
 	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {
 		t.Review = s.Review
@@ -207,8 +228,39 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 			more = append(more, store.Change{Kind: prKind, ID: t.Ticket, Data: data, IfVersion: t.version})
 		}
 		if _, err := w.store.Append(ctx, store.Event{Type: c.typ, At: w.clock().UTC(), Actor: "system", Ticket: t.Ticket, Payload: raw}, more...); err != nil {
-			return err
+			return errors.Join(failed, err)
 		}
 	}
-	return nil
+	return failed
+}
+
+// recordFailure appends a CI failure entry for the tracked head, once per
+// commit: the failed jobs' logs, or why they could not be read. It comes
+// before the vcs.checks event, so the rework brief has it.
+func (w *Watcher) recordFailure(ctx context.Context, t Tracked) error {
+	if w.journal == nil {
+		return nil
+	}
+	ref, err := tickets.ParseRef(t.Ticket)
+	if err != nil {
+		return err
+	}
+	entries, err := w.journal.Stored(ctx, ref)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Kind == journal.CI && e.CI.Commit == t.SHA {
+			return nil // recorded by an earlier poll whose event did not get through
+		}
+	}
+	f, err := w.client.FailureLog(ctx, t.Repo, t.SHA)
+	ci := &journal.CIEntry{Check: f.Check, Commit: t.SHA, URL: f.URL, Output: f.Output, Cut: f.Cut}
+	if err != nil {
+		ci.Error = err.Error()
+	}
+	if ci.Check == "" {
+		ci.Check = "CI"
+	}
+	return w.journal.Append(ctx, ref, journal.Entry{Kind: journal.CI, Actor: "system", CI: ci})
 }

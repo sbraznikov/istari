@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -452,5 +454,61 @@ func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
 	}
 	if !strings.HasSuffix(f.Output, "got 1, want 2\nFAIL\n") || strings.Contains(f.Output, "first line of setup") || !strings.HasPrefix(f.Output, "ok  \t") {
 		t.Fatalf("output is not the end of the log cut at a line: %q…%q", f.Output[:40], f.Output[len(f.Output)-40:])
+	}
+}
+
+// redHead tracks a pull request whose head has the checks given, with a
+// journal on the watcher.
+func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
+	t.Helper()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	j := journal.New(nil, s, nil)
+	w := vcs.NewWatcher(c, s, nil, vcs.WithJournal(j))
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", checks...)
+	ref, _ := tickets.ParseRef(ticket)
+	return s, w, j, ref
+}
+
+// checkEvents are the vcs.checks events of the ticket, as "checks@sha".
+func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
+	t.Helper()
+	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref.String(), TypePrefix: vcs.EventChecks}, 0)
+	var got []string
+	for _, e := range events {
+		var p struct{ Checks, SHA string }
+		json.Unmarshal(e.Payload, &p)
+		got = append(got, p.Checks+"@"+p.SHA)
+	}
+	return got
+}
+
+func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
+	for range 2 { // the second poll sees the same red head
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+	}
+	entries, _ := j.Stored(ctx, ref)
+	if len(entries) != 1 || entries[0].Kind != journal.CI {
+		t.Fatalf("journal = %+v, want one ci entry", entries)
+	}
+	if ci := entries[0].CI; ci.Check != "test" || ci.Commit != "abc123" || !strings.Contains(ci.Output, "--- FAIL: TestX") {
+		t.Fatalf("ci entry = %+v", ci)
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure once", got)
 	}
 }
