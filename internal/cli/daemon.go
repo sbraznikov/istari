@@ -29,6 +29,7 @@ import (
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
+	var paused bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the istari daemon in the foreground",
@@ -68,9 +69,13 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				daemonOpts.Runner.Tickets = daemonOpts.Tracker // the ticket text of the brief
 			}
 			daemonOpts.Defaults = cfg.Defaults
+			if paused {
+				daemonOpts.PausedBy = opts.Actor
+			}
 			return api.RunDaemon(ctx, daemonOpts)
 		},
 	}
+	cmd.Flags().BoolVar(&paused, "paused", false, "start with the hand-out of tasks paused for all projects, as istari pause --all does; tickets still sync")
 	cmd.AddCommand(newDaemonInstallCommand(opts))
 	return cmd
 }

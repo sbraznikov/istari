@@ -66,6 +66,10 @@ type DaemonOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side; nil turns pushes and pull requests off.
 	VCS *vcs.Client
+	// PausedBy, when set, pauses the hand-out of tasks for all projects in
+	// this actor's name before the first sync and claim, as
+	// istari pause --all does.
+	PausedBy string
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -102,6 +106,11 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
 		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS})
+	if opts.PausedBy != "" {
+		if err := srv.Tasks().Pause(ctx, opts.PausedBy, ""); err != nil {
+			return fmt.Errorf("pausing the hand-out: %w", err)
+		}
+	}
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Add(1)

@@ -68,8 +68,15 @@ func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 // data_dir is dataDir; env are extra environment variables of the daemon.
 func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) *daemon {
 	t.Helper()
+	return startDaemonWithArgs(t, dataDir, config, nil, env...)
+}
+
+// startDaemonWithArgs is startDaemonWithConfig with extra arguments of
+// `istari daemon`, such as --paused.
+func startDaemonWithArgs(t *testing.T, dataDir, config string, args []string, env ...string) *daemon {
+	t.Helper()
 	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &bytes.Buffer{}}
-	d.cmd = exec.Command(binary, "daemon", "--config", d.config)
+	d.cmd = exec.Command(binary, append([]string{"daemon", "--config", d.config}, args...)...)
 	d.cmd.Env = append(os.Environ(), env...)
 	d.cmd.Stderr = d.stderr
 	if err := d.cmd.Start(); err != nil {
@@ -142,6 +149,18 @@ func TestASecondDaemonOnTheSameDataDirRefusesToStart(t *testing.T) {
 	}
 	// The first daemon still answers.
 	d.call(t, "ticket.list", map[string]any{}, nil)
+}
+
+func TestADaemonStartedPausedHandsOutNoTaskUntilResume(t *testing.T) {
+	t.Parallel()
+	dataDir := newDataDir(t)
+	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused"})
+	d.createTask(t, "t_1", "implementer")
+	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
+		t.Fatalf("claim on a daemon started paused: exit %d %q, want paused", code, stderr)
+	}
+	d.mustCLI(t, nil, "resume", "--all")
+	d.mustCLI(t, nil, "task", "claim", "--ready", "--actor", "agent:a")
 }
 
 type sseEvent struct {
