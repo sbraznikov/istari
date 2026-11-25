@@ -42,30 +42,29 @@ func gitServer(t *testing.T) string {
 	return root
 }
 
-func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
-	t.Parallel()
+// startPipelineDaemon starts a daemon whose project web runs acme/web
+// through its pipeline, with ticket ref already in planning. before runs on
+// the store before the daemon starts; server is the git server of gitServer.
+func startPipelineDaemon(t *testing.T, ref string, before func(s store.Store, server, dataDir string)) *daemon {
+	t.Helper()
 	server := gitServer(t)
 	dataDir := newDataDir(t)
-	// Before the daemon starts: a ticket in planning, and a worktree whose
-	// ticket istari does not know.
 	s, err := store.Open(filepath.Join(dataDir, api.DatabaseName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	k := core.NewTickets(s, core.TicketOptions{})
 	ctx := context.Background()
-	if _, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: "gh:acme/web#5", Project: "web", Title: "Add limits"}); err != nil {
+	if _, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Add limits"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tr := range []string{"accept", "start"} {
-		if _, err := k.Fire(ctx, "system", "gh:acme/web#5", tr); err != nil {
+		if _, err := k.Fire(ctx, "system", ref, tr); err != nil {
 			t.Fatal(err)
 		}
 	}
-	remote := func(repo string) string { return "file://" + filepath.Join(server, repo+".git") }
-	orphan, err := runner.NewWorkspaces(s, runner.WorkspaceOptions{DataDir: dataDir, Remote: remote}).Ensure(ctx, core.Ticket{Ref: "gh:acme/web#99", Project: "web", Title: "Gone"})
-	if err != nil {
-		t.Fatal(err)
+	if before != nil {
+		before(s, server, dataDir)
 	}
 	s.Close()
 
@@ -75,7 +74,23 @@ func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	return startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+}
+
+func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
+	t.Parallel()
+	// Before the daemon starts: a ticket in planning, and a worktree whose
+	// ticket istari does not know.
+	var orphan runner.Workspace
+	d := startPipelineDaemon(t, "gh:acme/web#5", func(s store.Store, server, dataDir string) {
+		remote := func(repo string) string { return "file://" + filepath.Join(server, repo+".git") }
+		var err error
+		orphan, err = runner.NewWorkspaces(s, runner.WorkspaceOptions{DataDir: dataDir, Remote: remote}).Ensure(context.Background(), core.Ticket{Ref: "gh:acme/web#99", Project: "web", Title: "Gone"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	dataDir := d.dataDir
 	want := filepath.Join(dataDir, "workspaces", "web", "web", "5")
 	var list []struct{ Ticket, State, Branch, Dir string }
 	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(50 * time.Millisecond) {

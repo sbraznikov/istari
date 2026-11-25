@@ -44,6 +44,10 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 					failed++
 				}
 				checks = append(checks, c)
+				// Who admits tickets in each project (spec 4.5).
+				for _, p := range cfg.Projects {
+					checks = append(checks, check{Name: "admission " + p.Name, OK: true, Detail: string(p.Admission.OrDefault())})
+				}
 			}
 			if cfgErr == nil && len(syncRepos(cfg)) > 0 {
 				c := check{Name: "tracker github", OK: true}

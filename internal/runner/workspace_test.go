@@ -67,6 +67,7 @@ func (f *wsFixture) ticket(t *testing.T, n int, title string) core.Ticket {
 }
 
 func TestEnsureCreatesTheTicketsWorktreeOnItsBranchFromMain(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 123, "Add rate limits")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -98,6 +99,7 @@ func (f *wsFixture) events(t *testing.T, typ string) []store.Event {
 }
 
 func TestEveryStageReusesTheWorktreeAndTwoTicketsHaveTheirOwn(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	a, b := f.ticket(t, 1, "First"), f.ticket(t, 2, "Second")
 	wa, err := f.ws.Ensure(ctx, a)
@@ -124,6 +126,7 @@ func TestEveryStageReusesTheWorktreeAndTwoTicketsHaveTheirOwn(t *testing.T) {
 }
 
 func TestAWorktreeDeletedByHandIsRecreatedFromTheRemoteBranch(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 7, "Add limits")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -151,6 +154,7 @@ func TestAWorktreeDeletedByHandIsRecreatedFromTheRemoteBranch(t *testing.T) {
 }
 
 func TestWithIstarisDatabaseLostTheTicketBranchIsFoundOnTheRemote(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	w, err := f.ws.Ensure(ctx, f.ticket(t, 7, "Add limits"))
 	if err != nil {
@@ -177,6 +181,7 @@ func TestWithIstarisDatabaseLostTheTicketBranchIsFoundOnTheRemote(t *testing.T) 
 }
 
 func TestRemoveDeletesACleanWorktreeAndItsLocalBranch(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 3, "Pushed work")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -202,6 +207,7 @@ func TestRemoveDeletesACleanWorktreeAndItsLocalBranch(t *testing.T) {
 }
 
 func TestADirtyOrUnpushedWorktreeIsKept(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		make func(t *testing.T, dir string)
@@ -216,6 +222,7 @@ func TestADirtyOrUnpushedWorktreeIsKept(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newWorkspaces(t)
 			tk := f.ticket(t, 4, "Half done")
 			w, err := f.ws.Ensure(ctx, tk)
@@ -266,6 +273,7 @@ func (f *wsFixture) dir(n int) string {
 func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 
 func TestTheWorktreeFollowsTheTicketFromStartToMerge(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 5, "Follow me")
 	f.fire(t, tk.Ref, "accept")
@@ -286,6 +294,7 @@ func TestTheWorktreeFollowsTheTicketFromStartToMerge(t *testing.T) {
 }
 
 func TestAParentTicketWithoutTasksOfItsOwnHasNoWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 6, "Too big")
 	f.fire(t, tk.Ref, "accept", "start")
@@ -298,6 +307,7 @@ func TestAParentTicketWithoutTasksOfItsOwnHasNoWorktree(t *testing.T) {
 }
 
 func TestACanceledTicketLosesItsWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 8, "Never mind")
 	f.fire(t, tk.Ref, "accept", "start")
@@ -310,6 +320,7 @@ func TestACanceledTicketLosesItsWorktree(t *testing.T) {
 }
 
 func TestPruneRemovesOrphansOnly(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	active := f.ticket(t, 1, "Active")
 	f.fire(t, active.Ref, "accept", "start")
@@ -337,6 +348,7 @@ func TestPruneRemovesOrphansOnly(t *testing.T) {
 }
 
 func TestAWorktreeLeftOnDiskWithoutARecordIsAnOrphanToo(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	w, err := f.ws.Ensure(ctx, f.ticket(t, 2, "Left behind"))
 	if err != nil {
@@ -358,6 +370,7 @@ func TestAWorktreeLeftOnDiskWithoutARecordIsAnOrphanToo(t *testing.T) {
 }
 
 func TestUnpushedCommitsOfAWorktreeDeletedByHandAreKept(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 9, "Only local")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -379,6 +392,7 @@ func TestUnpushedCommitsOfAWorktreeDeletedByHandAreKept(t *testing.T) {
 }
 
 func TestRecreatingTakesTheRemoteBranchWhenItIsAhead(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 10, "Moved on")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -406,6 +420,7 @@ func TestRecreatingTakesTheRemoteBranchWhenItIsAhead(t *testing.T) {
 }
 
 func TestAKeptWorktreeIsUsedAgainWhenTheTicketIsReopened(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 11, "Back again")
 	f.fire(t, tk.Ref, "accept", "start")
@@ -427,6 +442,7 @@ func TestAKeptWorktreeIsUsedAgainWhenTheTicketIsReopened(t *testing.T) {
 }
 
 func TestAWorktreeWithoutARecordIsAdoptedByItsTicket(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	tk := f.ticket(t, 12, "Half made")
 	w, err := f.ws.Ensure(ctx, tk)
@@ -447,6 +463,7 @@ func TestAWorktreeWithoutARecordIsAdoptedByItsTicket(t *testing.T) {
 }
 
 func TestADirectoryThatIsNoWorktreeIsNoOrphan(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaces(t)
 	stray := filepath.Join(f.data, "workspaces", "web", "web", "notes")
 	if err := os.MkdirAll(stray, 0o755); err != nil {
