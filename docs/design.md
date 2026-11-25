@@ -847,7 +847,7 @@ Any finding returns the ticket for rework. For a code smell the implementer eith
 The principle: less model, more deterministic code. The model is non-deterministic, costs money on every call and can be confidently wrong, so four rules apply.
 
 1. **The model does only what requires judgment.** Everything that can be expressed as a rule, a table or a check is done by code.
-2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it.
+2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A refusal is recorded in the journal and marks the run as rejected; the agent can correct its result and submit it again within the same run. A later submit of the same kind that code accepts clears the mark, and the run then ends as its `istari complete` says. A run whose mark is not cleared fails, with the reason of its last refusal.
 3. **The model's claims are verified by code.** "The tests are green", "the change is reversible", "this is a quote from the ticket" are not taken on trust.
 4. **State transitions and irreversible actions are performed only by code**, according to its own rules. The model supplies the input data for them.
 
