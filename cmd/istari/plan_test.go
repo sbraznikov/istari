@@ -44,6 +44,34 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	}
 }
 
+func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	md := filepath.Join(t.TempDir(), "ticket.md")
+	os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644)
+	var refs map[string]string
+	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
+	var ref string
+	for _, r := range refs {
+		ref = r
+	}
+	var tk struct{ Priority string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.Priority != "P1" {
+		t.Fatalf("priority of %s = %q, want P1 from its table", ref, tk.Priority)
+	}
+	if labels := gh.Issue(1).Labels; !slices.Contains(labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", labels)
+	}
+}
+
 // longPlanner writes a plan of more than 20,000 characters to its result
 // file and submits it without --file.
 const longPlanner = `#!/bin/sh
