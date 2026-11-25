@@ -85,6 +85,9 @@ type SyncOptions struct {
 	Parent func(body, repo string) string
 	// Note adds a note to the ticket's journal; nil: the sync notes nothing.
 	Note func(ctx context.Context, ref Ref, text string) error
+	// Comment records a trusted member's comment on a ticket in work as a
+	// journal entry (spec 4.5 and 4.6), once; nil: comments are only events.
+	Comment func(ctx context.Context, ref Ref, c Comment) error
 	// Merged tells whether a ticket's pull request is merged (spec 4.8): an
 	// issue its merge closed is not a cancel. fresh asks the code host when
 	// the PR watch has not seen the pull request closed yet; otherwise only
@@ -968,7 +971,8 @@ func (s *Syncer) revert(ctx context.Context, x *syncing, c change, reason string
 const commentKind = "comment"
 
 // comments delivers each human comment newer than the ticket's first sight
-// once, as a sync.comment event.
+// once, as a sync.comment event; a trusted member's comment on a ticket in
+// work also becomes a journal entry, before its event marks it delivered.
 func (s *Syncer) comments(ctx context.Context, x *syncing) error {
 	ref := x.t.Ref.String()
 	if x.t.Comments == 0 || (!x.t.Updated.IsZero() && s.updated[ref].Equal(x.t.Updated)) {
@@ -982,9 +986,18 @@ func (s *Syncer) comments(ctx context.Context, x *syncing) error {
 		if c.Own || c.ID <= x.base.FirstComment {
 			continue
 		}
+		id := ref + "/" + strconv.FormatInt(c.ID, 10)
+		if _, err := s.store.Get(ctx, commentKind, id); err == nil {
+			continue // delivered before
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if err := s.journalComment(ctx, x, c); err != nil {
+			return err
+		}
 		raw, _ := json.Marshal(map[string]any{"id": c.ID, "author": c.Author, "body": c.Body, "url": c.URL})
 		_, err := s.store.Append(ctx, store.Event{Type: EventSyncComment, At: s.opts.Clock(), Actor: "human:" + c.Author, Project: x.tk.Project, Ticket: ref, Payload: raw},
-			store.Change{Kind: commentKind, ID: ref + "/" + strconv.FormatInt(c.ID, 10), Data: json.RawMessage(`{}`)})
+			store.Change{Kind: commentKind, ID: id, Data: json.RawMessage(`{}`)})
 		if errors.Is(err, store.ErrConflict) {
 			continue // delivered before
 		}
@@ -995,6 +1008,21 @@ func (s *Syncer) comments(ctx context.Context, x *syncing) error {
 	}
 	s.updated[ref] = x.t.Updated
 	return nil
+}
+
+// journalComment records the comment in the journal when the ticket is in
+// work, planning up to awaiting approval, and its author is trusted: the
+// worker receives it in its next brief (spec 4.5).
+func (s *Syncer) journalComment(ctx context.Context, x *syncing, c Comment) error {
+	inWork := x.tk.State != core.TicketNew && x.tk.State != core.TicketReady && !x.tk.State.Finished()
+	if s.opts.Comment == nil || !inWork {
+		return nil
+	}
+	trusted, err := s.trusted(ctx, x.repo, c.Author)
+	if err != nil || !trusted {
+		return err
+	}
+	return s.opts.Comment(ctx, x.t.Ref, c)
 }
 
 // trusted tells whether login may have tickets admitted without a human and
