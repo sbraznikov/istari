@@ -149,6 +149,7 @@ func labelAdmission(f *syncFixture, trusted ...string) {
 }
 
 func TestInLabelModeATrustedAuthorsTicketWaitsInNew(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex") // alex can write, so is trusted
@@ -163,6 +164,7 @@ func TestInLabelModeATrustedAuthorsTicketWaitsInNew(t *testing.T) {
 }
 
 func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -178,6 +180,7 @@ func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
 }
 
 func TestInLabelModeAnUntrustedReadyLabelIsReverted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -197,6 +200,7 @@ func TestInLabelModeAnUntrustedReadyLabelIsReverted(t *testing.T) {
 }
 
 func TestInLabelModeTicketReadyAdmitsAndSponsorsATicketBelowTheStandard(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	short := strings.Replace(conforming, "## Out of scope", "## Notes", 1)
@@ -225,6 +229,7 @@ func TestInLabelModeTicketReadyAdmitsAndSponsorsATicketBelowTheStandard(t *testi
 }
 
 func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	parent := f.gh.Seed("Parent", conforming, "alex")
@@ -252,6 +257,7 @@ func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
 }
 
 func TestATicketAlreadyReadyStaysReadyWhenTheProjectSwitchesToLabel(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "alex")
 	f.run(t)
@@ -282,6 +288,7 @@ func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
 }
 
 func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", strings.Replace(conforming, "| P1 |", "| P0 |", 1), "alex")
 	f.run(t)
@@ -297,6 +304,7 @@ func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
 }
 
 func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
 	f.run(t)
@@ -314,6 +322,7 @@ func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
 }
 
 func TestATicketAdmittedByHandGetsItsTablesPriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
 	f.run(t)

@@ -35,6 +35,7 @@ func longJournal() []journal.Entry {
 }
 
 func TestABriefListsTheCommandsTheRunMayRun(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.AllowedTools = []string{"Read", "Bash(istari *)", "Bash(git log *)"}
 	b := runner.Brief(in)
@@ -247,6 +248,7 @@ func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchem
 }
 
 func TestTheRolesThatSubmitAResultNameTheResultFileAndTheHeredocForShortResults(t *testing.T) {
+	t.Parallel()
 	for role, submit := range map[string]string{"planner": "istari plan submit", "refiner": "istari refine submit", "reviewer": "istari review submit"} {
 		in := briefInput()
 		in.Role = role

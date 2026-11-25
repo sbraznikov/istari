@@ -140,6 +140,7 @@ func TestAMissingPriorityIsDefaultedNotFailed(t *testing.T) {
 }
 
 func TestTheTablesPriorityIsReportedOnlyWhenTheTableStatesOne(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M | p0 | `acme/web` | |"})}); res.TablePriority != "P0" {
 		t.Fatalf("table priority = %q, want P0 in the standard's spelling", res.TablePriority)
@@ -150,6 +151,7 @@ func TestTheTablesPriorityIsReportedOnlyWhenTheTableStatesOne(t *testing.T) {
 }
 
 func TestAPriorityLabelThatDisagreesWithTheTableIsNoDeviation(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	res := f.check(t, standard.Draft{Body: body(map[string]string{"meta": "| feature | M | P3 | `acme/web` | |"}), Labels: []string{"priority:P1"}})
 	if !res.OK() || res.Priority != "P1" || res.TablePriority != "P3" {

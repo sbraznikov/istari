@@ -507,6 +507,7 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 }
 
 func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 16)
 	f.start(t)
@@ -647,8 +648,10 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 }
 
 func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
+	t.Parallel()
 	for i, role := range []string{"refiner", "planner", "implementer", "reviewer"} {
 		t.Run(role, func(t *testing.T) {
+			t.Parallel()
 			f := newRunner(t, runner.RunnerOptions{})
 			seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./... -short\"\n")
 			profile := claudecode.DefaultProfiles()[role]
@@ -686,6 +689,7 @@ func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
 }
 
 func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -710,6 +714,7 @@ func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *tes
 }
 
 func TestTheImplementerGetsNoResultFile(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	f.readyTask(t, 18)
 	f.start(t)

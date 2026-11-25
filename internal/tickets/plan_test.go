@@ -115,6 +115,7 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 }
 
 func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	parent := f.gh.Seed("Parent", withTablePriority("P0"), "alex")
 	f.run(t)
@@ -136,6 +137,7 @@ func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t 
 }
 
 func TestATicketIstariCreatesGetsItsTablesPriorityAtOnce(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Created by istari ticket create", conforming, "carol") // not trusted: it stays new
 	if err := f.sync.Created(ctx, []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: n}}, ""); err != nil {

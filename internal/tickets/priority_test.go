@@ -199,6 +199,7 @@ func (f *syncFixture) notes(t *testing.T, n int) []string {
 func withTablePriority(p string) string { return strings.Replace(conforming, "| P1 |", "| "+p+" |", 1) }
 
 func TestAPriorityLabelOutranksTheTableAndTheDifferenceIsNotedOnce(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", withTablePriority("P3"), "alex", "priority:P1")
 	f.run(t)
@@ -214,6 +215,7 @@ func TestAPriorityLabelOutranksTheTableAndTheDifferenceIsNotedOnce(t *testing.T)
 }
 
 func TestAfterAdmissionTheLabelNotTheTableChangesThePriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", withTablePriority("P0"), "alex")
 	f.run(t)

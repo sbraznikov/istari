@@ -241,6 +241,7 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 }
 
 func TestAReviewerWhoseFirstCompoundCommandIsDeniedStillSubmitsItsReview(t *testing.T) {
+	t.Parallel()
 	// The scripted session opens as the runs of #159 did: one chain with a
 	// command the reviewer may not run, which Claude Code denies whole.
 	denied, err := json.Marshal(map[string]string{"command": "cat .istari/skill.md | head -80; istari whoami; git fetch -q origin main; git log --oneline -3"})
