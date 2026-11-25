@@ -38,6 +38,34 @@ func TestAWriteSurvivesAShortServerOutageInsideTheCall(t *testing.T) {
 	}
 }
 
+func TestAWriteThatOutlastsItsRetriesIsUnavailable(t *testing.T) {
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNext(len(quick) + 1)
+	_, err := p.Comment(ctx, ref(n), "journal entry")
+	if !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("comment during an outage: %v, want ErrUnavailable", err)
+	}
+	if _, err := p.Comment(ctx, ref(n), "journal entry"); err != nil {
+		t.Fatalf("the outage used up exactly the retries, yet the next comment failed: %v", err)
+	}
+}
+
+func TestARefusalIsNotRetriedAndNotUnavailable(t *testing.T) {
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNextWith(1, 422)
+	_, err := p.Comment(ctx, ref(n), "journal entry")
+	if err == nil || errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("comment answered 422: %v, want a plain error", err)
+	}
+	if got := fake.Issue(n).Comments; len(got) != 0 {
+		t.Fatalf("a 422 was retried: comments = %+v", got)
+	}
+}
+
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
 
 func stateLabels(labels []string) []string {

@@ -769,6 +769,9 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		}
 		res, err = p.send(ctx, method, path, data, out)
 	}
+	if transient(err) {
+		err = fmt.Errorf("%w: %w", tickets.ErrUnavailable, err)
+	}
 	return res, err
 }
 

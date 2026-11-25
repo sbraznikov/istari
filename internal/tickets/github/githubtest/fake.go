@@ -43,6 +43,7 @@ type Server struct {
 	deleted    map[int]bool
 	dropLabels bool
 	failNext   int
+	failStatus int
 	files      map[string]string // repository files on the default branch
 
 	appID           int64
@@ -153,7 +154,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		}
 		if s.failNext > 0 {
 			s.failNext--
-			s.write(w, http.StatusInternalServerError, map[string]string{"message": "Server Error"})
+			s.write(w, s.failStatus, map[string]string{"message": http.StatusText(s.failStatus)})
 			return
 		}
 		if gql, ok := strings.CutSuffix(s.prefix, "/v3"); ok && r.URL.Path == gql+"/graphql" {
@@ -579,10 +580,13 @@ func (s *Server) SetPermission(login, perm string) {
 }
 
 // FailNext makes the next n requests answer 500.
-func (s *Server) FailNext(n int) {
+func (s *Server) FailNext(n int) { s.FailNextWith(n, http.StatusInternalServerError) }
+
+// FailNextWith makes the next n requests answer status.
+func (s *Server) FailNextWith(n, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failNext = n
+	s.failNext, s.failStatus = n, status
 }
 
 // SetPageSize sets how many items a page holds.
