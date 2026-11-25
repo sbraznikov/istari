@@ -534,3 +534,73 @@ func TestRevokingALeaseReturnsTheTaskAtOnceAndTheOldLeaseIsDead(t *testing.T) {
 		t.Fatal("the revoked lease still completes the task")
 	}
 }
+
+// staleTask makes a store as it was before a finished ticket canceled its
+// tasks: ticket gh:acme/web#1 is ended by trigger, its task t_1 is ready.
+func (f *fixture) staleTask(t *testing.T, triggers ...string) *core.Tickets {
+	t.Helper()
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range triggers {
+		if _, err := tickets.Fire(ctx, "system", "gh:acme/web#1", trigger); err != nil {
+			t.Fatalf("%s: %v", trigger, err)
+		}
+	}
+	f.create(t, "t_1", "implementer")
+	return tickets
+}
+
+var toDone = []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"}
+
+func TestATaskOfAFinishedTicketIsHandedOutToNobody(t *testing.T) {
+	t.Parallel()
+	for name, triggers := range map[string][]string{"canceled": {"cancel"}, "done": toDone} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.staleTask(t, triggers...)
+			_, err := f.tasks.ClaimReady(ctx, "agent:a", "implementer")
+			assertCode(t, err, core.CodeNoReadyTask)
+			_, err = f.tasks.ClaimReadyIn(ctx, "agent:a", "", []string{"web"})
+			assertCode(t, err, core.CodeNoReadyTask)
+			_, err = f.tasks.Claim(ctx, "agent:a", "t_1")
+			assertCode(t, err, core.CodeInvalidState)
+		})
+	}
+}
+
+func TestCancelOfFinishedCancelsTheOpenTasksOfFinishedTicketsOnce(t *testing.T) {
+	t.Parallel()
+	for name, triggers := range map[string][]string{"canceled": {"cancel"}, "done": toDone} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tickets := f.staleTask(t, triggers...)
+			if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#2", "web"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_2", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
+				t.Fatal(err)
+			}
+			canceled, err := f.tasks.CancelOfFinished(ctx, "system")
+			if err != nil || len(canceled) != 1 || canceled[0] != "t_1" {
+				t.Fatalf("CancelOfFinished = %v, %v; want [t_1]", canceled, err)
+			}
+			if got := f.state(t, "t_1"); got != core.TaskCanceled {
+				t.Errorf("t_1 is %s, want canceled", got)
+			}
+			if got := f.state(t, "t_2"); got != core.TaskReady {
+				t.Errorf("t_2 of the open ticket is %s, want ready", got)
+			}
+			before := len(f.events(t, store.Filter{}))
+			if canceled, err := f.tasks.CancelOfFinished(ctx, "system"); err != nil || len(canceled) != 0 {
+				t.Fatalf("second CancelOfFinished = %v, %v; want nothing", canceled, err)
+			}
+			if after := len(f.events(t, store.Filter{})); after != before {
+				t.Fatalf("the second call appended %d events", after-before)
+			}
+		})
+	}
+}
