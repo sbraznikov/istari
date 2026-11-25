@@ -97,6 +97,7 @@ type Runner struct {
 
 	mu     sync.Mutex
 	active map[string]chan string // run id → who asks it to stop
+	paused map[string]PausedSlot  // slot profile → its pause
 }
 
 // New returns a runner.
@@ -125,7 +126,7 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	if opts.Skill == "" {
 		opts.Skill = skill.Skill()
 	}
-	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
+	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}, paused: map[string]PausedSlot{}}
 }
 
 // SetSelfReview sets how the runner learns a repository's self_review.
@@ -278,11 +279,7 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 			}
 			if failures++; failures >= startFailuresToPause {
 				failures = 0
-				log.Printf("istari: runner %s: paused for %s: the harness did not start: %v", slot.Profile, shortDuration(r.opts.StartPause), startErr)
-				select {
-				case <-ctx.Done():
-				case <-time.After(r.opts.StartPause):
-				}
+				r.pause(ctx, slot, startErr)
 			}
 			continue
 		}
@@ -294,6 +291,40 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 		case <-ctx.Done():
 		case <-time.After(r.opts.Poll):
 		}
+	}
+}
+
+// PausedSlot is a slot that claims nothing for a while because its harness
+// did not start three times in a row (spec section 7.3).
+type PausedSlot struct {
+	Slot  string    `json:"slot"`
+	Error string    `json:"error"` // why the harness did not start, the last time
+	Until time.Time `json:"until"` // when the slot claims again
+}
+
+// Paused returns the slots that are paused now, by profile.
+func (r *Runner) Paused() []PausedSlot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]PausedSlot, 0, len(r.paused))
+	for _, p := range r.paused {
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b PausedSlot) int { return strings.Compare(a.Slot, b.Slot) })
+	return out
+}
+
+// pause keeps a slot from claiming for StartPause, and says so.
+func (r *Runner) pause(ctx context.Context, slot Slot, startErr error) {
+	p := PausedSlot{Slot: slot.Profile, Error: "the harness did not start: " + startErr.Error(), Until: r.opts.Clock().Add(r.opts.StartPause)}
+	log.Printf("istari: runner %s: paused for %s: %s", slot.Profile, shortDuration(r.opts.StartPause), p.Error)
+	r.mu.Lock()
+	r.paused[slot.Profile] = p
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); delete(r.paused, slot.Profile); r.mu.Unlock() }()
+	select {
+	case <-ctx.Done():
+	case <-time.After(r.opts.StartPause):
 	}
 }
 

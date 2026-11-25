@@ -84,3 +84,41 @@ func TestThreeStartFailuresInARowPauseTheSlotAndTheLogSaysWhy(t *testing.T) {
 		t.Fatalf("attempts = %d, want 0", got.Attempts)
 	}
 }
+
+func TestPausedTellsWhichSlotIsPausedWhyAndUntilWhen(t *testing.T) {
+	logged := captureLog(t)
+	f := newRunner(t, runner.RunnerOptions{StartRetry: time.Millisecond, StartPause: 300 * time.Millisecond})
+	if paused := f.runner.Paused(); len(paused) != 0 {
+		t.Fatalf("paused = %+v before any failure, want none", paused)
+	}
+	f.h.failStart(errMissing)
+	f.readyTask(t, 1)
+	before := time.Now()
+	f.start(t)
+	waitLog(t, logged, "paused for")
+	paused := f.runner.Paused()
+	if len(paused) != 1 || paused[0].Slot != "implementer-1" || !strings.Contains(paused[0].Error, errMissing.Error()) {
+		t.Fatalf("paused = %+v, want implementer-1 with %q", paused, errMissing)
+	}
+	if until := paused[0].Until; until.Before(before.Add(300*time.Millisecond)) || until.After(time.Now().Add(300*time.Millisecond)) {
+		t.Fatalf("until = %s, want 300ms after the pause began", until)
+	}
+	f.h.failStart(nil)
+	f.session(t)
+	if paused := f.runner.Paused(); len(paused) != 0 {
+		t.Fatalf("paused = %+v after the slot started a run, want none", paused)
+	}
+}
+
+func TestOnceTheHarnessStartsAgainTheNextClaimAfterThePauseStartsARun(t *testing.T) {
+	logged := captureLog(t)
+	f := newRunner(t, runner.RunnerOptions{StartRetry: time.Millisecond, StartPause: 200 * time.Millisecond})
+	f.h.failStart(errMissing)
+	_, task := f.readyTask(t, 1)
+	f.start(t)
+	waitLog(t, logged, "paused for")
+	f.h.failStart(nil)
+	if s := f.session(t); s.spec.Env["ISTARI_TASK"] != task.ID {
+		t.Fatalf("the run is of task %q, want %q", s.spec.Env["ISTARI_TASK"], task.ID)
+	}
+}
