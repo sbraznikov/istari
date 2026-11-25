@@ -181,6 +181,27 @@ func (r *Runs) Yield(ctx context.Context, id, reason string) (Run, error) {
 	return r.update(ctx, id, "run.yielded", map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Yielded = reason })
 }
 
+// EndLeftRunning ends every run still recorded as running, with the reason,
+// in one run.exited event each. The daemon calls it on start, before any slot
+// starts a run: no process owns such a run any more (spec section 7.2).
+func (r *Runs) EndLeftRunning(ctx context.Context, reason string) error {
+	runs, err := r.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.State != RunRunning {
+			continue
+		}
+		if _, err := r.update(ctx, run.ID, EventRunExited, map[string]any{"run": run.ID, "reason": reason}, func(run *Run) {
+			run.State, run.Ended, run.Reason = RunEnded, r.clock().UTC(), reason
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // create records a new run and its token.
 func (r *Runs) create(ctx context.Context, run *Run) (token string, err error) {
 	token = randomHex(32)
