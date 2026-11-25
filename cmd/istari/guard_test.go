@@ -8,6 +8,7 @@ import (
 )
 
 func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
+	t.Parallel()
 	wt := t.TempDir()
 	hook := func(input string, env ...string) (string, int) {
 		t.Helper()
@@ -46,6 +47,7 @@ func TestTheGitGuardHookDeniesWithExitTwoAndTellsTheAgentWhy(t *testing.T) {
 }
 
 func TestTheGitGuardHookKeepsFileToolsOutOfGitDirectories(t *testing.T) {
+	t.Parallel()
 	wt := t.TempDir()
 	for path, want := range map[string]int{wt + "/src/a.go": 0, wt + "/.git": 2, "/data/repos/acme/web.git/config": 2} {
 		cmd := exec.Command(binary, "hook", "git-guard", "--harness", "claude-code")
@@ -57,6 +59,32 @@ func TestTheGitGuardHookKeepsFileToolsOutOfGitDirectories(t *testing.T) {
 		}
 		if code != want {
 			t.Errorf("writing %s: exit %d, want %d", path, code, want)
+		}
+	}
+}
+
+func TestARunWithAResultFileMayWriteThatFileAndNoOther(t *testing.T) {
+	t.Parallel()
+	wt := t.TempDir()
+	result := t.TempDir() + "/runs/r_1/result.yaml"
+	for path, want := range map[string]int{
+		result:                   0,
+		wt + "/src/a.go":         2,
+		wt + "/plan.yaml":        2,
+		result + "/../plan.yaml": 2,
+		"/tmp/notes.txt":         2,
+	} {
+		cmd := exec.Command(binary, "hook", "git-guard", "--harness", "claude-code")
+		cmd.Env = append(os.Environ(), "ISTARI_WORKTREE="+wt, "ISTARI_RESULT="+result)
+		cmd.Stdin = strings.NewReader(`{"tool_name":"Write","cwd":"` + wt + `","tool_input":{"file_path":"` + path + `","content":"x"}}`)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		code := 0
+		if err := cmd.Run(); err != nil {
+			code = err.(*exec.ExitError).ExitCode()
+		}
+		if code != want || want == 2 && !strings.Contains(stderr.String(), "ISTARI_RESULT") {
+			t.Errorf("writing %s with a result file: exit %d %q, want %d and a denial naming ISTARI_RESULT", path, code, stderr.String(), want)
 		}
 	}
 }

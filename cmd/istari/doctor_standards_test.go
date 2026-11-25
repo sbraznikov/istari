@@ -33,6 +33,7 @@ func doctorInRepo(t *testing.T, repo string) (string, int) {
 }
 
 func TestDoctorWarnsAboutMissingStandardsFiles(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
 	out, code := doctorInRepo(t, repo)
@@ -69,8 +70,10 @@ func writeFiles(t *testing.T, root string, paths ...string) {
 }
 
 func TestDoctorShowsTheStandardsOkWhenTheRepositoryHasThemAll(t *testing.T) {
+	t.Parallel()
 	for name, adr := range map[string]string{"docs/adr": "docs/adr/", "adr at the root": "adr/"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			repo := t.TempDir()
 			git(t, repo, "init", "-q", "-b", "main")
 			writeFiles(t, repo, "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md", adr)
@@ -84,6 +87,7 @@ func TestDoctorShowsTheStandardsOkWhenTheRepositoryHasThemAll(t *testing.T) {
 }
 
 func TestDoctorListsOnlyTheMissingStandardsFiles(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
 	// A file named adr is not an ADR directory.

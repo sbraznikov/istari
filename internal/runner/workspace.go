@@ -235,6 +235,11 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 	} else if err := os.RemoveAll(ws.Dir); err != nil {
 		return Workspace{}, err
 	}
+	// verify_red's worktree holds only the previous code: nothing to lose.
+	gitOut(ctx, clone, "worktree", "remove", "--force", redDir(ws))
+	if err := os.RemoveAll(redDir(ws)); err != nil {
+		return Workspace{}, err
+	}
 	if _, err := gitOut(ctx, clone, "worktree", "prune"); err != nil {
 		return Workspace{}, err
 	}
@@ -362,7 +367,7 @@ func (w *Workspaces) orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 		return nil, err
 	}
 	for _, dir := range dirs {
-		if !recorded[dir] && isWorktree(ctx, dir) {
+		if !recorded[dir] && !recorded[strings.TrimSuffix(dir, redSuffix)] && isWorktree(ctx, dir) {
 			out = append(out, Workspace{Dir: dir, State: WorkspaceActive, Reason: "no record"})
 		}
 	}
@@ -473,6 +478,36 @@ func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove fu
 		os.RemoveAll(dir)
 		gitOut(bg, clone, "worktree", "prune")
 	}, nil
+}
+
+// redDir is the ticket's worktree for verify_red: one per ticket, at a fixed
+// path next to its own, so the test caches of the toolchain, keyed by the
+// path, stay warm between checkpoints (spec section 7.7).
+func redDir(ws Workspace) string { return ws.Dir + redSuffix }
+
+const redSuffix = ".red"
+
+// redCheckout returns the ticket's verify_red worktree at commit, with no
+// untracked or ignored files: what one checkpoint left there is gone at the
+// next. It is made at its first use and removed with the ticket's worktree.
+func (w *Workspaces) redCheckout(ctx context.Context, ws Workspace, commit string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	dir := redDir(ws)
+	if !isWorktree(ctx, dir) {
+		clone := w.clonePath(ws.Repo)
+		// Whatever is left of a broken one only holds previous code; if it
+		// cannot be cleared, worktree add below fails and says why.
+		os.RemoveAll(dir)
+		gitOut(ctx, clone, "worktree", "prune")
+		_, err := gitOut(ctx, clone, "worktree", "add", "--detach", dir, commit)
+		return dir, err
+	}
+	if _, err := gitOut(ctx, dir, "checkout", "-q", "--detach", "--force", commit); err != nil {
+		return "", err
+	}
+	_, err := gitOut(ctx, dir, "clean", "-q", "-fdx")
+	return dir, err
 }
 
 // PushTarget returns the repository's URL and istari's private repository

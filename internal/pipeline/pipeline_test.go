@@ -23,6 +23,7 @@ func steps(specs []pipeline.TaskSpec) []step {
 }
 
 func TestTheDefaultPipelineHasTheSevenStagesOfTheSpec(t *testing.T) {
+	t.Parallel()
 	p := pipeline.Default()
 	var names []string
 	for _, s := range p.Stages {
@@ -47,6 +48,7 @@ func TestTheDefaultPipelineHasTheSevenStagesOfTheSpec(t *testing.T) {
 }
 
 func TestRemovingAStageFromTheFileRemovesItsTask(t *testing.T) {
+	t.Parallel()
 	p, err := pipeline.Parse([]byte(`
 [[stage]]
 name = "plan"
@@ -80,6 +82,7 @@ needs = ["implement", "verify"]
 }
 
 func TestAnUnknownRoleOrACycleIsRejectedWithItsLine(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ file, says string }{
 		{"[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"x\"\nrole = \"wizard\"\n", "line 5"},
 		{"[[stage]]\nname = \"a\"\nrole = \"planner\"\nneeds = [\"b\"]\n\n[[stage]]\nname = \"b\"\nrole = \"implementer\"\nneeds = [\"a\"]\n", "cycle"},
@@ -99,6 +102,7 @@ func TestAnUnknownRoleOrACycleIsRejectedWithItsLine(t *testing.T) {
 }
 
 func TestARepositoryValueOverridesTheGlobalDefault(t *testing.T) {
+	t.Parallel()
 	global := config.Defaults{PlanGate: true, MaxReviewRounds: 3, MaxAttempts: 3}
 	if s := pipeline.Default().Settings(global); !s.PlanGate || s.MaxReviewRounds != 3 || s.MaxAttempts != 3 {
 		t.Fatalf("without a file: %+v", s)
@@ -113,6 +117,7 @@ func TestARepositoryValueOverridesTheGlobalDefault(t *testing.T) {
 }
 
 func TestSelfReviewIsOnUnlessThePipelineTurnsItOff(t *testing.T) {
+	t.Parallel()
 	if !pipeline.Default().Settings(config.Defaults{}).SelfReview {
 		t.Fatal("without a file self_review is off, want on (spec 7.6)")
 	}
@@ -126,6 +131,7 @@ func TestSelfReviewIsOnUnlessThePipelineTurnsItOff(t *testing.T) {
 }
 
 func TestWithThePlanGateTheImplementerWaitsForAHuman(t *testing.T) {
+	t.Parallel()
 	got := steps(pipeline.Default().Expand(pipeline.Settings{PlanGate: true}))
 	if !reflect.DeepEqual(got[1], step{"plan-approval", pipeline.RoleHuman, []string{"plan"}}) {
 		t.Fatalf("second task = %v, want the plan approval", got[1])

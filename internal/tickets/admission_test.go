@@ -9,6 +9,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 func ref(n int) string { return ghRef(n) }
@@ -133,6 +134,130 @@ func TestTheRepositorysOwnStandardIsReadFromTheTracker(t *testing.T) {
 	_ = githubtest.Repo
 }
 
+// labelAdmission switches the fixture's project to admission = "label".
+func labelAdmission(f *syncFixture, trusted ...string) {
+	f.sync = tickets.NewSyncer(f.adapter, f.tickets, f.store,
+		[]tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted, LabelOnly: true}},
+		tickets.SyncOptions{Standards: standard.ForTracker{Tracker: f.adapter, DefaultPriority: "P2"}, Needs: standard.Needs, Parent: standard.Parent})
+}
+
+func TestInLabelModeATrustedAuthorsTicketWaitsInNew(t *testing.T) {
+	f := newSync(t)
+	labelAdmission(f)
+	n := f.gh.Seed("Add limits", conforming, "alex") // alex can write, so is trusted
+	f.run(t)
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketNew {
+		t.Fatalf("state = %s, want new until a trusted member admits it", tk.State)
+	}
+	if ok, err := f.sync.Refinable(ctx, ref(n)); err != nil || ok {
+		t.Fatalf("Refinable = %v, %v; want false: no refiner run before admission", ok, err)
+	}
+}
+
+func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
+	f := newSync(t)
+	labelAdmission(f)
+	n := f.gh.Seed("Add limits", conforming, "alex")
+	f.run(t)
+	f.gh.HumanSetLabels(n, "alex", "istari:ready")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady {
+		t.Fatalf("state = %s, want ready after alex's label", tk.State)
+	}
+	if tr := f.transitions(t, n); tr[len(tr)-1].Trigger != "accept" || tr[len(tr)-1].Actor != "human:alex" {
+		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
+	}
+}
+
+func TestInLabelModeAnUntrustedReadyLabelIsReverted(t *testing.T) {
+	f := newSync(t)
+	labelAdmission(f)
+	n := f.gh.Seed("Add limits", conforming, "alex")
+	f.run(t)
+	f.gh.HumanSetLabels(n, "carol", "istari:ready") // carol may only read
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketNew {
+		t.Fatalf("state = %s, want new", tk.State)
+	}
+	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:new"}) {
+		t.Fatalf("labels = %v, want istari:new restored", got)
+	}
+	comments := f.gh.Issue(n).Comments
+	if len(comments) != 1 || !strings.Contains(comments[0].Body, "not a trusted member") {
+		t.Fatalf("comments = %+v, want one saying carol is not trusted", comments)
+	}
+}
+
+func TestInLabelModeTicketReadyAdmitsAndSponsorsATicketBelowTheStandard(t *testing.T) {
+	f := newSync(t)
+	labelAdmission(f)
+	short := strings.Replace(conforming, "## Out of scope", "## Notes", 1)
+	n := f.gh.Seed("Add limits", conforming, "alex")
+	m := f.gh.Seed("Add quotas", short, "alex")
+	f.run(t)
+	for _, r := range []int{n, m} {
+		if err := f.sync.Ready(ctx, "alex", ref(r)); err != nil {
+			t.Fatalf("Ready %d: %v", r, err)
+		}
+	}
+	if tk := f.ticket(t, n); tk.State != core.TicketReady {
+		t.Fatalf("state = %s, want ready after istari ticket ready", tk.State)
+	}
+	if tk := f.ticket(t, m); tk.State != core.TicketNew {
+		t.Fatalf("state = %s, want new until it meets the standard", tk.State)
+	}
+	if ok, err := f.sync.Refinable(ctx, ref(m)); err != nil || !ok {
+		t.Fatalf("Refinable = %v, %v; want true: a trusted member asked to admit it", ok, err)
+	}
+	f.gh.HumanEditBody(m, "alex", conforming)
+	f.run(t)
+	if tk := f.ticket(t, m); tk.State != core.TicketReady {
+		t.Fatalf("state = %s, want ready once it meets the standard", tk.State)
+	}
+}
+
+func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
+	f := newSync(t)
+	labelAdmission(f)
+	parent := f.gh.Seed("Parent", conforming, "alex")
+	f.run(t)
+	if err := f.sync.Ready(ctx, "alex", ref(parent)); err != nil {
+		t.Fatal(err)
+	}
+	child := f.gh.Seed("Found while working", conforming, "alex")
+	short := f.gh.Seed("Half B", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
+	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: child}, {Provider: "gh", Repo: githubtest.Repo, Number: short}}
+	if err := f.sync.Created(ctx, refs, ref(parent)); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	if tk := f.ticket(t, child); tk.State != core.TicketReady {
+		t.Fatalf("the agent's ticket = %s, want ready without the label", tk.State)
+	}
+	if ok, err := f.sync.Refinable(ctx, ref(short)); err != nil || !ok {
+		t.Fatalf("Refinable = %v, %v; want true: it inherits the admission", ok, err)
+	}
+	f.gh.HumanEditBody(short, "alex", conforming) // as the refiner would
+	f.run(t)
+	if tk := f.ticket(t, short); tk.State != core.TicketReady {
+		t.Fatalf("the refined child = %s, want ready once it meets the standard", tk.State)
+	}
+}
+
+func TestATicketAlreadyReadyStaysReadyWhenTheProjectSwitchesToLabel(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", conforming, "alex")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady {
+		t.Fatalf("state = %s, want ready without the key", tk.State)
+	}
+	labelAdmission(f)
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady {
+		t.Fatalf("state = %s after the switch, want ready", tk.State)
+	}
+}
+
 func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
 	f := newSync(t)
 	n := f.gh.Seed("t", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "carol")
@@ -145,5 +270,58 @@ func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
 	comments := f.gh.Issue(n).Comments
 	if len(comments) != 1 || !strings.Contains(comments[0].Body, "Out of scope") {
 		t.Fatalf("comments = %+v, want one naming the missing section", comments)
+	}
+}
+
+func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", strings.Replace(conforming, "| P1 |", "| P0 |", 1), "alex")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P0" {
+		t.Fatalf("ticket = %s %q, want ready and P0 from its table", tk.State, tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0] != (prioritized{"P0", "human:alex"}) {
+		t.Fatalf("prioritized events = %+v, want one P0 by the author human:alex", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P0") {
+		t.Fatalf("labels = %v, want priority:P0", f.gh.Issue(n).Labels)
+	}
+}
+
+func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
+	f.run(t)
+	f.gh.HumanSetLabels(n, "alex", "istari:ready")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P1" {
+		t.Fatalf("ticket = %s %q, want ready and P1 from its table", tk.State, tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0].Actor != "human:carol" {
+		t.Fatalf("prioritized events = %+v, want one by the author human:carol", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", f.gh.Issue(n).Labels)
+	}
+}
+
+func TestATicketAdmittedByHandGetsItsTablesPriority(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
+	f.run(t)
+	if tk := f.ticket(t, n); tk.Priority != "" {
+		t.Fatalf("priority = %q before admission, want none", tk.Priority)
+	}
+	if err := f.sync.Ready(ctx, "alex", ref(n)); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, n); tk.Priority != "P1" {
+		t.Fatalf("priority = %q, want P1 from its table", tk.Priority)
+	}
+	if p := f.prioritized(t, n); len(p) != 1 || p[0].Actor != "human:carol" {
+		t.Fatalf("prioritized events = %+v, want one by the author human:carol", p)
+	}
+	if !slices.Contains(f.gh.Issue(n).Labels, "priority:P1") {
+		t.Fatalf("labels = %v, want priority:P1", f.gh.Issue(n).Labels)
 	}
 }

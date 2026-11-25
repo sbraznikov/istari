@@ -29,6 +29,7 @@ theme = "terminal"          # keep this comment
 `
 
 func TestAddRepoGoesIntoItsProjectAndKeepsTheRest(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, handwritten)
 	if err := config.AddRepo(path, "service", config.ProjectRepo{Repo: "acme/component", DoneWhen: "released", Link: "package"}); err != nil {
 		t.Fatalf("AddRepo: %v", err)
@@ -70,6 +71,7 @@ func TestAddRepoGoesIntoItsProjectAndKeepsTheRest(t *testing.T) {
 }
 
 func TestAnEditThatWouldBreakTheConfigIsNotWritten(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, handwritten)
 	before, _ := os.ReadFile(path)
 	if err := config.AddRepo(path, "service", config.ProjectRepo{Repo: "acme/x", DoneWhen: "someday"}); err == nil {
@@ -82,6 +84,7 @@ func TestAnEditThatWouldBreakTheConfigIsNotWritten(t *testing.T) {
 }
 
 func TestEditsKeepUnusualButValidFiles(t *testing.T) {
+	t.Parallel()
 	for name, text := range map[string]string{
 		"single quotes":                "[[project]]\nname = 'service'\nrepo = 'acme/service'\n",
 		"crlf":                         "[[project]]\r\nname = \"service\"\r\nrepo = \"acme/service\"\r\n",
@@ -89,6 +92,7 @@ func TestEditsKeepUnusualButValidFiles(t *testing.T) {
 		"comment above the next table": "[[project]]\nname = \"service\"\nrepo = \"acme/service\"\n\n# --- UI ---\n[tui]\ntheme = \"terminal\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			path := writeConfig(t, text)
 			if err := config.AddRepo(path, "service", config.ProjectRepo{Repo: "acme/component"}); err != nil {
 				t.Fatalf("AddRepo: %v", err)
@@ -113,6 +117,7 @@ func TestEditsKeepUnusualButValidFiles(t *testing.T) {
 }
 
 func TestEditsFollowASymlinkedConfig(t *testing.T) {
+	t.Parallel()
 	real := writeConfig(t, handwritten)
 	link := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.Symlink(real, link); err != nil {
@@ -130,6 +135,7 @@ func TestEditsFollowASymlinkedConfig(t *testing.T) {
 }
 
 func TestConcurrentEditsAreNotLost(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, handwritten)
 	var wg sync.WaitGroup
 	for i := range 8 {
@@ -152,6 +158,7 @@ func TestConcurrentEditsAreNotLost(t *testing.T) {
 }
 
 func TestAProjectWithBothRepoAndReposIsInvalid(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, "[[project]]\nname = \"s\"\nrepo = \"a/b\"\n\n[[project.repos]]\nrepo = \"a/c\"\n")
 	_, err := config.Load(path)
 	assertErrorNames(t, err, "project[0].repo")

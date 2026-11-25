@@ -1,11 +1,16 @@
 package runner_test
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/harness/claudecode"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -80,6 +85,7 @@ func (f *reviewFixture) review(t *testing.T) journal.Entry {
 }
 
 func TestAFindingWhoseQuoteIsNotInTheTicketIsDroppedAndNoted(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	checked := f.submit(t, `
 standards: 0 findings
@@ -103,6 +109,7 @@ findings:
 }
 
 func TestAFindingThatPointsOutsideTheDiffIsDropped(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(file string, line int) string {
 		return "  - {axis: spec, kind: partial, file: " + file + ", line: " + strconv.Itoa(line) +
@@ -124,6 +131,7 @@ func TestAFindingThatPointsOutsideTheDiffIsDropped(t *testing.T) {
 }
 
 func TestAStandardsQuoteIsCheckedInItsFileOnMainAcrossLineBreaks(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(source, quote string) string {
 		return "  - {axis: standards, kind: standard, file: cache/cache.go, line: 3, source: " + source + ", quote: " + quote + ", text: Get has no doc comment}\n"
@@ -141,6 +149,7 @@ func TestAStandardsQuoteIsCheckedInItsFileOnMainAcrossLineBreaks(t *testing.T) {
 }
 
 func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
+	t.Parallel()
 	const good = "{axis: spec, kind: missing, file: a.go, line: 1, source: ticket, quote: q, text: t}"
 	for name, report := range map[string]string{
 		"no spec line":       "standards: 0 findings\n",
@@ -160,7 +169,41 @@ func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
 	}
 }
 
+// refusesUnquotedColon checks that a parse error names the report's line and
+// says to quote the value (S4.9).
+func refusesUnquotedColon(t *testing.T, err error, line int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	for _, want := range []string{"line " + strconv.Itoa(line), "quote the value"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+}
+
+func TestAReportWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	t.Parallel()
+	report := "standards: 1 finding; most serious: duplicated code\nspec: 0 findings\n"
+	_, err := runner.ParseReviewResult([]byte(report))
+	refusesUnquotedColon(t, err, 1)
+}
+
+func TestAnUnquotedColonOnALaterLineIsNamedAfterACommentWithAColon(t *testing.T) {
+	t.Parallel()
+	report := "standards: \"0 findings\"\n" +
+		"spec: \"1 finding\"\n" +
+		"findings:\n" +
+		"  - axis: spec  # standards; spec: missing\n" +
+		"    kind: missing\n" +
+		"    text: dup: here\n"
+	_, err := runner.ParseReviewResult([]byte(report))
+	refusesUnquotedColon(t, err, 6)
+}
+
 func TestACodeSmellQuotesTheBaselineOfTheReviewersInstructions(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t) // main has no .istari/roles/reviewer.md: the built-in one applies
 	checked := f.submit(t, `
 standards: 1 finding, possibly a mysterious name
@@ -180,6 +223,7 @@ findings:
 }
 
 func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	write(t, filepath.Join(f.run.Dir, "go.mod"), "module x\n")
 	gitIn(t, f.run.Dir, "add", ".")
@@ -196,7 +240,69 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 	}
 }
 
+func TestAReviewerWhoseFirstCompoundCommandIsDeniedStillSubmitsItsReview(t *testing.T) {
+	// The scripted session opens as the runs of #159 did: one chain with a
+	// command the reviewer may not run, which Claude Code denies whole.
+	denied, err := json.Marshal(map[string]string{"command": "cat .istari/skill.md | head -80; istari whoami; git fetch -q origin main; git log --oneline -3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newRunner(t, runner.RunnerOptions{}, harness.Event{Kind: harness.EventToolCall, Tool: "Bash", ToolInput: denied})
+	profile := claudecode.DefaultProfiles()["reviewer"]
+	profile.Harness = f.h.name
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws,
+		runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Slots: []runner.Slot{{Profile: "reviewer-1", Role: "reviewer", Harness: profile}}})
+	tk := f.ticket(t, 40, "Review me")
+	f.fire(t, tk.Ref, "accept", "start")
+	task, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	s := f.session(t)
+	for _, want := range []string{"Run each `istari` command on its own", "A denied command denies only that command", "- `git fetch origin main`\n"} {
+		if !strings.Contains(s.spec.Brief, want) {
+			t.Errorf("the reviewer's brief lacks %q", want)
+		}
+	}
+	// After the denial the agent runs each istari command on its own.
+	run, err := f.runner.Runs().Get(ctx, s.spec.Env["ISTARI_RUN"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.ParseReviewResult([]byte("standards: \"0 findings\"\nspec: \"0 findings\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := runner.NewReviews(ws, journal.New(nil, f.store, nil))
+	checked, err := reviews.Check(ctx, run, res, "")
+	if err != nil {
+		t.Fatalf("istari review submit: %v", err)
+	}
+	if err := reviews.Record(ctx, run, checked); err != nil {
+		t.Fatalf("istari review submit: %v", err)
+	}
+	if _, err := f.runner.Runs().Complete(ctx, run.ID, "reviewed"); err != nil {
+		t.Fatalf("istari complete: %v", err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	ref, err := tickets.ParseRef(tk.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Review }) {
+		t.Fatalf("journal = %+v, want the review recorded", entries)
+	}
+}
+
 func TestAQuoteMustComeFromTheSourceItsAxisAndKindAllow(t *testing.T) {
+	t.Parallel()
 	f := newReviews(t)
 	finding := func(axis, kind, source, quote string) string {
 		return "  - {axis: " + axis + ", kind: " + kind + ", file: cache/cache.go, line: 3, source: " + source + ", quote: \"" + quote + "\", text: t}\n"

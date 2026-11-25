@@ -113,6 +113,7 @@ func collect(t *testing.T, s harness.Session) []harness.Event {
 }
 
 func TestTheAdapterStartsClaudeHeadlessAndYieldsEveryKindOfEventInOrder(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
 	spec := f.spec(t, "stream", nil)
@@ -182,6 +183,7 @@ func samePath(a, b string) bool {
 }
 
 func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
+	t.Parallel()
 	want := harness.Usage{InputTokens: 2700, OutputTokens: 65, CacheReadTokens: 800, CacheWriteTokens: 100}
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
@@ -221,6 +223,7 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 }
 
 func TestStopSendsSIGTERMThenSIGKILLAfterTheGracePeriod(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
 
@@ -276,6 +279,7 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestTheAgentGetsOnlyItsOwnEnvironment(t *testing.T) {
+	// Serial: sets GITHUB_TOKEN with t.Setenv.
 	t.Setenv("GITHUB_TOKEN", "daemon-secret")
 	f := newFake(t)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", nil))
@@ -294,6 +298,7 @@ func TestTheAgentGetsOnlyItsOwnEnvironment(t *testing.T) {
 }
 
 func TestSendIsNotSupportedInPrintMode(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", nil))
 	if err != nil {
@@ -307,6 +312,7 @@ func TestSendIsNotSupportedInPrintMode(t *testing.T) {
 }
 
 func TestResumeContinuesTheSession(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
 	var r harness.Resumer = h
@@ -322,6 +328,7 @@ func TestResumeContinuesTheSession(t *testing.T) {
 }
 
 func TestCheckReportsAMissingBinaryClearly(t *testing.T) {
+	t.Parallel()
 	h := claudecode.New(claudecode.Options{Binary: filepath.Join(t.TempDir(), "no-such-claude")})
 	err := h.Check(ctx)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -337,6 +344,7 @@ func TestCheckReportsAMissingBinaryClearly(t *testing.T) {
 }
 
 func TestACallerThatDoesNotReadEventsCanStillWaitAndStop(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
 	s, err := h.Start(ctx, f.spec(t, "flood", nil)) // more events than any buffer
@@ -359,6 +367,7 @@ func TestACallerThatDoesNotReadEventsCanStillWaitAndStop(t *testing.T) {
 }
 
 func TestABackgroundChildHoldingTheOutputDoesNotHoldTheSession(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "orphan", nil))
 	if err != nil {
@@ -380,6 +389,7 @@ func TestABackgroundChildHoldingTheOutputDoesNotHoldTheSession(t *testing.T) {
 }
 
 func TestCancellingTheContextStopsTheRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	runCtx, cancel := context.WithCancel(ctx)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(runCtx, f.spec(t, "exit-on-term", nil))
@@ -401,6 +411,7 @@ func TestCancellingTheContextStopsTheRun(t *testing.T) {
 }
 
 func TestTheModelProvidersCredentialsReachTheHarness(t *testing.T) {
+	// Serial: sets ANTHROPIC_API_KEY, HTTPS_PROXY and SLACK_BOT_TOKEN with t.Setenv.
 	t.Setenv("ANTHROPIC_API_KEY", "model-key")
 	t.Setenv("HTTPS_PROXY", "http://proxy:3128")
 	t.Setenv("SLACK_BOT_TOKEN", "daemon-secret")
@@ -423,6 +434,7 @@ func TestTheModelProvidersCredentialsReachTheHarness(t *testing.T) {
 }
 
 func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
+	t.Parallel()
 	stream := filepath.Join(t.TempDir(), "stream.jsonl")
 	os.WriteFile(stream, []byte(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"s","total_cost_usd":5.01,"usage":{"input_tokens":1,"output_tokens":1}}`+"\n"), 0o644)
 	f := newFake(t)
@@ -438,6 +450,7 @@ func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
 }
 
 func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {
+	t.Parallel()
 	// The modes of claude --permission-mode (Claude Code 2.1).
 	valid := []string{"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
 	profiles := claudecode.DefaultProfiles()
@@ -459,7 +472,23 @@ func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {
 	}
 }
 
+func TestOnlyTheReviewerAmongTheReadOnlyRolesMayFetchTheMainBranch(t *testing.T) {
+	t.Parallel()
+	profiles := claudecode.DefaultProfiles()
+	if !slices.Contains(profiles["reviewer"].AllowedTools, "Bash(git fetch origin main)") {
+		t.Errorf("reviewer tools = %q, want git fetch origin main", profiles["reviewer"].AllowedTools)
+	}
+	for _, role := range []string{"refiner", "planner"} {
+		for _, tool := range profiles[role].AllowedTools {
+			if strings.Contains(tool, "git fetch") {
+				t.Errorf("the %s may run %s", role, tool)
+			}
+		}
+	}
+}
+
 func TestTheGuardRunsAsAHookBeforeEveryShellCommandAndCannotBeSwitchedOff(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	h := claudecode.New(claudecode.Options{Binary: f.bin})
 	spec := f.spec(t, "stream", nil)

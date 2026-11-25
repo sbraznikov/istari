@@ -12,6 +12,13 @@ import (
 var binary string
 
 func TestMain(m *testing.M) {
+	// An agent's run sets ISTARI_SOCKET and ISTARI_TOKEN; inherited, they send
+	// the binaries the tests start to the real daemon (#154).
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "ISTARI_") {
+			os.Unsetenv(name)
+		}
+	}
 	dir, err := os.MkdirTemp("", "istari-bin")
 	if err != nil {
 		panic(err)
@@ -47,6 +54,7 @@ func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 }
 
 func TestVersionPrintsAVersionAndExitsZero(t *testing.T) {
+	t.Parallel()
 	out, _, code := run(t, "--version")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -57,6 +65,7 @@ func TestVersionPrintsAVersionAndExitsZero(t *testing.T) {
 }
 
 func TestUsageErrorsExitTwo(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"no-such-command"},
 		{"--no-such-flag"},
@@ -72,6 +81,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 }
 
 func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
+	t.Parallel()
 	empty := t.TempDir()
 	cmd := exec.Command(binary, "doctor")
 	cmd.Env = append(os.Environ(), "PATH="+empty)
