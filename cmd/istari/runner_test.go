@@ -45,8 +45,18 @@ sleep 2
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
-	t.Parallel()
+// agentDaemon is a daemon whose runner has one ready implementer task, of
+// ticket gh:acme/web#5, and runs agent as its harness binary.
+type agentDaemon struct {
+	*daemon
+	server string // the git server the repositories are cloned from
+	gh     *githubtest.Server
+	task   core.Task
+	env    []string // the daemon's environment, to start it again with
+}
+
+func startAgentDaemon(t *testing.T, agent string) *agentDaemon {
+	t.Helper()
 	server := gitServer(t)
 	dataDir := newDataDir(t)
 	s, err := store.Open(filepath.Join(dataDir, api.DatabaseName))
@@ -70,9 +80,8 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	}
 	s.Close()
 
-	out := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(fakeAgent, out, binary)), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(agent), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gh := githubtest.New(t)
@@ -84,8 +93,15 @@ func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
-		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	return &agentDaemon{daemon: startDaemonWithConfig(t, dataDir, config, env...), server: server, gh: gh, task: task, env: env}
+}
+
+func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {
+	t.Parallel()
+	out := t.TempDir()
+	d := startAgentDaemon(t, fmt.Sprintf(fakeAgent, out, binary))
+	server, gh, task := d.server, d.gh, d.task
 
 	// The run appears; its transcript can be followed until it ends.
 	var runs []struct{ ID, State string }

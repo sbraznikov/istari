@@ -151,6 +151,25 @@ func (r *Runner) mainNotMerged(ctx context.Context, task core.Task, cause error)
 	}
 }
 
+// mergeConflicted records in the ticket's journal the files where merging
+// the main branch at the start of the run met conflicts, once per task: a
+// run started again finds the same ones (spec sections 4.6 and 4.8).
+func (r *Runner) mergeConflicted(ctx context.Context, task core.Task, files []string) {
+	text := "Merging the main branch into the branch met conflicts in: " + strings.Join(files, ", ")
+	ref, err := tickets.ParseRef(task.Ticket)
+	if err == nil {
+		var entries []journal.Entry
+		if entries, err = r.opts.Journal.Stored(ctx, ref); err == nil && !slices.ContainsFunc(entries, func(e journal.Entry) bool {
+			return e.Kind == journal.Note && e.ID == task.ID && e.Text == text
+		}) {
+			err = r.opts.Journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", ID: task.ID, Text: text})
+		}
+	}
+	if err != nil {
+		log.Printf("istari: run of %s: journaling the merge conflicts: %v", task.Ticket, err)
+	}
+}
+
 // SetSelfReview sets how the runner learns a repository's self_review.
 func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { r.opts.SelfReview = f }
 
@@ -266,8 +285,12 @@ func (r *Runner) Stop(ctx context.Context, id, actor string) error {
 	stop, ok := r.active[id]
 	r.mu.Unlock()
 	if !ok {
-		if _, err := r.runs.Get(ctx, id); err != nil {
+		run, err := r.runs.Get(ctx, id)
+		if err != nil {
 			return err
+		}
+		if run.State == RunEnded {
+			return &core.Error{Code: core.CodeInvalidState, Message: "run " + id + " has ended: " + run.Reason}
 		}
 		return &core.Error{Code: core.CodeInvalidState, Message: "run " + id + " is not running here"}
 	}
@@ -436,6 +459,8 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		if slot.Role == "implementer" {
 			if conflicts, err = r.ws.MergeMain(bg, task.Ticket); err != nil {
 				r.mainNotMerged(bg, task, err)
+			} else if len(conflicts) > 0 {
+				r.mergeConflicted(bg, task, conflicts)
 			}
 		}
 	}
@@ -515,8 +540,17 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		return nil
 	}
 	lease = renewed
+	// The run is live before its harness starts: the agent may call back at
+	// once, and Working and Stop must already know the run.
+	stop := make(chan string, 1)
+	r.mu.Lock()
+	r.active[run.ID] = stop
+	r.mu.Unlock()
+	gone := func() { r.mu.Lock(); delete(r.active, run.ID); r.mu.Unlock() }
+	defer gone()
 	sess, err := h.Start(bg, spec)
 	if err != nil {
+		gone()
 		// No agent ran: the task goes back without spending an attempt, after
 		// a wait for a binary being replaced to come back (spec section 4.2).
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
@@ -526,12 +560,6 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		}
 		return err
 	}
-
-	stop := make(chan string, 1)
-	r.mu.Lock()
-	r.active[run.ID] = stop
-	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.active, run.ID); r.mu.Unlock() }()
 
 	over := make(chan struct{}, 1) // the run budget is spent
 	var usage harness.Usage
@@ -711,11 +739,7 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 	if res.Usage.CostUSD > usage.CostUSD {
 		usage = res.Usage // the harness's own total, when it reports one
 	}
-	_, err := r.runs.update(ctx, run.ID, EventRunExited, map[string]any{"run": run.ID, "exit_code": res.ExitCode, "reason": reason, "usage": usage},
-		func(run *Run) {
-			run.State, run.Ended, run.ExitCode, run.Reason, run.Usage = RunEnded, r.opts.Clock().UTC(), res.ExitCode, reason, usage
-		})
-	if err != nil {
+	if _, err := r.runs.end(ctx, run.ID, reason, &runExit{code: res.ExitCode, usage: usage}); err != nil {
 		log.Printf("istari: run %s: %v", run.ID, err)
 	}
 }

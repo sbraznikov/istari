@@ -89,6 +89,38 @@ func TestAPlanCorrectedInTheSameRunCompletesThePlanTask(t *testing.T) {
 	}
 }
 
+// filingPlanner files a ticket with istari ticket create, then ends its run.
+const filingPlanner = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = planner ]; then
+  printf '# Found while planning\n\n## Context\n\nA gap.\n' > "$ISTARI_RESULT.md"
+  "$istari" ticket create --file "$ISTARI_RESULT.md" >> "$log" 2>&1
+  echo "create exit $?" >> "$log"
+  "$istari" complete "filed" >> "$log" 2>&1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestATicketAnAgentFilesIsCreatedByTheAgentInTail(t *testing.T) {
+	t.Parallel()
+	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(filingPlanner, binary, log) })
+	endedRuns(t, d, log, "planner", 1)
+	if out, _ := os.ReadFile(log); !strings.Contains(string(out), "create exit 0") || gh.IssueCount() != 2 {
+		t.Fatalf("the planner's ticket create failed: %d issues\n%s", gh.IssueCount(), out)
+	}
+	filed := "gh:" + githubtest.Repo + "#2" // the token owner is its author on GitHub
+	var events []struct {
+		Actor   string
+		Payload struct{ Trigger string }
+	}
+	d.mustCLI(t, &events, "tail", "--ticket", filed, "--type", "ticket.transitioned")
+	if len(events) == 0 || events[0].Payload.Trigger != "create" || !strings.HasPrefix(events[0].Actor, "agent:planner") {
+		t.Fatalf("transitions of %s = %+v, want create by the planner agent", filed, events)
+	}
+}
+
 func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)

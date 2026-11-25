@@ -77,7 +77,7 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 	if head == prev {
 		return journal.Entry{}, &core.Error{Code: core.CodeInvalidState, Message: "nothing changed since the last checkpoint"}
 	}
-	entry.Commit = head[:min(12, len(head))]
+	entry.Commit = shortCommit(head)
 	checks, err := c.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return journal.Entry{}, err

@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -290,6 +291,72 @@ func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
 	}
 	if failed := f.waitEvent(t, "task.failed"); !strings.Contains(string(failed.Payload), "stopped by human:alex") {
 		t.Fatalf("task.failed = %s", failed.Payload)
+	}
+}
+
+// leftRunning gives a store holding one ended run and one run still recorded
+// running, and a second runner on that store, as a restarted daemon has.
+func leftRunning(t *testing.T, n int) (f *runFixture, restarted *runner.Runner, ended, running string) {
+	t.Helper()
+	f = newRunner(t, runner.RunnerOptions{})
+	f.readyTask(t, n)
+	f.readyTask(t, n+1)
+	f.start(t)
+	first := f.session(t)
+	ended = first.spec.Env["ISTARI_RUN"]
+	first.finish <- harness.Result{ExitCode: 1}
+	running = f.session(t).spec.Env["ISTARI_RUN"]
+	restarted = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data}), runner.RunnerOptions{DataDir: f.data})
+	return f, restarted, ended, running
+}
+
+func exitsOf(t *testing.T, f *runFixture, run string) int {
+	t.Helper()
+	n := 0
+	for _, e := range f.events(t, runner.EventRunExited) {
+		if runOf(t, e) == run {
+			n++
+		}
+	}
+	return n
+}
+
+func TestEndingRunsLeftRunningEndsEachWithTheReasonInOneEvent(t *testing.T) {
+	t.Parallel()
+	f, restarted, ended, running := leftRunning(t, 9)
+	before, err := restarted.Runs().Get(ctx, ended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Runs().EndLeftRunning(ctx, "the daemon restarted"); err != nil {
+		t.Fatalf("EndLeftRunning: %v", err)
+	}
+	got, err := restarted.Runs().Get(ctx, running)
+	if err != nil || got.State != runner.RunEnded || got.Reason != "the daemon restarted" || got.Ended.IsZero() {
+		t.Fatalf("run left running = %+v, %v; want ended with the reason and an end time", got, err)
+	}
+	if n := exitsOf(t, f, running); n != 1 {
+		t.Errorf("run.exited events of the run left running = %d, want 1", n)
+	}
+	after, err := restarted.Runs().Get(ctx, ended)
+	if err != nil || after.Reason != before.Reason || !after.Ended.Equal(before.Ended) {
+		t.Errorf("the ended run changed: %+v, want %+v", after, before)
+	}
+	if n := exitsOf(t, f, ended); n != 1 {
+		t.Errorf("run.exited events of the ended run = %d, want its own 1", n)
+	}
+}
+
+func TestStoppingAnEndedRunSaysItHasEndedWithItsReason(t *testing.T) {
+	t.Parallel()
+	_, restarted, _, running := leftRunning(t, 11)
+	if err := restarted.Runs().EndLeftRunning(ctx, "the daemon restarted"); err != nil {
+		t.Fatal(err)
+	}
+	err := restarted.Stop(ctx, running, "human:alex")
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != core.CodeInvalidState || e.Message != "run "+running+" has ended: the daemon restarted" {
+		t.Fatalf("Stop = %v, want invalid_state saying the run has ended with its reason", err)
 	}
 }
 

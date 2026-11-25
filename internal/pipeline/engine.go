@@ -50,6 +50,11 @@ type EngineOptions struct {
 	// a human may merge it before istari's own merge stage, and the ticket
 	// then finishes through T11 (spec 4.8). nil: only istari merges.
 	Merged func(ctx context.Context, ref string) (bool, error)
+	// Conflict tells whether the PR watch saw GitHub report the ticket's
+	// pull request in conflict with its base at istari's head; a ticket in
+	// review or awaiting approval then returns for rework through T10 (spec
+	// 4.8). nil: conflicts are not watched.
+	Conflict func(ctx context.Context, ref string) (pr PRConflict, dirty bool, err error)
 	// Journal is where the engine notes what it does not act on: a ticket
 	// that got open needs after its pull request was opened (spec 4.1).
 	// nil: nothing is noted.
@@ -138,10 +143,19 @@ func (e *Engine) read(ctx context.Context, repo string) (Pipeline, error) {
 }
 
 // taskID names a stage's task of a ticket in a round, so expanding twice
-// creates nothing new: s_<ticket hash>_r<round>_<stage>.
-func taskID(ref string, round int, stage string) string {
-	return fmt.Sprintf("%s_r%d_%s", ticketPrefix(ref), round, stage)
+// creates nothing new: s_<ticket hash>_r<round>_<stage>, and
+// s_<ticket hash>_r<round>c_<stage> in a conflict round (spec 4.8).
+func taskID(ref string, round int, conflict bool, stage string) string {
+	marker := ""
+	if conflict {
+		marker = conflictMarker
+	}
+	return fmt.Sprintf("%s_r%d%s_%s", ticketPrefix(ref), round, marker, stage)
 }
+
+// conflictMarker follows the round number in the task IDs of a conflict
+// round, which does not count against max_review_rounds.
+const conflictMarker = "c"
 
 func ticketPrefix(ref string) string {
 	sum := sha256.Sum256([]byte(ref))
@@ -150,43 +164,48 @@ func ticketPrefix(ref string) string {
 
 // StageOf returns the pipeline stage of a task the engine made, or "".
 func StageOf(task core.Task) string {
-	_, stage := parseID(task.ID)
+	_, _, stage := parseID(task.ID)
 	return stage
 }
 
 // RoundOf returns the review round of a task the engine made, or 0.
 func RoundOf(task core.Task) int {
-	round, _ := parseID(task.ID)
+	round, _, _ := parseID(task.ID)
 	return round
 }
 
-func parseID(id string) (round int, stage string) {
+func parseID(id string) (round int, conflict bool, stage string) {
 	rest, ok := strings.CutPrefix(id, "s_")
 	if !ok || len(rest) < 11 || rest[10] != '_' {
-		return 0, ""
+		return 0, false, ""
 	}
 	r, stage, ok := strings.Cut(rest[11:], "_")
 	if !ok || !strings.HasPrefix(r, "r") {
-		return 0, ""
+		return 0, false, ""
 	}
-	round, err := strconv.Atoi(r[1:])
+	r, conflict = strings.CutSuffix(r[1:], conflictMarker)
+	round, err := strconv.Atoi(r)
 	if err != nil {
-		return 0, ""
+		return 0, false, ""
 	}
-	return round, stage
+	return round, conflict, stage
 }
 
-// round is a ticket's tasks of its latest round, by stage; others counts its
-// tasks that the engine did not make.
+// round is a ticket's tasks of its latest round, by stage; conflict tells
+// whether that round is a conflict round, conflicts how many of the ticket's
+// rounds were; others counts its tasks that the engine did not make.
 type round struct {
-	n      int
-	tasks  map[string]core.Task
-	others int
+	n         int
+	conflict  bool
+	tasks     map[string]core.Task
+	conflicts int
+	others    int
 }
 
 func roundOf(ref string, all []core.Task) round {
 	r := round{tasks: map[string]core.Task{}}
 	prefix := ticketPrefix(ref) + "_"
+	conflicts := map[int]bool{}
 	for _, t := range all {
 		if t.Ticket != ref {
 			continue
@@ -195,14 +214,18 @@ func roundOf(ref string, all []core.Task) round {
 			r.others++
 			continue
 		}
-		n, stage := parseID(t.ID)
+		n, conflict, stage := parseID(t.ID)
+		if conflict {
+			conflicts[n] = true
+		}
 		switch {
 		case n > r.n:
-			r.n, r.tasks = n, map[string]core.Task{stage: t}
+			r.n, r.conflict, r.tasks = n, conflict, map[string]core.Task{stage: t}
 		case n == r.n:
 			r.tasks[stage] = t
 		}
 	}
+	r.conflicts = len(conflicts)
 	return r
 }
 
@@ -279,7 +302,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
 		// tracker (istari recover): it gets the stages of its state on.
-		if err := e.expand(ctx, tk, 1, from); err != nil {
+		if err := e.expand(ctx, tk, 1, false, from); err != nil {
 			return err
 		}
 		tasks, err := e.tasks.List(ctx)
@@ -303,6 +326,11 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 		if merged {
 			return fire("merged") // T11: a human merged first
+		}
+	}
+	if tk.State == core.TicketInReview || tk.State == core.TicketAwaitingApproval {
+		if returned, err := e.conflict(ctx, tk, r); returned || err != nil {
+			return err
 		}
 	}
 	switch tk.State {
@@ -332,7 +360,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
 			return err
 		}
-		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, fmt.Sprintf("refine-%d", done+1)), Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
+		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, false, fmt.Sprintf("refine-%d", done+1)),Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
 		return err
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
@@ -355,7 +383,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			return nil // someone made this ticket's tasks by hand: they are theirs
 		}
 		if r.n == 0 {
-			if err := e.expand(ctx, tk, 1, nil); err != nil {
+			if err := e.expand(ctx, tk, 1, false, nil); err != nil {
 				return err
 			}
 			tasks, err := e.tasks.List(ctx)
@@ -431,24 +459,87 @@ func (e *Engine) needOpen(ctx context.Context, tk core.Ticket) bool {
 	return slices.ContainsFunc(tk.Needs, func(n string) bool { return e.state(ctx, n) != core.TicketDone })
 }
 
+// PRConflict is the PR watch's reading of a ticket's pull request that
+// GitHub reports in conflict with its base: the pull request's number and
+// the head GitHub judged.
+type PRConflict struct {
+	PR   int
+	Head string
+}
+
+// conflictNote is the journal note on a ticket whose pull request GitHub
+// reports in conflict with main. GitHub names no files: the implement run
+// journals those the merge finds.
+func conflictNote(c PRConflict) string {
+	return fmt.Sprintf("pull request #%d is in conflict with the main branch at %s: the ticket returns for rework (T10, merge_failed). "+
+		"The implement run merges the main branch and resolves the conflict first; the review of this round looks only at the conflict resolution (spec 4.8)", c.PR, c.Head)
+}
+
+// conflict returns a ticket in review or awaiting approval for rework when
+// its pull request is in conflict with main (T10, spec 4.8): the round's open
+// tasks end, a conflict round starts at implement and the journal notes it
+// once per head. A head whose conflict was handled already is left to the
+// rest of the pipeline. returned tells whether T10 fired.
+func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returned bool, err error) {
+	if e.opts.Conflict == nil || r.n == 0 { // a ticket without the engine's tasks is not moved on
+		return false, nil
+	}
+	pr, dirty, err := e.opts.Conflict(ctx, tk.Ref)
+	if err != nil {
+		return false, err
+	}
+	impl, ok := r.tasks["implement"]
+	started := r.conflict && ok && impl.State != core.TaskCompleted // by a reconcile that did not get to T10
+	if !started {
+		if !dirty {
+			return false, nil
+		}
+		handled, err := e.noted(ctx, tk.Ref, conflictNote(pr))
+		if err != nil || handled {
+			return false, err
+		}
+		if err := e.nextRound(ctx, tk.Ref, e.opts.Actor, r, true); err != nil {
+			return false, err
+		}
+	}
+	if dirty {
+		if err := e.noteOnce(ctx, tk.Ref, conflictNote(pr)); err != nil {
+			return false, err
+		}
+	}
+	_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "merge_failed")
+	return true, err
+}
+
 // noteOnce adds a note to the ticket's journal unless it has it already, so
 // the engine's reconciles stay idempotent.
 func (e *Engine) noteOnce(ctx context.Context, ref, text string) error {
-	if e.opts.Journal == nil {
-		return nil
+	has, err := e.noted(ctx, ref, text)
+	if err != nil || has || e.opts.Journal == nil {
+		return err
 	}
 	r, err := tickets.ParseRef(ref)
 	if err != nil {
 		return err
 	}
+	return e.opts.Journal.Append(ctx, r, journal.Entry{Kind: journal.Note, Actor: e.opts.Actor, Text: text})
+}
+
+// noted tells whether the ticket's journal has the note; false without a
+// journal.
+func (e *Engine) noted(ctx context.Context, ref, text string) (bool, error) {
+	if e.opts.Journal == nil {
+		return false, nil
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		return false, err
+	}
 	entries, err := e.opts.Journal.Stored(ctx, r)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if slices.ContainsFunc(entries, func(en journal.Entry) bool { return en.Kind == journal.Note && en.Text == text }) {
-		return nil
-	}
-	return e.opts.Journal.Append(ctx, r, journal.Entry{Kind: journal.Note, Actor: e.opts.Actor, Text: text})
+	return slices.ContainsFunc(entries, func(en journal.Entry) bool { return en.Kind == journal.Note && en.Text == text }), nil
 }
 
 // childCanceled tells whether one of the ticket's children is canceled.
@@ -612,9 +703,9 @@ func (e *Engine) state(ctx context.Context, ref string) core.TicketState {
 	return ""
 }
 
-// expand creates the tasks of a round; from, if set, keeps only those
-// stages (a new review round starts at implement).
-func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(TaskSpec) bool, after ...string) error {
+// expand creates the tasks of round n, a conflict round if conflict; from,
+// if set, keeps only those stages (a new review round starts at implement).
+func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, conflict bool, from func(TaskSpec) bool, after ...string) error {
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return err
@@ -638,13 +729,13 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(Ta
 		var needs []string
 		for _, need := range spec.Needs {
 			if kept[need] {
-				needs = append(needs, taskID(tk.Ref, n, need))
+				needs = append(needs, taskID(tk.Ref, n, conflict, need))
 			}
 		}
 		if len(needs) == 0 {
 			needs = append(needs, after...) // the round's first tasks wait for what came before
 		}
-		id := taskID(tk.Ref, n, spec.Stage)
+		id := taskID(tk.Ref, n, conflict, spec.Stage)
 		if _, err := e.tasks.Get(ctx, id); err == nil {
 			continue // an earlier reconcile made it
 		}
@@ -660,30 +751,37 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, from func(Ta
 // RequestChanges starts the next review round (spec section 4.3): the open
 // tasks of the round end, and a new round runs from implement on. After
 // max_review_rounds rounds the ticket is held instead.
+// Conflict rounds (spec 4.8) do not count: they repair the main branch's
+// movement, not review findings.
 func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) error {
-	tk, err := e.tickets.Get(ctx, refText)
-	if err != nil {
-		return err
-	}
 	ref, err := tickets.ParseRef(refText)
 	if err != nil {
 		return err
 	}
-	p, err := e.Load(ctx, ref.Repo)
+	s, err := e.SettingsOf(ctx, ref.Repo)
 	if err != nil {
 		return err
 	}
-	s := p.Settings(e.opts.Defaults)
 	all, err := e.tasks.List(ctx)
 	if err != nil {
 		return err
 	}
 	r := roundOf(refText, all)
-	if s.MaxReviewRounds > 0 && r.n >= s.MaxReviewRounds {
+	if reviews := r.n - r.conflicts; s.MaxReviewRounds > 0 && reviews >= s.MaxReviewRounds {
 		if _, err := e.tickets.SetHold(ctx, actor, refText, "attempts_exhausted"); err != nil {
 			return err
 		}
-		return &core.Error{Code: core.CodeLimitReached, Message: fmt.Sprintf("%s has had %d review rounds, the max_review_rounds of its pipeline", refText, r.n)}
+		return &core.Error{Code: core.CodeLimitReached, Message: fmt.Sprintf("%s has had %d review rounds, the max_review_rounds of its pipeline", refText, reviews)}
+	}
+	return e.nextRound(ctx, refText, actor, r, false)
+}
+
+// nextRound ends the open tasks of round r and starts the next one, a
+// conflict round if conflict, from implement on.
+func (e *Engine) nextRound(ctx context.Context, refText, actor string, r round, conflict bool) error {
+	tk, err := e.tickets.Get(ctx, refText)
+	if err != nil {
+		return err
 	}
 	for _, t := range r.tasks {
 		if !slices.Contains([]core.TaskState{core.TaskCompleted, core.TaskFailed, core.TaskCanceled}, t.State) {
@@ -699,7 +797,7 @@ func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) erro
 		after = []string{impl.ID}
 	}
 	started := false
-	return e.expand(ctx, tk, r.n+1, func(spec TaskSpec) bool {
+	return e.expand(ctx, tk, r.n+1, conflict, func(spec TaskSpec) bool {
 		started = started || spec.Stage == "implement"
 		return started
 	}, after...)
