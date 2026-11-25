@@ -40,6 +40,25 @@ var every = []journal.Entry{
 		Checks: map[string]string{"test": "green", "typecheck": "green"}, Files: []string{"cache/cache.go"}, PR: "https://github.com/acme/web/pull/7",
 	}},
 	{Kind: journal.Review, Actor: "agent:reviewer-1", Review: &journal.ReviewEntry{Verdict: "changes_requested", Summary: "Two findings", PR: "https://github.com/acme/web/pull/7"}},
+	{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "test", Commit: "a1b2c3d", URL: "https://github.com/acme/web/actions/runs/9/job/41", Output: "--- FAIL: TestX\n    x_test.go:9: got 1, want 2", Cut: true}},
+	{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "lint", Commit: "a1b2c3d", Error: "github: GET /repos/acme/web/actions/jobs/42/logs: 404 Not Found"}},
+	{Kind: journal.Comment, Actor: "human:alex", Text: "The failing test is TestX; see the log.", Link: "https://github.com/acme/web/issues/3#issuecomment-5"},
+}
+
+func TestACIFailureEntryShowsTheCheckTheCommitAndTheOutput(t *testing.T) {
+	text := journal.Text(every[len(every)-3])
+	for _, want := range []string{"test", "a1b2c3d", "https://github.com/acme/web/actions/runs/9/job/41", "--- FAIL: TestX", "cut"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the entry lacks %q:\n%s", want, text)
+		}
+	}
+	failed := journal.Text(every[len(every)-2])
+	if !strings.Contains(failed, "could not be read") || !strings.Contains(failed, "404 Not Found") {
+		t.Errorf("an unread log's entry does not say why:\n%s", failed)
+	}
+	if strings.Contains(journal.Text(journal.Entry{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "test", Commit: "c", Output: "ok"}}), "cut") {
+		t.Error("an entry that was not cut says it was")
+	}
 }
 
 func TestEveryEntryRendersToACommentAndParsesBackWithoutLoss(t *testing.T) {

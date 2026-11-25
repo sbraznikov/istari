@@ -13,7 +13,7 @@ The words of istari, as `docs/design.md` and the code use them. Code, tests, mes
 - **Projection**: the current state of a ticket, task, run or workspace, kept in the store and changed only together with an event. [3.1]
 - **Actor**: who acts: `human:<login>`, `agent:<profile>` or `system`. [2]
 - **Gate**: a point where the pipeline waits for a human decision, such as approving a plan. [2, 4.3]
-- **Journal**: the ticket's record of decisions, assumptions, questions, answers, plans, checkpoints, reviews, transitions and notes, kept as comments in the tracker. Work resumes from it. [4.6]
+- **Journal**: the ticket's record of decisions, assumptions, questions, answers, plans, checkpoints, reviews, transitions, notes, CI failures and trusted members' comments, kept as comments in the tracker. Work resumes from it. [4.6]
 - **Work state**: the summary block at the top of the ticket: stage, branch, pull request, last checkpoint, open questions, next step. [4.6]
 
 ## States

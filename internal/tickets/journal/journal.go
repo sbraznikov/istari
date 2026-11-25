@@ -33,11 +33,14 @@ const (
 	Review     Kind = "review"
 	Transition Kind = "transition"
 	Note       Kind = "note" // something istari noticed; ID names the task it is about
+	CI         Kind = "ci"   // a failed check on the pull request's head, with its output
+	Comment    Kind = "comment"
 )
 
 // Entry is one journal entry. Which fields it uses depends on its kind:
 // question and answer use ID, Text and (answer) Link; assumption uses Text;
-// note uses Text and ID, the task it is about; the others their own part.
+// note uses Text and ID, the task it is about; comment uses Text, a trusted
+// member's comment verbatim, and Link; the others their own part.
 type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
@@ -50,6 +53,18 @@ type Entry struct {
 	Checkpoint *CheckpointEntry `json:"checkpoint,omitempty"`
 	Review     *ReviewEntry     `json:"review,omitempty"`
 	Transition *TransitionEntry `json:"transition,omitempty"`
+	CI         *CIEntry         `json:"ci,omitempty"`
+}
+
+// CIEntry is a failed check on a pull request's head (spec 4.3): the end of
+// its output, or why the output could not be read.
+type CIEntry struct {
+	Check  string `json:"check"`         // the failed checks' names
+	Commit string `json:"commit"`        // the head commit they ran on
+	URL    string `json:"url,omitempty"` // the run
+	Output string `json:"output,omitempty"`
+	Cut    bool   `json:"cut,omitempty"`   // Output is the end of a longer log
+	Error  string `json:"error,omitempty"` // why the log could not be read
 }
 
 // DecisionEntry is a decision card and, once made, the choice (spec 4.6).
@@ -128,9 +143,13 @@ func (e Entry) validate() error {
 		if e.ID == "" || e.Text == "" {
 			return missing("an id and a text")
 		}
-	case Assumption, Note:
+	case Assumption, Note, Comment:
 		if e.Text == "" {
 			return missing("a text")
+		}
+	case CI:
+		if e.CI == nil || e.CI.Check == "" || e.CI.Commit == "" {
+			return missing("the check and the commit")
 		}
 	case Decision:
 		return e.Decision.validate()
@@ -244,6 +263,20 @@ func Text(e Entry) string {
 		return "**Assumption**" + by + "\n\n" + e.Text
 	case Note:
 		return "**Note**" + by + "\n\n" + e.Text
+	case Comment:
+		return "**Comment**" + by + "\n\n" + e.Text + linkLine(e.Link)
+	case CI:
+		c := e.CI
+		s := "**CI failure**" + by + ": " + c.Check + " on `" + c.Commit + "`" + linkLine(c.URL)
+		switch {
+		case c.Error != "":
+			s += "\n\nThe log could not be read: " + c.Error
+		case c.Cut:
+			s += "\n\nThe end of the output, cut to its last part:\n\n" + fence(c.Output)
+		default:
+			s += "\n\nThe output:\n\n" + fence(c.Output)
+		}
+		return s
 	case Decision:
 		d := e.Decision
 		var b strings.Builder
@@ -321,6 +354,15 @@ func linkLine(link string) string {
 		return ""
 	}
 	return "\n\n" + link
+}
+
+// fence puts text in a code block whose fence no line of it closes.
+func fence(text string) string {
+	f := "```"
+	for strings.Contains(text, f) {
+		f += "`"
+	}
+	return f + "\n" + strings.TrimRight(text, "\n") + "\n" + f
 }
 
 func bullets(items []string) string {
