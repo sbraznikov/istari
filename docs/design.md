@@ -332,6 +332,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 - the ticket was created by an agent while working on an already admitted ticket, as a child of a split (T5) or filed during the work; it inherits the parent's admission, and its budget as below;
 - a trusted member admitted the ticket manually: with the label `istari:ready`, the command `/istari ready` or `istari ticket ready`. A ticket that does not meet the standard yet is refined first and admitted as soon as it does; the label is put back to `istari:new` with a comment that says so.
 
+The T2 event names the condition that admitted the ticket in its payload: `rule` is `trusted_author`, `agent` with `parent`, the admitted ticket it was created on, or `human_admission`. The `create` transition (T1) of a ticket an agent creates has the agent as its actor, whatever login the tracker shows as the issue's author.
+
 **The table's priority.** The priority in the ticket's table becomes its stored priority (section 4.9) when the ticket is admitted and has none yet; the author is recorded as the one who set it. A ticket created with `istari ticket create` gets its table's priority at once. A ticket the planner creates by splitting its ticket gets the parent's priority, unless its own table states another one. From then on the stored priority is the source: a later edit of the table does not change it. When the table and the stored priority differ, the journal says so once, naming both; nothing else happens, and the difference is not a deviation from the standard.
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.

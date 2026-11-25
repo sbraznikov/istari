@@ -81,7 +81,7 @@ type Plans struct {
 	sizer   Sizer
 	tasks   *core.Tasks
 	creator tickets.Creator
-	created func(ctx context.Context, refs []tickets.Ref, budgetOf string) error
+	created func(ctx context.Context, actor string, refs []tickets.Ref, budgetOf string) error
 }
 
 // Sizer writes a ticket's size label to its tracker.
@@ -189,9 +189,9 @@ func (p *Plans) Record(ctx context.Context, run Run, res PlanResult, s PlanSetti
 
 // WithSplit lets the plans split tickets: tasks to end the parent's own,
 // creator to make the children in the tracker, and created to mirror them
-// into istari with the parent's admission. Each child has a budget of its own
-// size (spec section 4.5).
-func (p *Plans) WithSplit(tasks *core.Tasks, creator tickets.Creator, created func(ctx context.Context, refs []tickets.Ref, budgetOf string) error) *Plans {
+// into istari with the parent's admission, created by the run's agent. Each
+// child has a budget of its own size (spec section 4.5).
+func (p *Plans) WithSplit(tasks *core.Tasks, creator tickets.Creator, created func(ctx context.Context, actor string, refs []tickets.Ref, budgetOf string) error) *Plans {
 	p.tasks, p.creator, p.created = tasks, creator, created
 	return p
 }
@@ -223,7 +223,7 @@ func (p *Plans) Split(ctx context.Context, run Run, plan tickets.Plan) ([]string
 		children = append(children, refs[pt.Key].String())
 		list = append(list, refs[pt.Key])
 	}
-	if err := p.created(ctx, list, run.Ticket); err != nil {
+	if err := p.created(ctx, run.Agent(), list, run.Ticket); err != nil {
 		return nil, err
 	}
 	if _, err := p.tickets.SetChildren(ctx, run.Agent(), run.Ticket, children); err != nil {
