@@ -299,19 +299,30 @@ func TestAPlanSubmittedWhileGitHubRefusesForTheRateLimitIsLaterNotRejected(t *te
 				return
 			}
 			if time.Now().After(deadline) {
+				// An unreadable log is safe here: it only feeds this failure message.
 				out, _ := os.ReadFile(log)
 				t.Fatalf("the planner did not reach %s\nagent log:\n%s\ndaemon:\n%s", filepath.Base(file), out, d.stderr)
 			}
 		}
 	}
+	// signal lets the planner process move on.
+	signal := func(file string) {
+		t.Helper()
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	await(log + ".started")
 	gh.SetRateLimit(0, time.Now().Add(2*time.Second))
-	os.WriteFile(log+".refusing", nil, 0o644)
+	signal(log + ".refusing")
 	await(log + ".submitted")
 	gh.SetRateLimit(5000, time.Now().Add(time.Hour))
-	os.WriteFile(log+".answering", nil, 0o644)
+	signal(log + ".answering")
 	runs := endedRuns(t, d, log, "planner", 1)
-	out, _ := os.ReadFile(log)
+	out, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(out), "rate_limited") || strings.Contains(string(out), "invalid_ticket") {
 		t.Errorf("the plan submitted while GitHub refuses was not answered rate_limited:\n%s", out)
 	}
