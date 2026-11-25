@@ -813,7 +813,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - Global concurrency limits: per project, per role, for the whole installation.
-- `istari pause --all` stops handing out tasks; running runs finish gracefully.
+- `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
 ### 7.6 How the implementer and the reviewer work
 
@@ -977,7 +977,7 @@ Event families: `ticket.*`, `task.*` (created, ready, claimed, renewed, released
 ```
 istari init                          # create a project from a repository, create .istari/
 istari repo add|remove|list          # project repositories
-istari daemon [--config]             # start the daemon; daemon install — as a system service
+istari daemon [--config] [--paused]  # start the daemon (--paused: hand-out paused); daemon install — as a system service
 istari whoami                        # role, ticket, task, permissions (for an agent)
 istari doctor                        # check Slack, tracker, VCS, harnesses
 istari slack setup                   # create the Slack app from a manifest, store the tokens
