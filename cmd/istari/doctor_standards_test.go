@@ -94,3 +94,12 @@ func TestDoctorListsOnlyTheMissingStandardsFiles(t *testing.T) {
 		t.Fatalf("standards row = %q, want only CONTRIBUTING.md and the ADR directory missing", row)
 	}
 }
+
+func TestDoctorOutsideARepositoryShowsNeitherPipelineNorStandards(t *testing.T) {
+	out, _ := doctorInRepo(t, t.TempDir())
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "pipeline") || strings.HasPrefix(line, "standards") {
+			t.Errorf("doctor outside a repository shows %q\n%s", line, out)
+		}
+	}
+}
