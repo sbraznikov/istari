@@ -714,11 +714,7 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 	if res.Usage.CostUSD > usage.CostUSD {
 		usage = res.Usage // the harness's own total, when it reports one
 	}
-	_, err := r.runs.update(ctx, run.ID, EventRunExited, map[string]any{"run": run.ID, "exit_code": res.ExitCode, "reason": reason, "usage": usage},
-		func(run *Run) {
-			run.State, run.Ended, run.ExitCode, run.Reason, run.Usage = RunEnded, r.opts.Clock().UTC(), res.ExitCode, reason, usage
-		})
-	if err != nil {
+	if _, err := r.runs.end(ctx, run.ID, reason, &runExit{code: res.ExitCode, usage: usage}); err != nil {
 		log.Printf("istari: run %s: %v", run.ID, err)
 	}
 }

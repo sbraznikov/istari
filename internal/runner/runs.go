@@ -207,13 +207,32 @@ func (r *Runs) EndLeftRunning(ctx context.Context, reason string) error {
 		if run.State != RunRunning {
 			continue
 		}
-		if _, err := r.update(ctx, run.ID, EventRunExited, map[string]any{"run": run.ID, "reason": reason}, func(run *Run) {
-			run.State, run.Ended, run.Reason = RunEnded, r.clock().UTC(), reason
-		}); err != nil {
+		if _, err := r.end(ctx, run.ID, reason, nil); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// runExit is how a run's process exited.
+type runExit struct {
+	code  int
+	usage harness.Usage
+}
+
+// end records that the run ended with the reason, in one run.exited event.
+// exit is nil when no process of this daemon saw the run end.
+func (r *Runs) end(ctx context.Context, id, reason string, exit *runExit) (Run, error) {
+	payload := map[string]any{"run": id, "reason": reason}
+	if exit != nil {
+		payload["exit_code"], payload["usage"] = exit.code, exit.usage
+	}
+	return r.update(ctx, id, EventRunExited, payload, func(run *Run) {
+		run.State, run.Ended, run.Reason = RunEnded, r.clock().UTC(), reason
+		if exit != nil {
+			run.ExitCode, run.Usage = exit.code, exit.usage
+		}
+	})
 }
 
 // create records a new run and its token.
