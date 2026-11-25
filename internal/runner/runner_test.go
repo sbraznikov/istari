@@ -509,9 +509,14 @@ func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 
 func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
 	t.Parallel()
-	// Shorter than making a worktree under parallel tests, yet long enough
-	// for its renewals (every third of it) to survive a busy scheduler.
-	f := newRunner(t, runner.RunnerOptions{Lease: 300 * time.Millisecond})
+	// The lease is long enough for its renewals (every third of it) to
+	// survive a busy scheduler; the preparation outlasts it by design, not
+	// by load: assembling the brief alone takes three leases.
+	const lease = 300 * time.Millisecond
+	f := newRunner(t, runner.RunnerOptions{Lease: lease, SelfReview: func(context.Context, string) bool {
+		time.Sleep(3 * lease)
+		return true
+	}})
 	_, task := f.readyTask(t, 12)
 	f.start(t)
 	s := f.session(t)
