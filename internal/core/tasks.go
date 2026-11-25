@@ -327,7 +327,7 @@ func (t *Tasks) priorities(ctx context.Context, all []Task) (func(Task) string, 
 		}
 		seen[ref] = true
 		for _, other := range tickets {
-			if other.State == TicketDone || other.State == TicketCanceled || seen[other.Ref] || !slices.Contains(other.Needs, ref) {
+			if other.State.Finished() || seen[other.Ref] || !slices.Contains(other.Needs, ref) {
 				continue
 			}
 			p = min(p, ofTicket(other.Ref, seen))
@@ -565,7 +565,7 @@ func (t *Tasks) CancelOfFinished(ctx context.Context, actor string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	canceled := []string{}
+	var canceled []string
 	for _, task := range all {
 		if !finished[task.Ticket] || !task.open() {
 			continue

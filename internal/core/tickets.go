@@ -329,7 +329,7 @@ func (m *Tickets) SetHold(ctx context.Context, actor, ref, reason string) (Ticke
 		return Ticket{}, errorf(CodeInvalidTicket, "hold reason %q is not one of %s", reason, strings.Join(HoldReasons(), ", "))
 	}
 	return m.changeHold(ctx, actor, ref, EventTicketHoldSet, func(ticket *Ticket) (string, error) {
-		if ticket.State == TicketDone || ticket.State == TicketCanceled {
+		if ticket.State.Finished() {
 			return "", errorf(CodeInvalidState, "ticket %s is %s; a finished ticket cannot be held", ref, ticket.State)
 		}
 		if ticket.Hold != "" {
