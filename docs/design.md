@@ -207,13 +207,15 @@ any unfinished state ──► canceled ──► new (reopen)
 
 **Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
 
+A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
+
 | Reason | When it is set | Who clears it |
 |---|---|---|
 | `needs_input` | an agent asked a question and stopped, or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
-| `waiting_dependency` | during the work it turned out that a ticket that is not yet completed is needed, usually in a neighboring repository | system, when the dependency ticket is completed |
+| `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
 
 **State machine rules.**
@@ -240,6 +242,7 @@ canceled — from any open state
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 - A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
 
@@ -775,6 +778,14 @@ The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, 
 The result file exists because a heredoc does not carry a long result. Claude Code's shell parser gives up on a long command ("Parser aborted (timeout, resource limit, or over-length)"), and then `Bash(istari *)` is not matched and the command is refused. Measured on 2026-11-25: a heredoc `istari` command of 9,014 and of 9,335 characters was allowed; one of 9,999, 10,000, 10,125 and 13,842 characters was refused, whatever the lines and characters in it.
 
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
+
+**When the harness does not start.** If `Start` returns an error (the program is missing, cannot be executed, or exits before the session begins), no agent has run. The Runner does not fail the task: it waits a few seconds and releases it to `ready` without spending an attempt (section 4.2). Each Runner slot counts its start failures in a row; a successful start resets the count. After three in a row the slot stops claiming tasks for a minute, so it does not hand the same tasks round in a loop, and the daemon log says so with the slot and the error:
+
+```
+runner implementer-2: paused for 1m: the harness did not start: claudecode: start claude: fork/exec /Users/pc/.local/bin/claude: no such file or directory
+```
+
+While a slot is paused, `istari doctor` shows a failing `runner slots` row with the slot, the error and the time it tries again. After the minute the slot claims again; if the harness starts, it works as before.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
 
