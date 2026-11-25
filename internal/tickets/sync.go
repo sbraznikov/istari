@@ -42,9 +42,9 @@ type SyncRepo struct {
 	// Trusted are the logins admitted without a human, who may also admit
 	// others' tickets; empty means everyone with write access (spec 4.5).
 	Trusted []string
-	// LabelOnly is the project's admission = "label": a trusted author alone
-	// does not admit a ticket, only a trusted member's manual admission or
-	// inheritance from an admitted ticket does (spec 4.5).
+	// LabelOnly reports whether the project admits tickets only by a trusted
+	// member's manual admission or by inheritance from an admitted ticket, so
+	// that a trusted author alone is not enough (admission = "label", spec 4.5).
 	LabelOnly bool
 }
 

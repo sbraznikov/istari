@@ -118,7 +118,7 @@ func TestInvalidValueIsNamed(t *testing.T) {
 	}
 }
 
-func TestProjectAdmission(t *testing.T) {
+func TestAProjectWithoutAdmissionIsTrustedAndLabelLoadsAsLabel(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Load(writeConfig(t, "[[project]]\nname = \"web\"\nadmission = \"label\"\n\n[[project]]\nname = \"api\"\n"))
 	if err != nil {
