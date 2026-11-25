@@ -188,18 +188,27 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // store keeps a 200 answer with an ETag for the next conditional read; t.mu
-// is held.
+// is held. An answer too large to keep is passed on whole, uncached.
 func (t *Transport) store(key string, res *http.Response) (*http.Response, error) {
 	body, err := io.ReadAll(io.LimitReader(res.Body, maxCachedBody+1))
-	res.Body.Close()
 	if err != nil {
+		res.Body.Close()
 		return nil, err
 	}
-	res.Body = io.NopCloser(bytes.NewReader(body))
-	if len(body) <= maxCachedBody {
-		t.cache.put(key, entry{etag: res.Header.Get("ETag"), header: res.Header.Clone(), body: body})
+	if len(body) > maxCachedBody {
+		res.Body = readCloser{io.MultiReader(bytes.NewReader(body), res.Body), res.Body}
+		return res, nil
 	}
+	res.Body.Close()
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	t.cache.put(key, entry{etag: res.Header.Get("ETag"), header: res.Header.Clone(), body: body})
 	return res, nil
+}
+
+// readCloser reads from one reader and closes another.
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // cacheKey is the key of a GET's cached answer: the URL, what it accepts

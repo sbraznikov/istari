@@ -136,6 +136,20 @@ func TestARepeatedReadIsAskedConditionallyAndAnsweredFromTheCache(t *testing.T) 
 	}
 }
 
+func TestAnAnswerTooLargeToCacheReachesTheCallerWhole(t *testing.T) {
+	t.Parallel()
+	large := strings.Repeat("x", 3<<20) // 3 MiB, above what the cache keeps
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Write([]byte(large))
+	}))
+	defer srv.Close()
+	c := &http.Client{Transport: ratelimit.New(ratelimit.Options{})}
+	if status, body := get(t, c, context.Background(), srv.URL+"/repos/o/r/issues", ratelimit.KindSync); status != http.StatusOK || len(body) != len(large) {
+		t.Errorf("read = %d with %d bytes, want 200 with %d", status, len(body), len(large))
+	}
+}
+
 func TestTheCacheOfOneTokenIsNotUsedForAnother(t *testing.T) {
 	t.Parallel()
 	fake := &conditional{}
