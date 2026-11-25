@@ -75,7 +75,7 @@ func Brief(in BriefInput) string {
 			"```yaml\nverdict: meets | rewrite | needs_input | duplicate\nsize: XS | S | M | L | XL\nsize_reason: why, when it differs from the author's\n" +
 			"deviations: [what falls short]\nassumptions: [what you inferred]\nbody: the rewritten text, ending with the original kept verbatim in <details><summary>Original text</summary> … </details>  # rewrite\n" +
 			"changes: [what you changed]  # rewrite\nquestions: [for the author]  # needs_input\ncard: {problem, state, options: [{letter, gist, consequences, size, risks, changes}], recommendation, recommended, status: proposed}  # duplicate\n```\n\n" +
-			"A result code rejects fails this run.\n\n## Duplicate candidates\n\n"
+			"A result code rejects fails this run, unless you correct it and submit it again before `istari complete`.\n\n## Duplicate candidates\n\n"
 		if len(in.Candidates) == 0 {
 			pr += "No other ticket shares paths, identifiers or title words with this one: there is no candidate to compare.\n\n"
 		} else {

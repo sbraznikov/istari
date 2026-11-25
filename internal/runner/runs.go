@@ -170,7 +170,8 @@ func (r *Runs) Complete(ctx context.Context, id, message string) (Run, error) {
 }
 
 // Reject records that code rejected what the run's agent submitted, e.g. a
-// malformed result: the task fails when the run ends, whatever it says.
+// malformed result: the task fails when the run ends, whatever it says,
+// unless Accept clears the refusal first.
 func (r *Runs) Reject(ctx context.Context, id, reason string) (Run, error) {
 	return r.update(ctx, id, EventRunRejected, map[string]any{"run": id, "reason": reason}, func(run *Run) { run.Rejected = reason })
 }
