@@ -295,12 +295,19 @@ needs = ["implement"]
 // earlyReviewPipeline, whose reviewer submits report.
 func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
+	return pipelineDaemon(t, earlyReviewPipeline, func(log string) string { return fmt.Sprintf(earlyReviewAgent, binary, log, report) })
+}
+
+// pipelineDaemon starts a daemon on a ready ticket of a project with
+// pipeline, whose claude is the script agent writes for the agent log.
+func pipelineDaemon(t *testing.T, pipeline string, agent func(log string) string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
+	t.Helper()
 	server := gitServer(t)
 	seed := filepath.Join(server, "seed")
 	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte(earlyReviewPipeline), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte(pipeline), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git(t, seed, "add", ".")
@@ -309,12 +316,12 @@ func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server,
 
 	gh = githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
-	gh.SetFile(".istari/pipeline.toml", earlyReviewPipeline) // the stages are read from the repository's main branch
+	gh.SetFile(".istari/pipeline.toml", pipeline) // the stages are read from the repository's main branch
 	ticket = gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
 	dataDir := newDataDir(t)
 	log = filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(earlyReviewAgent, binary, log, report)), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(agent(log)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "config.toml")
@@ -332,11 +339,17 @@ type reviewerRun struct{ Role, Task, State, Reason string }
 // endedReviews waits until n reviewer runs have ended and returns them.
 func endedReviews(t *testing.T, d *daemon, log string, n int) []reviewerRun {
 	t.Helper()
+	return endedRuns(t, d, log, "reviewer", n)
+}
+
+// endedRuns waits until n runs of role have ended and returns them.
+func endedRuns(t *testing.T, d *daemon, log, role string, n int) []reviewerRun {
+	t.Helper()
 	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		var runs, ended []reviewerRun
 		d.mustCLI(t, &runs, "run", "list")
 		for _, r := range runs {
-			if r.Role == "reviewer" && r.State == "ended" {
+			if r.Role == role && r.State == "ended" {
 				ended = append(ended, r)
 			}
 		}
@@ -345,7 +358,7 @@ func endedReviews(t *testing.T, d *daemon, log string, n int) []reviewerRun {
 		}
 		if time.Now().After(deadline) {
 			out, _ := os.ReadFile(log)
-			t.Fatalf("%d reviewer runs ended, want %d: %+v\nagent log:\n%s\ndaemon:\n%s", len(ended), n, runs, out, d.stderr)
+			t.Fatalf("%d %s runs ended, want %d: %+v\nagent log:\n%s\ndaemon:\n%s", len(ended), role, n, runs, out, d.stderr)
 		}
 	}
 }

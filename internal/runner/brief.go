@@ -68,7 +68,7 @@ func Brief(in BriefInput) string {
 			"```yaml\nsummary: the approach in a few lines\nslices: [one test and the minimum code each, in order]\n" +
 			"seams: [{name: the public boundary, catches: what its tests catch, misses: what they miss}]\n" +
 			"zone: [path/that/exists.go, path/to/create.go (new)]\nsize: XS | S | M | L | XL  # only to revise it\nsize_reason: why\n" +
-			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run.\n\n")
+			"split: {tickets: [{key, title, body, needs: [key]}]}  # required above max_size\n```\n\nA plan code rejects fails this run, unless you correct it and submit it again before `istari complete`.\n\n")
 	}
 	if in.Role == "refiner" {
 		pr := "## Your result\n\nSubmit it with `istari refine submit --file - <<'EOF'` … `EOF` (or `--file result.yaml`) before `istari complete`:\n\n" +
