@@ -3,7 +3,7 @@
 
 [limits]
 max_attempts = 3
-max_review_rounds = 5                 # 3 left #164 held after rounds an istari bug wasted (#188)
+max_review_rounds = 8                 # temporary, back to 5 once #203 and #207 are merged
 max_size = "L"                        # larger tickets are split before work starts
 questions = "decide"                  # or "hold"
 max_assumptions = 3

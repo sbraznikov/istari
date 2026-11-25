@@ -59,7 +59,7 @@ func (s *Server) createPlan(ctx context.Context, r TicketPlanRequest) (map[strin
 	if _, err := s.store.Append(ctx, store.Event{Type: EventPlanCreated, At: s.clock().UTC(), Actor: r.Actor, Ticket: list[0].String(), Payload: raw}); err != nil {
 		return nil, err
 	}
-	if err := s.syncer.Created(withoutKey(ctx), list, budgetOf); err != nil {
+	if err := s.syncer.Created(withoutKey(ctx), r.Actor, list, budgetOf); err != nil {
 		log.Printf("istari: plan %v: mirroring: %v; the next sync repairs it", out, err)
 	}
 	return out, nil

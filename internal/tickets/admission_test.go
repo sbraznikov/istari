@@ -23,11 +23,33 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 		t.Fatalf("state = %s, want ready", tk.State)
 	}
 	tr := f.transitions(t, n)
-	if len(tr) != 2 || tr[1].Trigger != "accept" || tr[1].Actor != "system" {
-		t.Fatalf("transitions = %+v, want create then accept by the system", tr)
+	if len(tr) != 2 || tr[0].Actor != "human:alex" || tr[1].Trigger != "accept" || tr[1].Actor != "system" {
+		t.Fatalf("transitions = %+v, want create by human:alex then accept by the system", tr)
+	}
+	if tr[1].Rule != "trusted_author" || tr[1].Parent != "" {
+		t.Fatalf("T2 = %+v, want the rule trusted_author and no parent", tr[1])
 	}
 	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:ready"}) {
 		t.Fatalf("labels = %v", got)
+	}
+}
+
+func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testing.T) {
+	f := newSync(t, "alex")
+	parent := f.gh.Seed("Parent", conforming, "alex")
+	f.gh.SetPermission("alex", "write")
+	f.run(t)
+	child := f.gh.Seed("Found while working", conforming, "alex") // the token owner, as GitHub shows it
+	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: child}}
+	if err := f.sync.Created(ctx, "agent:implementer-2", refs, ref(parent)); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	tr := f.transitions(t, child)
+	if len(tr) != 2 || tr[0].Trigger != "create" || tr[0].Actor != "agent:implementer-2" {
+		t.Fatalf("transitions = %+v, want create by agent:implementer-2", tr)
+	}
+	if tr[1].Trigger != "accept" || tr[1].Rule != "agent" || tr[1].Parent != ref(parent) {
+		t.Fatalf("T2 = %+v, want accept by the rule agent with the parent %s", tr[1], ref(parent))
 	}
 }
 
@@ -70,8 +92,8 @@ func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
 	if got := istariLabels(f.gh.Issue(n).Labels); !slices.Equal(got, []string{"istari:ready"}) {
 		t.Fatalf("labels after ticket ready = %v", got)
 	}
-	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" {
-		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
+	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" || tr[len(tr)-1].Rule != "human_admission" {
+		t.Fatalf("transitions = %+v, want the accept by human:alex by the rule human_admission", tr)
 	}
 }
 
@@ -174,8 +196,8 @@ func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
 	if tk := f.ticket(t, n); tk.State != core.TicketReady {
 		t.Fatalf("state = %s, want ready after alex's label", tk.State)
 	}
-	if tr := f.transitions(t, n); tr[len(tr)-1].Trigger != "accept" || tr[len(tr)-1].Actor != "human:alex" {
-		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
+	if tr := f.transitions(t, n); tr[len(tr)-1].Trigger != "accept" || tr[len(tr)-1].Actor != "human:alex" || tr[len(tr)-1].Rule != "human_admission" {
+		t.Fatalf("transitions = %+v, want the accept by human:alex by the rule human_admission", tr)
 	}
 }
 
@@ -240,7 +262,7 @@ func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
 	child := f.gh.Seed("Found while working", conforming, "alex")
 	short := f.gh.Seed("Half B", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
 	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: child}, {Provider: "gh", Repo: githubtest.Repo, Number: short}}
-	if err := f.sync.Created(ctx, refs, ref(parent)); err != nil {
+	if err := f.sync.Created(ctx, "agent:implementer-1", refs, ref(parent)); err != nil {
 		t.Fatalf("Created: %v", err)
 	}
 	if tk := f.ticket(t, child); tk.State != core.TicketReady {
