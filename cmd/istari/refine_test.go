@@ -29,6 +29,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestARefineResultCorrectedInTheSameRunCompletesTheRefineTask(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	gh.Seed("Quotas", "We should add quotas.\n", "alex") // a trusted author's raw ticket: it is refined
 	dataDir := newDataDir(t)

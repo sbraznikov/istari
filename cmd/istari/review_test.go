@@ -138,24 +138,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 `
 
 func TestAReportCorrectedInTheSameRunCompletesTheReview(t *testing.T) {
+	t.Parallel()
 	r := newReviewed(t, correctingReviewer)
-	var reviewers []struct{ Role, State, Reason string }
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var runs []struct{ Role, State, Reason string }
-		r.d.mustCLI(t, &runs, "run", "list")
-		reviewers = reviewers[:0]
-		for _, run := range runs {
-			if run.Role == "reviewer" {
-				reviewers = append(reviewers, run)
-			}
-		}
-		if len(reviewers) > 0 && reviewers[0].State == "ended" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no reviewer run ended after a minute: %+v\n%s", runs, r.d.stderr)
-		}
-	}
+	reviewers := endedReviews(t, r.d, r.log, 1)
 	out, _ := os.ReadFile(r.log)
 	if !strings.Contains(string(out), "yaml") {
 		t.Fatalf("the first report was not refused:\n%s", out)
@@ -163,17 +148,9 @@ func TestAReportCorrectedInTheSameRunCompletesTheReview(t *testing.T) {
 	if reviewers[0].Reason != "completed: reviewed" {
 		t.Fatalf("the reviewer run ended %q, want it completed: its refused report was corrected\nagent log:\n%s", reviewers[0].Reason, out)
 	}
-	time.Sleep(time.Second) // a failed task would start a second reviewer run
-	var runs []struct{ Role string }
-	r.d.mustCLI(t, &runs, "run", "list")
-	n := 0
-	for _, run := range runs {
-		if run.Role == "reviewer" {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("reviewer runs = %d, want one: the corrected review is not done again", n)
+	// A completed task gets no second attempt: the review is not done again.
+	if task := showTask(t, r.d, reviewers[0].Task); task.State != "completed" {
+		t.Fatalf("the review task is %s, want completed", task.State)
 	}
 	entries := 0
 	for _, c := range r.gh.Issue(r.ref.Number).Comments {

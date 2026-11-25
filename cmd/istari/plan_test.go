@@ -72,6 +72,7 @@ role = "planner"
 `
 
 func TestAPlanCorrectedInTheSameRunCompletesThePlanTask(t *testing.T) {
+	t.Parallel()
 	d, _, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(correctingPlanner, binary, log) })
 	runs := endedRuns(t, d, log, "planner", 1)
 	out, _ := os.ReadFile(log)
