@@ -92,6 +92,38 @@ type Project struct {
 	// MaxConcurrentRuns limits claimed tasks at once in this project; nil
 	// (the key absent) means no limit of its own.
 	MaxConcurrentRuns *int `toml:"max_concurrent_runs"`
+	// Admission says whether a trusted author alone admits a ticket (spec
+	// section 4.5); empty (the key absent) means AdmissionTrusted.
+	Admission Admission `toml:"admission"`
+}
+
+// Admission is a project's admission mode (spec section 4.5).
+type Admission string
+
+const (
+	// AdmissionTrusted admits a trusted author's ticket on its own.
+	AdmissionTrusted Admission = "trusted"
+	// AdmissionLabel admits a ticket only by a trusted member's manual
+	// admission or by inheritance from an admitted ticket.
+	AdmissionLabel Admission = "label"
+)
+
+// UnmarshalText refuses an unknown mode, so the decoder reports its line.
+func (a *Admission) UnmarshalText(text []byte) error {
+	switch m := Admission(text); m {
+	case AdmissionTrusted, AdmissionLabel:
+		*a = m
+		return nil
+	}
+	return fmt.Errorf("admission: %q is not one of %s, %s", text, AdmissionTrusted, AdmissionLabel)
+}
+
+// OrDefault returns the mode, AdmissionTrusted when the key was absent.
+func (a Admission) OrDefault() Admission {
+	if a == "" {
+		return AdmissionTrusted
+	}
+	return a
 }
 
 // Tickets selects the ticket system of a project.

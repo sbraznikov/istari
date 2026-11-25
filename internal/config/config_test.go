@@ -10,6 +10,7 @@ import (
 )
 
 func TestSpecExampleLoads(t *testing.T) {
+	t.Parallel()
 	cfg, err := config.Load("testdata/spec-example.toml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -74,6 +75,7 @@ func assertErrorNames(t *testing.T, err error, key string) {
 }
 
 func TestUnknownKeyIsNamed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ body, key string }{
 		{"[daemon]\nmax_concurent_runs = 4\n", "daemon.max_concurent_runs"},
 		{"[[project]]\nname = \"web\"\nbranch = \"main\"\n", "project.branch"},
@@ -84,6 +86,7 @@ func TestUnknownKeyIsNamed(t *testing.T) {
 }
 
 func TestWrongTypeIsNamed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ body, key string }{
 		{"[daemon]\nmax_concurrent_runs = \"four\"\n", "daemon.max_concurrent_runs"},
 		{"[defaults]\nplan_gate = \"no\"\n", "defaults.plan_gate"},
@@ -96,6 +99,7 @@ func TestWrongTypeIsNamed(t *testing.T) {
 }
 
 func TestInvalidValueIsNamed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ body, key string }{
 		{"[daemon]\nmax_concurrent_runs = 0\n", "daemon.max_concurrent_runs"},
 		{"[defaults]\npriority = \"P9\"\n", "defaults.priority"},
@@ -114,7 +118,31 @@ func TestInvalidValueIsNamed(t *testing.T) {
 	}
 }
 
+func TestAProjectWithoutAdmissionIsTrustedAndLabelLoadsAsLabel(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(writeConfig(t, "[[project]]\nname = \"web\"\nadmission = \"label\"\n\n[[project]]\nname = \"api\"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Projects[0].Admission; got != config.AdmissionLabel {
+		t.Errorf("web admission = %q, want label", got)
+	}
+	if got := cfg.Projects[1].Admission.OrDefault(); got != config.AdmissionTrusted {
+		t.Errorf("api admission = %q, want trusted (the default)", got)
+	}
+}
+
+func TestUnknownAdmissionNamesFileAndLine(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "[[project]]\nname = \"web\"\nadmission = \"bogus\"\n")
+	_, err := config.Load(path)
+	assertErrorNames(t, err, path)
+	assertErrorNames(t, err, "line 3")
+	assertErrorNames(t, err, "bogus")
+}
+
 func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
+	t.Parallel()
 	cfg, err := config.Load(writeConfig(t, "[defaults.budget_usd]\nM = 20\n"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -148,6 +176,7 @@ func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 }
 
 func TestDataDirExpandsTheHomeDirectory(t *testing.T) {
+	// Serial: sets HOME with t.Setenv.
 	t.Setenv("HOME", "/home/alex")
 	for in, want := range map[string]string{
 		"~/.local/share/istari": "/home/alex/.local/share/istari",

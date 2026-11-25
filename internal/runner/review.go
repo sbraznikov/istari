@@ -43,7 +43,7 @@ func ParseReviewResult(data []byte) (ReviewResult, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&r); err != nil {
-		return ReviewResult{}, fmt.Errorf("review: %w", err)
+		return ReviewResult{}, yamlError("review", data, err)
 	}
 	bad := func(format string, args ...any) error { return fmt.Errorf("review: "+format, args...) }
 	if strings.TrimSpace(r.Standards) == "" || strings.TrimSpace(r.Spec) == "" {

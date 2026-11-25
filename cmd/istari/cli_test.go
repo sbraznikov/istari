@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sbraznikov/istari/internal/core"
 )
 
 // cli runs istari against the daemon d.
@@ -43,6 +45,7 @@ type lease struct {
 }
 
 func TestCommandsPrintATableByDefaultAndJSONWithTheFlag(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	createTicket(t, d, "gh:acme/web#1")
@@ -78,6 +81,7 @@ func TestCommandsPrintATableByDefaultAndJSONWithTheFlag(t *testing.T) {
 }
 
 func TestExitCodes(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	for _, tc := range []struct {
@@ -105,6 +109,7 @@ func TestExitCodes(t *testing.T) {
 }
 
 func TestATaskLifecycleThroughTheCLI(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	var l lease
@@ -140,6 +145,7 @@ func TestATaskLifecycleThroughTheCLI(t *testing.T) {
 }
 
 func TestTicketCommands(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	ref := "gh:acme/web#7"
 	createTicket(t, d, ref)
@@ -167,6 +173,7 @@ func TestTicketCommands(t *testing.T) {
 }
 
 func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
@@ -193,7 +200,55 @@ func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 	}
 }
 
+func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
+	t.Parallel()
+	ref := "gh:acme/web#5"
+	d := startPipelineDaemon(t, ref, nil) // the pipeline gives the ticket its tasks
+	hold := func() string {
+		var tk struct{ Hold string }
+		d.mustCLI(t, &tk, "ticket", "show", ref)
+		return tk.Hold
+	}
+	eventually := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(15 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s\nstderr: %s", what, d.stderr)
+			}
+		}
+	}
+
+	var l lease
+	for range core.DefaultMaxAttempts {
+		eventually("the plan task does not become ready", func() bool {
+			out, _, code := d.cli(t, "--json", "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
+			return code == 0 && json.Unmarshal([]byte(out), &l) == nil
+		})
+		if h := hold(); h != "" {
+			t.Fatalf("hold = %q below the attempt limit, want none", h)
+		}
+		d.mustCLI(t, nil, "task", "fail", l.Task, "--actor", l.Owner, "--token", l.Token, "--reason", "red")
+	}
+	eventually("the ticket is not held attempts_exhausted after the last failed attempt", func() bool { return hold() == "attempts_exhausted" })
+
+	d.mustCLI(t, nil, "ticket", "retry", ref)
+	var task struct{ State string }
+	d.mustCLI(t, &task, "task", "show", l.Task)
+	if task.State != "ready" {
+		t.Fatalf("after retry the plan task is %s, want ready", task.State)
+	}
+	if h := hold(); h != "" {
+		t.Fatalf("after retry the hold is %q", h)
+	}
+	// The ticket goes on: its planner can claim the plan task again.
+	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
+	if h := hold(); h != "" {
+		t.Fatalf("after the retried task was claimed the hold is %q", h)
+	}
+}
+
 func TestRepeatingAWriteWithTheSameIdempotencyKeyPerformsItOnce(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
@@ -234,6 +289,7 @@ func TestRepeatingAWriteWithTheSameIdempotencyKeyPerformsItOnce(t *testing.T) {
 }
 
 func TestTailAfterACursorResumesExactly(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	for i := range 5 {
 		createTicket(t, d, fmt.Sprintf("gh:acme/web#%d", i))
@@ -270,6 +326,7 @@ func TestTailAfterACursorResumesExactly(t *testing.T) {
 }
 
 func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
@@ -290,6 +347,7 @@ func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 }
 
 func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") // the shells never complete
 	const n = 40
 	for i := range n {
@@ -340,6 +398,7 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 }
 
 func TestPauseAndResumeTheHandOut(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
@@ -358,6 +417,7 @@ func TestPauseAndResumeTheHandOut(t *testing.T) {
 }
 
 func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1")
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
@@ -368,6 +428,7 @@ func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
 }
 
 func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
@@ -390,6 +451,7 @@ func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 }
 
 func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "a_web", "ticket": "gh:acme/web#1", "project": "web", "role": "implementer"}, nil)
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "b_api", "ticket": "gh:acme/api#1", "project": "api", "role": "implementer"}, nil)
@@ -402,6 +464,7 @@ func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
 }
 
 func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	var first, second struct{ ID, State string }
 	d.mustCLI(t, &first, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
@@ -428,6 +491,7 @@ func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
 }
 
 func TestProjectAndRoleLimitsFromTheConfig(t *testing.T) {
+	t.Parallel()
 	dataDir := newDataDir(t)
 	config := filepath.Join(t.TempDir(), "config.toml")
 	body := fmt.Sprintf(`[daemon]

@@ -13,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 var ctx = context.Background()
@@ -29,6 +30,7 @@ func (f files) ReadFile(_ context.Context, repo, path string) ([]byte, error) {
 }
 
 type engineFixture struct {
+	store   store.Store
 	tasks   *core.Tasks
 	tickets *core.Tickets
 	engine  *pipeline.Engine
@@ -41,7 +43,7 @@ func newEngine(t *testing.T, global config.Defaults, repoFiles files) *engineFix
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	f := &engineFixture{tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
+	f := &engineFixture{store: s, tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: global, Files: repoFiles})
 	return f
 }
@@ -106,6 +108,7 @@ func (f *engineFixture) finish(t *testing.T, ref, stage, actor string) {
 const ref = "gh:acme/web#1"
 
 func TestAReadyTicketStartsAndGetsTheTasksOfItsPipeline(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -126,6 +129,7 @@ func TestAReadyTicketStartsAndGetsTheTasksOfItsPipeline(t *testing.T) {
 }
 
 func TestThePlanGateHoldsT4UntilAHumanApproves(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []bool{false, true} {
 		f := newEngine(t, config.Defaults{PlanGate: gate}, nil)
 		f.readyTicket(t, ref)
@@ -153,6 +157,7 @@ func TestThePlanGateHoldsT4UntilAHumanApproves(t *testing.T) {
 }
 
 func TestTheTicketFollowsItsTasksToMerge(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -185,6 +190,7 @@ func TestTheTicketFollowsItsTasksToMerge(t *testing.T) {
 }
 
 func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_review_rounds = 2\n\n[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -214,6 +220,7 @@ func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
 }
 
 func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -226,6 +233,7 @@ func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
 }
 
 func TestATicketWithoutTheEnginesTasksIsNotMovedOn(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	for _, tr := range []string{"start", "plan_accepted", "pr_ready"} {
@@ -260,6 +268,7 @@ func TestATicketWithoutTheEnginesTasksIsNotMovedOn(t *testing.T) {
 }
 
 func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"x\"\nrole = \"wizard\"\n"})
 	f.readyTicket(t, ref)
 	all, _ := f.tickets.List(ctx)
@@ -272,6 +281,7 @@ func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
 }
 
 func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
+	t.Parallel()
 	// The scaffolded file: approve names no needs.
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
 	f.readyTicket(t, ref)
@@ -285,6 +295,7 @@ func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 }
 
 func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	other := "gh:acme/web#2"
 	if _, err := f.tickets.Create(ctx, "human:alex", other, "web"); err != nil {
@@ -308,6 +319,7 @@ func TestATicketStartsOnlyWhenTheTicketsItNeedsAreDone(t *testing.T) {
 }
 
 func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	done := "gh:acme/web#3"
 	if _, err := f.tickets.Create(ctx, "human:alex", done, "web"); err != nil {
@@ -329,6 +341,7 @@ func TestATicketWhoseNeedsAreDoneStarts(t *testing.T) {
 }
 
 func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	need := "gh:acme/web#2"
 	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
@@ -351,7 +364,127 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 	}
 }
 
+// gainsAnOpenNeed takes ref to the given state, then gives it a need on
+// a new, open ticket after that state was reached. It returns the need.
+func (f *engineFixture) gainsAnOpenNeed(t *testing.T, state core.TicketState) string {
+	t.Helper()
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	if state != core.TicketPlanning {
+		f.finish(t, ref, "plan", "agent:planner-1")
+		f.reconcile(t)
+	}
+	if state == core.TicketInReview {
+		f.finish(t, ref, "implement", "agent:implementer-1")
+		if _, err := f.tickets.Fire(ctx, "agent:implementer-1", ref, "pr_ready"); err != nil { // istari pr open
+			t.Fatal(err)
+		}
+	}
+	if st := f.state(t, ref); st != state {
+		t.Fatalf("the ticket is %s before it gains a need, want %s", st, state)
+	}
+	if _, err := f.tickets.SetNeeds(ctx, "agent:refiner-1", ref, []string{need}); err != nil { // the refiner's rewrite
+		t.Fatal(err)
+	}
+	return need
+}
+
+func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.gainsAnOpenNeed(t, core.TicketPlanning)
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketPlanning || hold != "waiting_dependency" {
+		t.Fatalf("a planning ticket with an open need = %s, hold %q; want planning on waiting_dependency", st, hold)
+	}
+	if l, err := f.tasks.ClaimReady(ctx, "agent:planner-1", "planner"); err == nil {
+		t.Fatalf("the held ticket's plan task was handed out: %+v", l)
+	}
+}
+
+func TestAnInProgressTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.gainsAnOpenNeed(t, core.TicketInProgress)
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInProgress || hold != "waiting_dependency" {
+		t.Fatalf("an in_progress ticket with an open need = %s, hold %q; want in_progress on waiting_dependency", st, hold)
+	}
+	if l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err == nil {
+		t.Fatalf("the held ticket's implement task was handed out: %+v", l)
+	}
+}
+
+func TestAHeldInProgressTicketGoesOnInItsRoundWhenItsNeedIsDone(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	need := f.gainsAnOpenNeed(t, core.TicketInProgress)
+	f.reconcile(t)
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		if _, err := f.tickets.Fire(ctx, "system", need, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInProgress || hold != "" {
+		t.Fatalf("after its need is done the ticket = %s, hold %q; want in_progress, no hold", st, hold)
+	}
+	after, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("tasks went from %d to %d; want the ticket to go on with its round", len(before), len(after))
+	}
+	l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+	if err != nil {
+		t.Fatalf("the implement task is not handed out after the hold: %v", err)
+	}
+	if got := pipeline.RoundOf(core.Task{ID: l.Task}); got != 1 {
+		t.Fatalf("the handed-out implement task is of round %d, want 1", got)
+	}
+}
+
+func TestAnInReviewTicketThatGainsAnOpenNeedIsNotHeldAndNotedOnce(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	j := journal.New(nil, f.store, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Journal: j})
+	f.gainsAnOpenNeed(t, core.TicketInReview)
+	f.reconcile(t)
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInReview || hold != "" {
+		t.Fatalf("an in_review ticket with an open need = %s, hold %q; want in_review, no hold", st, hold)
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := j.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, e := range entries {
+		if e.Kind == journal.Note && strings.Contains(e.Text, "after its pull request was opened") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("journal = %+v; want one note that the ticket got open needs after its pull request was opened", entries)
+	}
+}
+
 func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
+	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
@@ -370,6 +503,7 @@ func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
 }
 
 func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
+	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return true, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{NeedsRefine: s})
@@ -391,6 +525,7 @@ func TestRefiningIsRepeatedAfterAnAnswerUpToThreeTimes(t *testing.T) {
 }
 
 func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_size = \"M\"\n"})
 	f.readyTicket(t, ref)
 	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", ref, "L"); err != nil {
@@ -405,6 +540,7 @@ func TestATicketAboveMaxSizeDoesNotReachT4WithoutASplit(t *testing.T) {
 }
 
 func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -438,6 +574,7 @@ func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
 }
 
 func TestAPlanTaskDoneWithoutAPlanOrTooLargeHoldsTheTicket(t *testing.T) {
+	t.Parallel()
 	noPlan := func(context.Context, string) (bool, error) { return false, nil }
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{HasPlan: noPlan})
@@ -451,6 +588,7 @@ func TestAPlanTaskDoneWithoutAPlanOrTooLargeHoldsTheTicket(t *testing.T) {
 }
 
 func TestACanceledChildHoldsItsParent(t *testing.T) {
+	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
 	f.readyTicket(t, ref)
 	f.reconcile(t)
@@ -464,12 +602,21 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
+	f.reconcile(t)
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "waiting_dependency" {
 		t.Fatalf("a parent with a canceled child has hold %q, want waiting_dependency", tk.Hold)
+	}
+	cleared, err := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: core.EventTicketHoldCleared}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 0 {
+		t.Fatalf("the canceled child's hold was cleared %d times; a human clears it", len(cleared))
 	}
 }
 
 func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
+	t.Parallel()
 	ci := map[string]string{}
 	checks := func(_ context.Context, ref string) (string, bool) { s, ok := ci[ref]; return s, ok }
 	f := newEngine(t, config.Defaults{}, nil)
@@ -508,6 +655,7 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 }
 
 func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
+	t.Parallel()
 	ci := "pending"
 	checks := func(context.Context, string) (string, bool) { return ci, true }
 	var f *engineFixture
@@ -543,6 +691,7 @@ func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
 }
 
 func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
+	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "success", true }
 	readyErr := errors.New("github: 502")
 	ready := func(context.Context, string) error { return readyErr }
@@ -574,6 +723,7 @@ func TestWhenMarkingReadyFailsT6WaitsForTheNextReconcile(t *testing.T) {
 }
 
 func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
+	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "failure", true }
 	f := newEngine(t, config.Defaults{MaxReviewRounds: 2}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: config.Defaults{MaxReviewRounds: 2}, Checks: checks})
@@ -595,6 +745,7 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 }
 
 func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		fires       []string
 		first, none string // the first stage it gets, and one before it that it must not get
@@ -654,6 +805,7 @@ func inReview(t *testing.T, defaults config.Defaults, ci map[string]string, r re
 }
 
 func TestOneAcceptedFindingReturnsTheTicketForRework(t *testing.T) {
+	t.Parallel()
 	r := reports{}
 	f := inReview(t, config.Defaults{}, map[string]string{}, r)
 	review := f.stage(t, ref, "review")
@@ -669,6 +821,7 @@ func TestOneAcceptedFindingReturnsTheTicketForRework(t *testing.T) {
 }
 
 func TestNoAcceptedFindingsAndGreenCIMoveTheTicketToAwaitingApproval(t *testing.T) {
+	t.Parallel()
 	r, ci := reports{}, map[string]string{}
 	f := inReview(t, config.Defaults{}, ci, r)
 	r[f.stage(t, ref, "review").ID] = 0
@@ -686,6 +839,7 @@ func TestNoAcceptedFindingsAndGreenCIMoveTheTicketToAwaitingApproval(t *testing.
 }
 
 func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
+	t.Parallel()
 	r, ci := reports{}, map[string]string{}
 	f := inReview(t, config.Defaults{MaxReviewRounds: 1}, ci, r)
 	r[f.stage(t, ref, "review").ID] = 2
@@ -701,6 +855,7 @@ func TestFindingsAfterTheLastReviewRoundHoldTheTicket(t *testing.T) {
 }
 
 func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
+	t.Parallel()
 	f := inReview(t, config.Defaults{}, map[string]string{}, reports{})
 	f.finish(t, ref, "review", "human:alex") // only a human can: a reviewer's complete needs a report
 	f.reconcile(t)
@@ -710,5 +865,74 @@ func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
 	}
 	if tk.State != core.TicketInReview || tk.Hold != "" {
 		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review, no verdict and no hold", tk.State, tk.Hold)
+	}
+}
+
+// fail claims the ticket's task of a stage and fails it n times.
+func (f *engineFixture) fail(t *testing.T, ref, stage string, n int) {
+	t.Helper()
+	for range n {
+		lease, err := f.tasks.Claim(ctx, "agent:planner-1", f.stage(t, ref, stage).ID)
+		if err != nil {
+			t.Fatalf("claim %s: %v", stage, err)
+		}
+		if err := f.tasks.Fail(ctx, lease, "boom"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (f *engineFixture) hold(t *testing.T, ref string) string {
+	t.Helper()
+	tk, err := f.tickets.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tk.Hold
+}
+
+func TestATaskThatUsesUpItsAttemptsHoldsTheTicket(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts)
+	f.reconcile(t)
+	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after the last failed attempt, want attempts_exhausted", hold)
+	}
+	f.reconcile(t) // idempotent: a held ticket is not held again
+	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after a second reconcile, want attempts_exhausted", hold)
+	}
+}
+
+func TestAFinishedTicketWithAnExhaustedTaskIsNotHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts)
+	if _, err := f.tickets.Fire(ctx, "human:alex", ref, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t) // fails if the engine tries to hold a canceled ticket
+	if hold := f.hold(t, ref); hold != "" {
+		t.Fatalf("hold = %q on a canceled ticket, want none", hold)
+	}
+}
+
+func TestATaskFailedBelowItsLimitDoesNotHoldTheTicket(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts-1)
+	f.reconcile(t)
+	if hold := f.hold(t, ref); hold != "" {
+		t.Fatalf("hold = %q after a failed attempt below the limit, want none", hold)
+	}
+	if plan := f.stage(t, ref, "plan"); plan.State != core.TaskReady {
+		t.Fatalf("plan is %s, want ready for its next attempt", plan.State)
 	}
 }

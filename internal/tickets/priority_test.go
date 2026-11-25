@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 type prioritized struct{ Priority, Actor string }
@@ -169,6 +172,64 @@ func TestARepositorysOwnPriorityLabelsAreLeftAlone(t *testing.T) {
 	f.run(t)
 	if labels := f.gh.Issue(n).Labels; !slices.Contains(labels, "priority:high") || !slices.Contains(labels, "priority:P1") {
 		t.Fatalf("labels = %v, want priority:high kept next to priority:P1", labels)
+	}
+}
+
+// notes returns the texts of the ticket's journal notes, read from its
+// comments.
+func (f *syncFixture) notes(t *testing.T, n int) []string {
+	t.Helper()
+	r, err := tickets.ParseRef(ghRef(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(f.adapter, f.store, nil).Read(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.Kind == journal.Note {
+			out = append(out, e.Text)
+		}
+	}
+	return out
+}
+
+func withTablePriority(p string) string { return strings.Replace(conforming, "| P1 |", "| "+p+" |", 1) }
+
+func TestAPriorityLabelOutranksTheTableAndTheDifferenceIsNotedOnce(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", withTablePriority("P3"), "alex", "priority:P1")
+	f.run(t)
+	f.run(t)
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P1" {
+		t.Fatalf("ticket = %s %q, want ready and still P1", tk.State, tk.Priority)
+	}
+	notes := f.notes(t, n)
+	if len(notes) != 1 || !strings.Contains(notes[0], "P1") || !strings.Contains(notes[0], "P3") {
+		t.Fatalf("notes = %q, want one naming P1 and P3", notes)
+	}
+}
+
+func TestAfterAdmissionTheLabelNotTheTableChangesThePriority(t *testing.T) {
+	f := newSync(t)
+	n := f.gh.Seed("Add limits", withTablePriority("P0"), "alex")
+	f.run(t)
+	f.gh.HumanEditBody(n, "alex", withTablePriority("P3"))
+	f.run(t)
+	f.run(t)
+	if tk := f.ticket(t, n); tk.Priority != "P0" {
+		t.Fatalf("priority = %q after the table changed, want P0", tk.Priority)
+	}
+	if notes := f.notes(t, n); len(notes) != 1 || !strings.Contains(notes[0], "P0") || !strings.Contains(notes[0], "P3") {
+		t.Fatalf("notes = %q, want one naming P0 and P3", notes)
+	}
+	f.gh.HumanSetLabels(n, "alex", "istari:ready", "priority:P2")
+	f.run(t)
+	if tk := f.ticket(t, n); tk.State != core.TicketReady || tk.Priority != "P2" {
+		t.Fatalf("ticket = %s %q after the label changed, want ready and P2", tk.State, tk.Priority)
 	}
 }
 

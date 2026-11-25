@@ -1,16 +1,21 @@
 package main_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 // fakeGH puts a gh on PATH that prints token, as `gh auth token` does, and
@@ -31,6 +36,7 @@ func fakeGHAs(t *testing.T, token, login string) string {
 }
 
 func TestIstariSyncMirrorsTheTrackersIssues(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", "## Context\n…", "bob")
 	dataDir := newDataDir(t)
@@ -73,6 +79,7 @@ func trackerOK(doctor string) bool {
 }
 
 func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
+	t.Parallel()
 	d := startDaemon(t, newDataDir(t))
 	if _, stderr, code := d.cli(t, "sync"); code != 1 || !strings.Contains(stderr, "sync_disabled") {
 		t.Fatalf("istari sync without a tracker: exit %d %q", code, stderr)
@@ -80,6 +87,7 @@ func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
 }
 
 func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	body := strings.SplitN(conforming, "\n", 2)[1]
 	n := gh.Seed("Add rate limits", body, "carol") // carol may only read: not trusted
@@ -120,12 +128,14 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	if !admitted {
 		t.Fatalf("transitions = %+v, want accept by human:alex", events)
 	}
-	if labels := gh.Issue(n).Labels; len(labels) != 1 || labels[0] != "istari:ready" {
-		t.Fatalf("issue labels = %v, want [istari:ready]: the admission is written at once", labels)
+	// The table's priority becomes the stored one on admission (spec 4.5).
+	if labels := gh.Issue(n).Labels; len(labels) != 2 || labels[0] != "istari:ready" || labels[1] != "priority:P1" {
+		t.Fatalf("issue labels = %v, want [istari:ready priority:P1]: the admission is written at once", labels)
 	}
 }
 
 func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", "", "bob", "bug")
 	dataDir := newDataDir(t)
@@ -159,6 +169,7 @@ func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 }
 
 func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Limits", "We should add rate limits.\n", "carol") // carol may only read
 	ours := gh.Seed("Quotas", "We should add quotas.\n", "alex")    // alex can write: trusted
@@ -202,4 +213,151 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 			t.Fatal("no refine task after a trusted ready")
 		}
 	}
+}
+
+// humanMerge is a ticket in awaiting_approval whose pull request istari
+// watches, as istari recover leaves it, served by a fake GitHub.
+type humanMerge struct {
+	gh        *githubtest.Server
+	d         *daemon
+	dataDir   string
+	config    string
+	env       []string
+	issue, pr int
+	ref       string
+}
+
+func newHumanMerge(t *testing.T) *humanMerge {
+	t.Helper()
+	h := &humanMerge{gh: githubtest.New(t), dataDir: newDataDir(t)}
+	h.issue = h.gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", "istari:awaiting_approval")
+	h.pr = h.gh.SeedPull(fmt.Sprintf("istari/%d/limits", h.issue))
+	h.ref = fmt.Sprintf("gh:%s#%d", githubtest.Repo, h.issue)
+	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: h.issue}
+	body, err := journal.Render(journal.Entry{Kind: journal.Checkpoint, Actor: "agent:implementer-1", At: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC),
+		Checkpoint: &journal.CheckpointEntry{Done: "pull request opened", PR: fmt.Sprintf("https://github.com/%s/pull/%d", githubtest.Repo, h.pr)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := github.New(github.Options{BaseURL: h.gh.URL, Token: h.gh.Token}).Comment(context.Background(), ref, body); err != nil {
+		t.Fatal(err)
+	}
+	h.config = filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", h.dataDir, githubtest.Repo)
+	if err := os.WriteFile(h.config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.env = []string{"PATH=" + fakeGH(t, h.gh.Token), "GITHUB_API_URL=" + h.gh.URL}
+	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
+	h.d.mustCLI(t, nil, "recover")
+	if st := h.state(t); st != "awaiting_approval" {
+		t.Fatalf("the recovered ticket is %s, want awaiting_approval", st)
+	}
+	return h
+}
+
+func (h *humanMerge) state(t *testing.T) string {
+	t.Helper()
+	var tk struct{ State string }
+	h.d.mustCLI(t, &tk, "ticket", "show", h.ref)
+	return tk.State
+}
+
+// restart stops the daemon and starts it again: its PR watch polls at once.
+func (h *humanMerge) restart(t *testing.T) {
+	t.Helper()
+	if err := h.d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	h.d.cmd.Wait()
+	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
+}
+
+// finished asserts the ticket ended in done the way istari's own merge ends
+// it: the issue closed as completed with istari:done, nothing undone.
+func (h *humanMerge) finished(t *testing.T) {
+	t.Helper()
+	if st := h.state(t); st != "done" {
+		t.Fatalf("the ticket is %s, want done\n%s", st, h.d.stderr)
+	}
+	i := h.gh.Issue(h.issue)
+	if i.State != "closed" || i.StateReason != "completed" || !slices.Equal(i.Labels, []string{"istari:done"}) {
+		t.Fatalf("the issue is %s/%s with %v, want closed/completed with [istari:done]", i.State, i.StateReason, i.Labels)
+	}
+	if reverted := h.d.eventTypes(t, h.ref, "sync.reverted"); len(reverted) > 0 {
+		t.Fatalf("sync undid a change: %v", reverted)
+	}
+}
+
+func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanMerge(h.pr, "alex") // GitHub closes the issue after the watch looked
+	h.restart(t)
+	for deadline := time.Now().Add(10 * time.Second); h.state(t) != "done"; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the ticket of a merged pull request is %s, want done\n%s", h.state(t), h.d.stderr)
+		}
+	}
+	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n
+	h.d.mustCLI(t, nil, "sync")
+	h.finished(t)
+}
+
+func TestAHumanClosingTheIssueOfATicketWithAnOpenPullRequestCancelsIt(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.issue, "alex", "not_planned")
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "canceled" {
+		t.Fatalf("the ticket of a closed issue is %s, want canceled (T13)", st)
+	}
+}
+
+func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.pr, "alex", "")
+	h.restart(t)
+	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not record the close\n%s", h.d.stderr)
+		}
+	}
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "awaiting_approval" {
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
+	}
+}
+
+func TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanClose(h.issue, "alex", "not_planned")
+	h.d.mustCLI(t, nil, "sync")
+	if st := h.state(t); st != "canceled" {
+		t.Fatalf("the ticket is %s, want canceled before the merge", st)
+	}
+	before := len(h.d.eventTypes(t, h.ref, "ticket.transitioned"))
+	h.gh.HumanMerge(h.pr, "alex")
+	h.restart(t) // the watch records the merge
+	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not record the merge\n%s", h.d.stderr)
+		}
+	}
+	h.d.mustCLI(t, nil, "sync")
+	h.finished(t)
+	if after := len(h.d.eventTypes(t, h.ref, "ticket.transitioned")); after != before+1 {
+		t.Fatalf("the repair logged %d transitions, want 1", after-before)
+	}
+}
+
+func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirst(t *testing.T) {
+	t.Parallel()
+	h := newHumanMerge(t)
+	h.gh.HumanMerge(h.pr, "alex")
+	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n, before the watch polls again
+	h.d.mustCLI(t, nil, "sync")
+	h.finished(t)
 }

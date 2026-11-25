@@ -26,6 +26,9 @@ const (
 	DefaultRunTimeout    = time.Hour
 	DefaultPoll          = 2 * time.Second
 	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
+	DefaultStartRetry    = 5 * time.Second
+	DefaultStartPause    = time.Minute
+	startFailuresToPause = 3 // start failures in a row that pause a slot
 	stopGrace            = 10 * time.Second
 )
 
@@ -72,6 +75,13 @@ type RunnerOptions struct {
 	// .istari/skill.md when the repository has none (spec section 7.4);
 	// "": istari's own.
 	Skill string
+	// StartRetry is how long a slot holds a task whose harness did not start
+	// before it releases it, so a binary being replaced has time to come
+	// back (spec section 7.3); 0: DefaultStartRetry.
+	StartRetry time.Duration
+	// StartPause is how long a slot claims nothing after its harness did not
+	// start three times in a row (spec section 7.3); 0: DefaultStartPause.
+	StartPause time.Duration
 }
 
 // Runner starts agents (spec section 7.2). Only the runner does: a free slot
@@ -87,6 +97,7 @@ type Runner struct {
 
 	mu     sync.Mutex
 	active map[string]chan string // run id → who asks it to stop
+	paused map[string]PausedSlot  // slot profile → its pause
 }
 
 // New returns a runner.
@@ -106,10 +117,16 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	if opts.TranscriptMax <= 0 {
 		opts.TranscriptMax = DefaultTranscriptMax
 	}
+	if opts.StartRetry <= 0 {
+		opts.StartRetry = DefaultStartRetry
+	}
+	if opts.StartPause <= 0 {
+		opts.StartPause = DefaultStartPause
+	}
 	if opts.Skill == "" {
 		opts.Skill = skill.Skill()
 	}
-	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}}
+	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}, paused: map[string]PausedSlot{}}
 }
 
 // SetSelfReview sets how the runner learns a repository's self_review.
@@ -166,11 +183,13 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	for _, t := range all {
 		byRef[t.Ref] = t
 	}
-	// The budget is the first ticket's of a chain of budget_of.
+	// The budget is the first ticket's of a chain of budget_of. The chain
+	// stops at a child of a split: it has a budget of its own (spec section
+	// 4.5).
 	root := func(t core.Ticket) core.Ticket {
 		for range len(all) + 1 {
 			parent, ok := byRef[t.BudgetOf]
-			if t.BudgetOf == "" || !ok {
+			if t.BudgetOf == "" || !ok || slices.Contains(parent.Children, t.Ref) {
 				break
 			}
 			t = parent
@@ -185,7 +204,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 		}
 	}
 	// A ticket that shares a budget has the budget of the one it shares
-	// (spec section 4.5: it inherits the parent's budget).
+	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
 	if size == "" {
 		size = "M"
@@ -249,21 +268,75 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 func (r *Runner) slot(ctx context.Context, slot Slot) {
+	failures := 0 // start failures in a row
 	for ctx.Err() == nil {
 		lease, err := r.tasks.ClaimReadyIn(ctx, "agent:"+slot.Profile, slot.Role, r.opts.Projects)
 		if err == nil {
-			r.execute(ctx, slot, lease)
+			startErr := r.execute(ctx, slot, lease)
+			if startErr == nil {
+				failures = 0
+				continue
+			}
+			if failures++; failures >= startFailuresToPause {
+				failures = 0
+				r.pause(ctx, slot, startErr)
+			}
 			continue
 		}
 		var e *core.Error
 		if !errors.As(err, &e) && ctx.Err() == nil {
 			log.Printf("istari: runner %s: %v", slot.Profile, err)
 		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(r.opts.Poll):
-		}
+		sleep(ctx, r.opts.Poll)
 	}
+}
+
+// sleep waits for d, or until ctx is done.
+func sleep(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
+
+// PausedSlot is a slot that claims nothing for a while because its harness
+// did not start three times in a row (spec section 7.3).
+type PausedSlot struct {
+	Slot  string    `json:"slot"`
+	Error string    `json:"error"` // why the harness did not start, the last time
+	Until time.Time `json:"until"` // when the slot claims again
+}
+
+// Paused returns the slots that are paused now, by profile.
+func (r *Runner) Paused() []PausedSlot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []PausedSlot
+	for _, p := range r.paused {
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b PausedSlot) int { return strings.Compare(a.Slot, b.Slot) })
+	return out
+}
+
+// pause keeps a slot from claiming for StartPause, and says so.
+func (r *Runner) pause(ctx context.Context, slot Slot, startErr error) {
+	p := PausedSlot{Slot: slot.Profile, Error: "the harness did not start: " + startErr.Error(), Until: r.opts.Clock().Add(r.opts.StartPause)}
+	log.Printf("istari: runner %s: paused for %s: %s", slot.Profile, shortDuration(r.opts.StartPause), p.Error)
+	r.mu.Lock()
+	r.paused[slot.Profile] = p
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); delete(r.paused, slot.Profile); r.mu.Unlock() }()
+	sleep(ctx, r.opts.StartPause)
+}
+
+// shortDuration writes a whole number of minutes as "1m", not "1m0s".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	return s
 }
 
 // ending is why a run ended, as the runner saw it.
@@ -274,8 +347,9 @@ type ending struct {
 	save     bool // checkpoint the work before the task ends
 }
 
-// execute runs one claimed task to its end.
-func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
+// execute runs one claimed task to its end. It returns why the harness did
+// not start, if it did not; any other ending is settled with the task.
+func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error {
 	// The task's fate is settled even when ctx ends meanwhile.
 	bg := context.WithoutCancel(ctx)
 	fail := func(reason string) {
@@ -290,7 +364,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	task, err := r.tasks.Get(bg, lease.Task)
 	if err != nil {
 		fail(err.Error())
-		return
+		return nil
 	}
 	tk, err := r.tickets.Get(bg, task.Ticket)
 	if err != nil {
@@ -299,18 +373,18 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	h, err := harness.Get(slot.Harness.Harness)
 	if err != nil {
 		fail(err.Error())
-		return
+		return nil
 	}
 	budget, capped, err := r.budgetLeft(bg, tk)
 	if err != nil {
 		fail("budget: " + err.Error())
-		return
+		return nil
 	}
 	if capped && budget <= 0 {
-		if err := r.tasks.Block(bg, lease, blockBudget); err != nil {
+		if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
 			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
 		}
-		return
+		return nil
 	}
 	run := Run{
 		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
@@ -324,14 +398,14 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		remove, err := r.ws.Scratch(bg, task.Ticket, run.Dir)
 		if err != nil {
 			fail("workspace: " + err.Error())
-			return
+			return nil
 		}
 		defer remove()
 	} else {
 		ws, err := r.ws.Ensure(bg, tk)
 		if err != nil {
 			fail("workspace: " + err.Error())
-			return
+			return nil
 		}
 		run.Dir = ws.Dir
 		// The implementer's run pulls the main branch in; conflicts are its
@@ -347,7 +421,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	token, err := r.runs.create(bg, &run)
 	if err != nil {
 		fail("run: " + err.Error())
-		return
+		return nil
 	}
 	env := map[string]string{
 		"ISTARI_PROFILE": slot.Profile, "ISTARI_ROLE": slot.Role, "ISTARI_TICKET": task.Ticket,
@@ -362,7 +436,12 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	ghDir := filepath.Join(r.opts.DataDir, "runs", run.ID, "gh")
 	if err := os.MkdirAll(ghDir, 0o700); err != nil {
 		fail("run: " + err.Error())
-		return
+		return nil
+	}
+	// The roles that submit a structured result may write it to the run's
+	// result file, and no other file (spec sections 7.3 and 7.6).
+	if slices.Contains(resultRoles, slot.Role) {
+		env["ISTARI_RESULT"] = filepath.Join(r.opts.DataDir, "runs", run.ID, "result.yaml")
 	}
 	who := slot.Profile + " (istari)"
 	for k, v := range map[string]string{
@@ -381,12 +460,17 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 	if err != nil {
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, err.Error())
 		fail(err.Error())
-		return
+		return nil
 	}
 	if err := installSkill(bg, run.Dir, r.opts.Skill); err != nil {
 		log.Printf("istari: run %s: installing the skill: %v", run.ID, err)
 	}
-	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Brief: r.brief(bg, task, tk, run.Dir, conflicts), Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	spec := slot.Harness.Apply(harness.RunSpec{Workdir: run.Dir, Instructions: instructions, Env: env, MaxBudgetUSD: run.BudgetUSD, Guard: r.opts.Guard})
+	if result, ok := env["ISTARI_RESULT"]; ok {
+		// "//" starts an absolute path in a rule; Edit's rule covers every
+		// file tool, Write's the tool by name.
+		spec.AllowedTools = append(spec.AllowedTools, "Write(/"+result+")", "Edit(/"+result+")")
+	}
 	if slot.Role == "implementer" {
 		// The implementer may run the repository's checks itself (spec 7.3):
 		// one test while it writes it, not only a whole checkpoint.
@@ -398,19 +482,27 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 			spec.AllowedTools = append(spec.AllowedTools, checkTools(checks)...)
 		}
 	}
+	// The brief lists the commands the harness allows (spec 7.3), from the
+	// same list, so the two cannot drift apart.
+	spec.Brief = r.brief(bg, task, tk, run.Dir, conflicts, spec.AllowedTools)
 	// The run starts with a whole lease, or not at all.
 	renewed, err := started()
 	if err != nil {
 		log.Printf("istari: runner %s: task %s: the lease ran out while the run was prepared: %v", slot.Profile, lease.Task, err)
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the lease ran out while the run was prepared")
-		return
+		return nil
 	}
 	lease = renewed
 	sess, err := h.Start(bg, spec)
 	if err != nil {
+		// No agent ran: the task goes back without spending an attempt, after
+		// a wait for a binary being replaced to come back (spec section 4.2).
 		r.end(bg, run, harness.Result{ExitCode: -1}, harness.Usage{}, "the harness did not start: "+err.Error())
-		fail("the harness did not start: " + err.Error())
-		return
+		sleep(ctx, r.opts.StartRetry)
+		if rerr := r.tasks.Release(bg, lease); rerr != nil {
+			log.Printf("istari: runner %s: release %s: %v", slot.Profile, lease.Task, rerr)
+		}
+		return err
 	}
 
 	stop := make(chan string, 1)
@@ -454,10 +546,18 @@ loop:
 		case res = <-waited:
 			break loop
 		case <-renew.C:
-			if held, err := r.tickets.Get(bg, task.Ticket); err == nil && held.Hold != "" {
+			current, err := r.tickets.Get(bg, task.Ticket)
+			switch {
+			case err == nil && current.State.Finished():
+				// The ticket ended and canceled its tasks with it (spec 4.1):
+				// the run stops, its work is saved, and the task stays
+				// canceled.
+				stopWith(ending{reason: "the ticket is " + string(current.State), outcome: func(context.Context, core.Lease) error { return nil }, save: true})
+				continue
+			case err == nil && current.Hold != "":
 				// The ticket was put on hold (paused): the run stops, its work
 				// is saved, and the task waits until the hold is lifted.
-				stopWith(ending{reason: "the ticket is on hold (" + held.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
+				stopWith(ending{reason: "the ticket is on hold (" + current.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
 				continue
 			}
 			l, err := r.tasks.Renew(bg, lease)
@@ -477,7 +577,7 @@ loop:
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-over:
 			reason := fmt.Sprintf("the run budget of $%.2f is spent", run.BudgetUSD)
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, blockBudget) }, save: true})
+			stopWith(ending{reason: reason, outcome: r.blockForBudget(tk.Ref), save: true})
 		case who := <-stop:
 			reason := "stopped by " + who
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
@@ -504,6 +604,7 @@ loop:
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
+	return nil
 }
 
 // outcome decides by the exit and istari complete (spec section 7.3): the
@@ -532,6 +633,21 @@ func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (re
 
 func (r *Runner) failWith(reason string) func(context.Context, core.Lease) error {
 	return func(ctx context.Context, l core.Lease) error { return r.tasks.Fail(ctx, l, reason) }
+}
+
+// blockForBudget blocks the task as budget_exceeded and holds its ticket for
+// the same reason, so the block shows on the ticket (spec sections 4.1, 7.5).
+// A hold that cannot be set is logged; the block stands.
+func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease) error {
+	return func(ctx context.Context, l core.Lease) error {
+		if err := r.tasks.Block(ctx, l, blockBudget); err != nil {
+			return err
+		}
+		if _, err := r.tickets.SetHold(ctx, "system", ticket, blockBudget); err != nil {
+			log.Printf("istari: runner: hold %s: %v", ticket, err)
+		}
+		return nil
+	}
 }
 
 // stream writes the harness's events to the transcript and the log, and
@@ -583,8 +699,8 @@ func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage har
 }
 
 // brief assembles the run's brief from the ticket and its journal.
-func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts []string) string {
-	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts}
+func (r *Runner) brief(ctx context.Context, task core.Task, tk core.Ticket, dir string, conflicts, tools []string) string {
+	in := BriefInput{Role: task.Role, Task: task.ID, Ref: tk.Ref, Title: tk.Title, SelfReview: true, Conflicts: conflicts, AllowedTools: tools}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return Brief(in)
@@ -658,6 +774,10 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	_, err = f.WriteString("\n/.istari/skill.md\n")
 	return err
 }
+
+// resultRoles are the roles that submit a structured result and get a result
+// file for it, ISTARI_RESULT (spec section 7.6).
+var resultRoles = []string{"refiner", "planner", "reviewer"}
 
 // checkTools are the tool rules that let an agent run the check commands:
 // each command's program and subcommand with any arguments, so that
