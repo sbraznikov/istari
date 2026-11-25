@@ -116,7 +116,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		note := func(ctx context.Context, ref tickets.Ref, text string) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
 		}
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Merged: srv.merged})
+		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
+			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
@@ -157,7 +160,12 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	if opts.VCS != nil {
 		srv.vcs = opts.VCS
-		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock)
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		// A red head's CI failure entry reaches the rework brief (spec 4.3).
+		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock, vcs.WithJournal(journal.New(jt, ns, opts.Clock)))
 	}
 	var needsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
 	if opts.Tracker != nil && opts.Standards != nil {
