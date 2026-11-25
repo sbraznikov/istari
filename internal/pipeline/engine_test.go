@@ -738,3 +738,38 @@ func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
 		t.Fatalf("a review without a report leaves the ticket %s, hold %q; want in_review, no verdict and no hold", tk.State, tk.Hold)
 	}
 }
+
+// fail claims the ticket's task of a stage and fails it n times.
+func (f *engineFixture) fail(t *testing.T, ref, stage string, n int) {
+	t.Helper()
+	for range n {
+		lease, err := f.tasks.Claim(ctx, "agent:planner-1", f.stage(t, ref, stage).ID)
+		if err != nil {
+			t.Fatalf("claim %s: %v", stage, err)
+		}
+		if err := f.tasks.Fail(ctx, lease, "boom"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (f *engineFixture) hold(t *testing.T, ref string) string {
+	t.Helper()
+	tk, err := f.tickets.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tk.Hold
+}
+
+func TestATaskThatUsesUpItsAttemptsHoldsTheTicket(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.fail(t, ref, "plan", core.DefaultMaxAttempts)
+	f.reconcile(t)
+	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after the last failed attempt, want attempts_exhausted", hold)
+	}
+}
