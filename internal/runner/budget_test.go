@@ -78,7 +78,9 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 	}
 	s.finish <- harness.Result{ExitCode: 0}
 	f.waitTask(t, task.ID, core.TaskCompleted)
-	child, err := f.tickets.CreateWith(ctx, "agent:planner-1", core.NewTicket{Ref: "gh:acme/web#30", Project: "web", Title: "Child", BudgetOf: parent.Ref})
+	// The parent's implementer files a ticket (istari ticket create): not a
+	// child of a split, so it shares the parent's budget.
+	child, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: "gh:acme/web#30", Project: "web", Title: "Found", BudgetOf: parent.Ref})
 	if err != nil {
 		t.Fatal(err)
 	}
