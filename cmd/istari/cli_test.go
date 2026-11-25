@@ -240,8 +240,13 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	if h := hold(); h != "" {
 		t.Fatalf("after retry the hold is %q", h)
 	}
-	// The ticket goes on: its planner can claim the plan task again.
-	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
+	// The ticket goes on: its planner can claim the plan task again. The
+	// daemon's own planner slot may hold it a moment, until its harness fails
+	// to start.
+	eventually("the retried plan task cannot be claimed", func() bool {
+		out, _, code := d.cli(t, "--json", "task", "claim", l.Task, "--actor", "agent:planner-1")
+		return code == 0 && json.Unmarshal([]byte(out), &l) == nil
+	})
 	if h := hold(); h != "" {
 		t.Fatalf("after the retried task was claimed the hold is %q", h)
 	}
