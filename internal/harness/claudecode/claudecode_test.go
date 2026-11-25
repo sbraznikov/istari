@@ -472,6 +472,21 @@ func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {
 	}
 }
 
+func TestOnlyTheReviewerAmongTheReadOnlyRolesMayFetchTheMainBranch(t *testing.T) {
+	t.Parallel()
+	profiles := claudecode.DefaultProfiles()
+	if !slices.Contains(profiles["reviewer"].AllowedTools, "Bash(git fetch origin main)") {
+		t.Errorf("reviewer tools = %q, want git fetch origin main", profiles["reviewer"].AllowedTools)
+	}
+	for _, role := range []string{"refiner", "planner"} {
+		for _, tool := range profiles[role].AllowedTools {
+			if strings.Contains(tool, "git fetch") {
+				t.Errorf("the %s may run %s", role, tool)
+			}
+		}
+	}
+}
+
 func TestTheGuardRunsAsAHookBeforeEveryShellCommandAndCannotBeSwitchedOff(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
