@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,17 +21,29 @@ import (
 
 // Client talks to GitHub for pull requests, checks and reviews.
 type Client struct {
-	base   string
-	tokens Tokens
-	http   *http.Client
+	base    string
+	tokens  Tokens
+	http    *http.Client
+	backoff []time.Duration
 }
+
+// DefaultBackoff retries a write three times within about seven seconds.
+var DefaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
 // NewClient returns a client; baseURL "" means api.github.com.
 func NewClient(baseURL string, tokens Tokens) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}, backoff: DefaultBackoff}
+}
+
+// WithBackoff sets the waits before each retry of a write that met a server
+// error, a rate limit or a network error (spec section 5); its length is the
+// number of retries.
+func (c *Client) WithBackoff(waits []time.Duration) *Client {
+	c.backoff = waits
+	return c
 }
 
 // Tokens returns the client's token source.
@@ -315,14 +328,51 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 	return c.request(ctx, repo, method, c.base+path, body, out)
 }
 
+// request sends one API request. A write that meets a server error, a rate
+// limit or a network error is tried again after each wait of the backoff; what
+// still fails so is tickets.ErrUnavailable (spec section 5).
 func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
+	var data []byte
+	if body != nil {
+		data, _ = json.Marshal(body)
+	}
+	err := c.send(ctx, repo, method, url, data, out)
+	if method == http.MethodGet {
+		return err
+	}
+	for _, wait := range c.backoff {
+		if !errors.Is(err, errTransient) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(wait):
+		}
+		err = c.send(ctx, repo, method, url, data, out)
+	}
+	if errors.Is(err, errTransient) {
+		return fmt.Errorf("%w: %w", tickets.ErrUnavailable, err)
+	}
+	return err
+}
+
+// errTransient marks a server error, a rate limit or a network error: the
+// host's passing trouble, not a refusal of the request.
+var errTransient = errors.New("transient")
+
+type transientError struct{ error }
+
+func (e transientError) Is(target error) bool { return target == errTransient }
+func (e transientError) Unwrap() error        { return e.error }
+
+func (c *Client) send(ctx context.Context, repo, method, url string, data []byte, out any) error {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
 		return err
 	}
 	var reader io.Reader
-	if body != nil {
-		data, _ := json.Marshal(body)
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
@@ -334,14 +384,22 @@ func (c *Client) request(ctx context.Context, repo, method, url string, body, ou
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	res, err := c.http.Do(req)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		return transientError{err}
 	}
 	defer res.Body.Close()
-	data, _ := io.ReadAll(res.Body)
+	data, _ = io.ReadAll(res.Body)
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
-		return fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
+		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
+		limited := res.StatusCode == http.StatusTooManyRequests || res.Header.Get("X-RateLimit-Remaining") == "0"
+		if res.StatusCode >= 500 || limited {
+			return transientError{err}
+		}
+		return err
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
