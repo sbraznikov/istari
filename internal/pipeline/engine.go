@@ -472,7 +472,7 @@ func conflictNote(head string) string {
 // once per head. A head whose conflict was handled already is left to the
 // rest of the pipeline. returned tells whether T10 fired.
 func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returned bool, err error) {
-	if e.opts.Conflict == nil {
+	if e.opts.Conflict == nil || r.n == 0 { // a ticket without the engine's tasks is not moved on
 		return false, nil
 	}
 	head, dirty, err := e.opts.Conflict(ctx, tk.Ref)

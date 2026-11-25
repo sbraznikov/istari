@@ -472,11 +472,10 @@ func mustPoll(t *testing.T, w *vcs.Watcher) {
 	}
 }
 
-var notMergeable = false
-
 func TestAPullRequestInConflictIsRecordedOnce(t *testing.T) {
+	t.Parallel()
 	gh, s, w, ticket, n := watchFixture(t)
-	gh.SetMergeable(n, &notMergeable, "dirty")
+	gh.SetMergeable(n, new(false), "dirty")
 	mustPoll(t, w)
 	mustPoll(t, w) // nothing new
 	if got := conflicts(t, s, ticket); len(got) != 1 || got[0] != "h1@m1:dirty" {
@@ -488,6 +487,7 @@ func TestAPullRequestInConflictIsRecordedOnce(t *testing.T) {
 }
 
 func TestAnUnknownMergeableRecordsNothingUntilGitHubAnswers(t *testing.T) {
+	t.Parallel()
 	gh, s, w, ticket, n := watchFixture(t)
 	gh.SetMergeable(n, nil, "unknown") // GitHub is still computing
 	mustPoll(t, w)
@@ -497,7 +497,7 @@ func TestAnUnknownMergeableRecordsNothingUntilGitHubAnswers(t *testing.T) {
 	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != "" {
 		t.Fatalf("tracked = %+v, want no reading", tr)
 	}
-	gh.SetMergeable(n, &notMergeable, "dirty")
+	gh.SetMergeable(n, new(false), "dirty")
 	mustPoll(t, w)
 	if got := conflicts(t, s, ticket); len(got) != 1 || got[0] != "h1@m1:dirty" {
 		t.Fatalf("conflicts = %v, want one at h1@m1 once GitHub answered", got)
@@ -505,8 +505,9 @@ func TestAnUnknownMergeableRecordsNothingUntilGitHubAnswers(t *testing.T) {
 }
 
 func TestAPushForgetsTheConflictAndAMovedBaseIsANewOne(t *testing.T) {
+	t.Parallel()
 	gh, s, w, ticket, n := watchFixture(t)
-	gh.SetMergeable(n, &notMergeable, "dirty")
+	gh.SetMergeable(n, new(false), "dirty")
 	mustPoll(t, w)
 	if err := w.Pushed(ctx, ticket, "h2"); err != nil { // the conflict round merged main
 		t.Fatal(err)
@@ -518,15 +519,14 @@ func TestAPushForgetsTheConflictAndAMovedBaseIsANewOne(t *testing.T) {
 	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != "" {
 		t.Fatalf("the replaced head's reading is taken: %+v", tr)
 	}
-	mergeable := true
 	gh.SetHeadSHA(n, "h2")
-	gh.SetMergeable(n, &mergeable, "clean")
+	gh.SetMergeable(n, new(true), "clean")
 	mustPoll(t, w)
 	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != vcs.MergeableClean || tr.MergeHead != "h2" {
 		t.Fatalf("after the clean reading: %+v, want clean at h2", tr)
 	}
 	gh.SetBaseSHA(n, "m2") // another ticket merged into main
-	gh.SetMergeable(n, &notMergeable, "dirty")
+	gh.SetMergeable(n, new(false), "dirty")
 	mustPoll(t, w)
 	if got := conflicts(t, s, ticket); len(got) != 2 || got[1] != "h2@m2:dirty" {
 		t.Fatalf("conflicts = %v, want h1@m1, then h2@m2", got)

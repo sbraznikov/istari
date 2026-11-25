@@ -58,12 +58,10 @@ func (h *humanMerge) lastTrigger(t *testing.T) string {
 	return events[len(events)-1].Payload.Trigger
 }
 
-var dirty = false
-
 func TestAPullRequestInConflictReturnsItsAwaitingApprovalTicketForRework(t *testing.T) {
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "awaiting_approval")
-	h.gh.SetMergeable(h.pr, &dirty, "dirty") // another ticket merged into main
+	h.gh.SetMergeable(h.pr, new(false), "dirty") // another ticket merged into main
 	h.restart(t)
 	h.returnedForConflict(t)
 }
@@ -71,7 +69,7 @@ func TestAPullRequestInConflictReturnsItsAwaitingApprovalTicketForRework(t *test
 func TestAPullRequestInConflictReturnsItsInReviewTicketAndCancelsTheReview(t *testing.T) {
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "in_review")
-	h.gh.SetMergeable(h.pr, &dirty, "dirty")
+	h.gh.SetMergeable(h.pr, new(false), "dirty")
 	h.restart(t)
 	for _, tk := range h.returnedForConflict(t) {
 		if tk.Role == "reviewer" && (tk.State == "ready" || tk.State == "claimed" || tk.State == "blocked") {
@@ -92,11 +90,14 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 			t.Fatalf("the watch did not poll\n%s", h.d.stderr)
 		}
 	}
-	time.Sleep(time.Second) // a reconcile after the poll
-	if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflict"); len(conflicts) != 0 {
-		t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
-	}
-	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval", st)
+	// Nothing to wait for: the ticket must stay through the reconciles after
+	// the poll.
+	for until := time.Now().Add(time.Second); time.Now().Before(until); time.Sleep(100 * time.Millisecond) {
+		if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflict"); len(conflicts) != 0 {
+			t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
+		}
+		if st := h.state(t); st != "awaiting_approval" {
+			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval", st)
+		}
 	}
 }
