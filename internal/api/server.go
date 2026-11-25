@@ -360,6 +360,15 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 // Runner returns the runner, or nil when it is off; the daemon runs it.
 func (s *Server) Runner() *runner.Runner { return s.runner }
 
+// ReasonDaemonRestarted is how a run ends that a daemon left running.
+const ReasonDaemonRestarted = "the daemon restarted"
+
+// EndRunsLeftRunning ends the runs a previous daemon left running; the
+// daemon calls it on start, before the runner starts a run (spec section 7.2).
+func (s *Server) EndRunsLeftRunning(ctx context.Context) error {
+	return s.runs.EndLeftRunning(ctx, ReasonDaemonRestarted)
+}
+
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }
 
