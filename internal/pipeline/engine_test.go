@@ -407,6 +407,43 @@ func TestAnInProgressTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
 	}
 }
 
+func TestAHeldInProgressTicketGoesOnInItsRoundWhenItsNeedIsDone(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	need := "gh:acme/web#2"
+	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+		t.Fatal(err)
+	}
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if _, err := f.tickets.SetNeeds(ctx, "agent:implementer-1", ref, []string{need}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+		if _, err := f.tickets.Fire(ctx, "system", need, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := f.tasks.List(ctx)
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "" {
+		t.Fatalf("after its need is done the ticket = %s, hold %q; want in_progress, no hold", tk.State, tk.Hold)
+	}
+	if after, _ := f.tasks.List(ctx); len(after) != len(before) {
+		t.Fatalf("tasks went from %d to %d; want the ticket to go on with its round", len(before), len(after))
+	}
+	l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+	if err != nil {
+		t.Fatalf("the implement task is not handed out after the hold: %v", err)
+	}
+	if got := pipeline.RoundOf(core.Task{ID: l.Task}); got != 1 {
+		t.Fatalf("the handed-out implement task is of round %d, want 1", got)
+	}
+}
+
 func TestANewTicketBelowTheStandardGetsOneRefineTask(t *testing.T) {
 	t.Parallel()
 	s := func(ctx context.Context, tk core.Ticket) (bool, error) { return tk.Ref == ref, nil }
