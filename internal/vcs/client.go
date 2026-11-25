@@ -414,19 +414,31 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	work := "refs/istari/push/" + p.Own
 	seen := "refs/istari/seen/" + p.Own
+	// The last push's commit: when it is not the seen one, that push was cut
+	// short, and the remote may have taken it.
+	tried, _ := run(nil, "rev-parse", "--verify", "-q", work) // "" when nothing was pushed from here
 	if _, err := run(nil, "fetch", "-q", "--no-tags", p.Worktree, "+HEAD:"+work); err != nil {
 		return err
 	}
 	auth := authEnv(p.Token)
+	remoteHead := func() string {
+		out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own)
+		if err != nil {
+			return ""
+		}
+		head, _, _ := strings.Cut(out, "\t")
+		return head
+	}
 	args := []string{"push", "--porcelain"}
 	if p.Force {
 		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
-		if err != nil {
+		switch {
+		case err != nil:
 			// Nothing pushed from here yet: lease on the branch as it is now.
-			expected = ""
-			if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
-				expected, _, _ = strings.Cut(out, "\t")
-			}
+			expected = remoteHead()
+		case tried != "" && tried != expected && remoteHead() == tried:
+			// istari's own push, cut short after the remote took it.
+			expected = tried
 		}
 		args = append(args, "--force-with-lease=refs/heads/"+p.Own+":"+expected)
 	}
