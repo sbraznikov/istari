@@ -120,20 +120,12 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 		if !check.RunsAt(pipeline.AtCheckpoint) {
 			continue
 		}
-		command, ok := check.For(tests)
+		command, ok := check.CommandFor(tests)
 		if !ok {
 			entry.Notes = append(entry.Notes, check.Name+": not run, the slice has no test change to fill {files} or {dirs}")
 			continue
 		}
-		if passed, output := runCheck(ctx, run.Dir, command); passed {
-			entry.Checks[check.Name] = "green"
-		} else {
-			entry.Checks[check.Name], entry.Red = "red", true
-			if entry.Failures == nil {
-				entry.Failures = map[string]string{}
-			}
-			entry.Failures[check.Name] = output
-		}
+		recordCheck(ctx, entry, run.Dir, check.Name, command)
 	}
 	if test, ok := checks.Get("test"); ok && checks.VerifyRed && len(tests) > 0 {
 		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, test)
@@ -226,7 +218,7 @@ func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, p
 	if prevTest == "red" {
 		return false, false, nil
 	}
-	cmd, _ := test.For(tests)
+	cmd, _ := test.CommandFor(tests)
 	scratch, err := c.ws.redCheckout(ctx, ws, prev)
 	if err != nil {
 		return false, false, err
@@ -296,6 +288,23 @@ func runCheck(ctx context.Context, dir, command string) (bool, string) {
 		tail += "\n[stopped after " + checkTimeout.String() + "]"
 	}
 	return err == nil, strings.TrimSpace(tail)
+}
+
+// recordCheck runs the command of a check in dir and records it in entry by
+// name: green, or red with its output kept. It tells whether the check
+// passed, with that output.
+func recordCheck(ctx context.Context, entry *journal.CheckpointEntry, dir, name, command string) (bool, string) {
+	passed, output := runCheck(ctx, dir, command)
+	if passed {
+		entry.Checks[name] = "green"
+		return true, output
+	}
+	entry.Checks[name], entry.Red = "red", true
+	if entry.Failures == nil {
+		entry.Failures = map[string]string{}
+	}
+	entry.Failures[name] = output
+	return false, output
 }
 
 // checkEnv is the daemon's environment without its secrets: tokens, keys,

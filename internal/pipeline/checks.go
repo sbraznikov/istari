@@ -37,10 +37,10 @@ func (c Check) TakesTests() bool {
 	return strings.Contains(c.Run, FilesPlaceholder) || strings.Contains(c.Run, DirsPlaceholder)
 }
 
-// For returns the command for a slice whose test files are tests, with
-// {files} and {dirs} filled in and shell-quoted. A command that takes tests
-// has none to run without them: ok is false.
-func (c Check) For(tests []string) (command string, ok bool) {
+// CommandFor returns the command for a slice whose test files are tests,
+// with {files} and {dirs} filled in and shell-quoted. A command that takes
+// tests has none to run without them: ok is false.
+func (c Check) CommandFor(tests []string) (command string, ok bool) {
 	if !c.TakesTests() {
 		return c.Run, true
 	}
@@ -141,6 +141,15 @@ var builtin = []Check{
 	{Name: "full", At: []string{AtPR}},
 }
 
+// builtinRank is the place of a check code knows by name in builtin, or
+// len(builtin) for any other check.
+func builtinRank(name string) int {
+	if i := slices.IndexFunc(builtin, func(b Check) bool { return b.Name == name }); i >= 0 {
+		return i
+	}
+	return len(builtin)
+}
+
 // parseChecks reads the [checks] table raw of a pipeline file, data. What it
 // cannot read is refused with its line (CODING_STANDARDS S1.3).
 func parseChecks(data []byte, raw map[string]any) (Checks, error) {
@@ -177,7 +186,7 @@ func parseChecks(data []byte, raw map[string]any) (Checks, error) {
 			continue
 		}
 		c := Check{Name: name, At: []string{AtCheckpoint, AtPR}}
-		if i := slices.IndexFunc(builtin, func(b Check) bool { return b.Name == name }); i >= 0 {
+		if i := builtinRank(name); i < len(builtin) {
 			c.At = builtin[i].At
 		}
 		switch val := v.(type) {
@@ -211,14 +220,8 @@ func parseChecks(data []byte, raw map[string]any) (Checks, error) {
 		}
 		named = append(named, c)
 	}
-	rank := func(c Check) int {
-		if i := slices.IndexFunc(builtin, func(b Check) bool { return b.Name == c.Name }); i >= 0 {
-			return i
-		}
-		return len(builtin)
-	}
 	slices.SortFunc(named, func(a, b Check) int {
-		if ra, rb := rank(a), rank(b); ra != rb {
+		if ra, rb := builtinRank(a.Name), builtinRank(b.Name); ra != rb {
 			return ra - rb
 		}
 		return strings.Compare(a.Name, b.Name)

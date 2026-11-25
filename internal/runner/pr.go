@@ -121,14 +121,7 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 			entry.Notes = append(entry.Notes, check.Name+": not run, it runs the slice's tests through {files} or {dirs}; the whole suite is full")
 			continue
 		}
-		if passed, output := runCheck(ctx, run.Dir, check.Run); passed {
-			entry.Checks[check.Name] = "green"
-		} else {
-			entry.Checks[check.Name], entry.Red = "red", true
-			if entry.Failures == nil {
-				entry.Failures = map[string]string{}
-			}
-			entry.Failures[check.Name] = output
+		if passed, output := recordCheck(ctx, entry, run.Dir, check.Name, check.Run); !passed {
 			red = append(red, check.Name+":\n"+output)
 		}
 	}
