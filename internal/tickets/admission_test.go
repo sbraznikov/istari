@@ -92,9 +92,6 @@ func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
 	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" || tr[len(tr)-1].Rule != "human_admission" {
 		t.Fatalf("transitions = %+v, want the accept by human:alex by the rule human_admission", tr)
 	}
-	if tr := f.transitions(t, n); tr[len(tr)-1].Actor != "human:alex" {
-		t.Fatalf("transitions = %+v, want the accept by human:alex", tr)
-	}
 }
 
 func TestAnExplicitTrustedListReplacesWriteAccess(t *testing.T) {
