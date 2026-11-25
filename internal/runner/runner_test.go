@@ -9,11 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
+	"github.com/sbraznikov/istari/internal/harness/claudecode"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -26,7 +28,11 @@ type fakeHarness struct {
 	mu      sync.Mutex
 	started chan fakeSession
 	events  []harness.Event
+	fail    error // Start returns it while set
 }
+
+// failStart makes Start return err until it is called with nil.
+func (h *fakeHarness) failStart(err error) { h.mu.Lock(); h.fail = err; h.mu.Unlock() }
 
 type fakeSession struct {
 	spec   harness.RunSpec
@@ -45,6 +51,12 @@ func newFakeHarness(name string, events ...harness.Event) *fakeHarness {
 func (h *fakeHarness) Name() string                { return h.name }
 func (h *fakeHarness) Check(context.Context) error { return nil }
 func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Session, error) {
+	h.mu.Lock()
+	fail := h.fail
+	h.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
 	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}}
 	for _, e := range h.events {
 		s.out <- e
@@ -74,19 +86,15 @@ type runFixture struct {
 	h      *fakeHarness
 }
 
-var fakes sync.Map
+// fakeCount makes every fixture's harness name unique, so no two fixtures
+// (parallel tests, or one test run again by -count) share a fake harness.
+var fakeCount atomic.Int64
 
 func newRunner(t *testing.T, opts runner.RunnerOptions, events ...harness.Event) *runFixture {
 	t.Helper()
 	f := newWorkspaces(t)
-	name := "fake-" + t.Name()
-	var h *fakeHarness
-	if v, ok := fakes.Load(name); ok {
-		h = v.(*fakeHarness)
-	} else {
-		h = newFakeHarness(name, events...)
-		fakes.Store(name, h)
-	}
+	h := newFakeHarness("fake-"+t.Name()+"-"+strconv.FormatInt(fakeCount.Add(1), 10), events...)
+	name := h.name
 	if opts.Lease == 0 {
 		opts.Lease = time.Minute
 	}
@@ -162,6 +170,7 @@ func (f *runFixture) waitEvent(t *testing.T, typ string) store.Event {
 }
 
 func TestASlotClaimsAReadyTaskAndStartsTheHarnessInTheTicketWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	tk, task := f.readyTask(t, 1)
 	f.start(t)
@@ -200,6 +209,7 @@ func TestASlotClaimsAReadyTaskAndStartsTheHarnessInTheTicketWorktree(t *testing.
 }
 
 func TestARunPastItsTimeoutIsStoppedAndTheTaskFailsWithTheReason(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Timeout: 300 * time.Millisecond})
 	_, task := f.readyTask(t, 2)
 	f.start(t)
@@ -215,6 +225,7 @@ func TestARunPastItsTimeoutIsStoppedAndTheTaskFailsWithTheReason(t *testing.T) {
 }
 
 func TestARunThatSpendsItsBudgetBlocksTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: map[string]float64{"M": 1}}, // a ticket without a size has the M budget
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}},
 		harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 0.6}})
@@ -227,6 +238,7 @@ func TestARunThatSpendsItsBudgetBlocksTheTask(t *testing.T) {
 }
 
 func TestAnExitWithoutIstariCompleteFailsTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 4)
 	f.start(t)
@@ -238,6 +250,7 @@ func TestAnExitWithoutIstariCompleteFailsTheTask(t *testing.T) {
 }
 
 func TestTheLeaseIsRenewedWhileTheRunLivesAndTheTokenDiesWithIt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Lease: 600 * time.Millisecond})
 	_, task := f.readyTask(t, 5)
 	f.start(t)
@@ -267,6 +280,7 @@ func runOf(t *testing.T, e store.Event) string {
 }
 
 func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	f.readyTask(t, 7)
 	f.start(t)
@@ -280,6 +294,7 @@ func TestStoppingARunFailsItsTaskWithWhoStoppedIt(t *testing.T) {
 }
 
 func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	tk := f.ticket(t, 8, "Raw idea") // new: before planning
 	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
@@ -309,6 +324,7 @@ func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
 }
 
 func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
+	t.Parallel()
 	var events []harness.Event
 	for i := range 6 {
 		events = append(events, harness.Event{Kind: harness.EventMessage, Text: "message number " + strconv.Itoa(i)})
@@ -346,6 +362,7 @@ func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
 }
 
 func TestTheInstructionComesFromTheMainBranchNotTheTicketBranch(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	// The repository's own implementer instruction on main.
 	seed := filepath.Join(f.root, "seed")
@@ -375,6 +392,7 @@ func TestTheInstructionComesFromTheMainBranchNotTheTicketBranch(t *testing.T) {
 }
 
 func TestARunStoppedOnTimeoutLeavesACheckpointWithItsWork(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Timeout: 500 * time.Millisecond})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -399,7 +417,49 @@ func TestARunStoppedOnTimeoutLeavesACheckpointWithItsWork(t *testing.T) {
 	}
 }
 
-func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
+func TestAHoldOnTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		hold, actor string
+		issue       int
+	}{
+		{"paused", "human:alex", 14},
+		{"waiting_dependency", "system", 16}, // the engine saw an open need mid-run
+	} {
+		t.Run(c.hold, func(t *testing.T) {
+			t.Parallel()
+			f := newRunner(t, runner.RunnerOptions{})
+			ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+			f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+				DataDir: f.data, Projects: []string{"web"}, Lease: 600 * time.Millisecond,
+				Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+				Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
+			})
+			tk, task := f.readyTask(t, c.issue)
+			f.start(t)
+			s := f.session(t)
+			os.WriteFile(filepath.Join(s.spec.Workdir, "held-work.txt"), []byte("x\n"), 0o644)
+			if _, err := f.tickets.SetHold(ctx, c.actor, tk.Ref, c.hold); err != nil {
+				t.Fatal(err)
+			}
+			f.waitTask(t, task.ID, core.TaskReady) // released, and not taken again while held
+			if events := f.events(t, "journal.checkpoint"); len(events) != 1 || events[0].Ticket != tk.Ref {
+				t.Fatalf("checkpoints = %d, want one for the stopped run", len(events))
+			}
+			time.Sleep(300 * time.Millisecond)
+			got, err := f.tasks.Get(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != core.TaskReady {
+				t.Fatalf("the held ticket's task is %s, want ready and left alone", got.State)
+			}
+		})
+	}
+}
+
+func TestCancelingTheTicketStopsItsRunWithACheckpointAndTheTaskStaysCanceled(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -407,24 +467,28 @@ func TestPausingTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 		Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
 		Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
 	})
-	tk, task := f.readyTask(t, 14)
+	tk, task := f.readyTask(t, 15)
 	f.start(t)
 	s := f.session(t)
-	os.WriteFile(filepath.Join(s.spec.Workdir, "paused-work.txt"), []byte("x\n"), 0o644)
-	if _, err := f.tickets.SetHold(ctx, "human:alex", tk.Ref, "paused"); err != nil {
+	os.WriteFile(filepath.Join(s.spec.Workdir, "canceled-work.txt"), []byte("x\n"), 0o644)
+	if _, err := f.tickets.Fire(ctx, "human:alex", tk.Ref, "cancel"); err != nil {
 		t.Fatal(err)
 	}
-	f.waitTask(t, task.ID, core.TaskReady) // released, and not taken again while paused
+	f.waitEvent(t, runner.EventRunExited)
 	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
-		t.Fatalf("checkpoints = %d, want one on pausing", len(events))
+		t.Fatalf("checkpoints = %d, want one on canceling", len(events))
 	}
-	time.Sleep(300 * time.Millisecond)
-	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskReady {
-		t.Fatalf("the paused ticket's task is %s, want ready and left alone", got.State)
+	got, err := f.tasks.Get(ctx, task.ID)
+	if err != nil || got.State != core.TaskCanceled || got.Attempts != 0 {
+		t.Fatalf("the task is %s with %d attempts (%v), want canceled with none spent", got.State, got.Attempts, err)
+	}
+	if failed := f.events(t, "task.failed"); len(failed) != 0 {
+		t.Fatalf("the canceled ticket's run failed its task: %v", failed)
 	}
 }
 
 func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -442,7 +506,31 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 	}
 }
 
+func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	_, task := f.readyTask(t, 16)
+	f.start(t)
+	s := f.session(t)
+	id := s.spec.Env["ISTARI_RUN"]
+	if _, err := f.runner.Runs().Reject(ctx, id, "review: yaml: line 3: did not find expected key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.runner.Runs().Accept(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	f.runner.Runs().Complete(ctx, id, "reviewed")
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	if run, _ := f.runner.Runs().Get(ctx, id); run.Reason != "completed: reviewed" {
+		t.Fatalf("the run ended %q, want it completed: its refused result was corrected", run.Reason)
+	}
+	if rejected := f.events(t, "run.rejected"); len(rejected) != 1 || !strings.Contains(string(rejected[0].Payload), "yaml") {
+		t.Fatalf("run.rejected = %+v, want the refusal kept", rejected)
+	}
+}
+
 func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -461,6 +549,7 @@ func TestAYieldedRunReleasesItsTaskWithoutSpendingAnAttempt(t *testing.T) {
 }
 
 func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 15)
 	f.start(t)
@@ -480,6 +569,7 @@ func TestARejectedRunSpendsAnAttemptEvenIfItAlsoYielded(t *testing.T) {
 }
 
 func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Lease: time.Hour})
 	_, task := f.readyTask(t, 11)
 	claimedAt := time.Now()
@@ -496,7 +586,15 @@ func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 }
 
 func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
-	f := newRunner(t, runner.RunnerOptions{Lease: 90 * time.Millisecond}) // shorter than making a worktree
+	t.Parallel()
+	// The lease is long enough for its renewals (every third of it) to
+	// survive a busy scheduler; the preparation outlasts it by design, not
+	// by load: assembling the brief alone takes three leases.
+	const lease = 300 * time.Millisecond
+	f := newRunner(t, runner.RunnerOptions{Lease: lease, SelfReview: func(context.Context, string) bool {
+		time.Sleep(3 * lease)
+		return true
+	}})
 	_, task := f.readyTask(t, 12)
 	f.start(t)
 	s := f.session(t)
@@ -522,6 +620,7 @@ func seedMain(t *testing.T, f *runFixture, path, content string) {
 }
 
 func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntypecheck = \"go vet ./...\"\ntest = \"go test ./... -short\"\nverify_red = true\n")
 	tk, _ := f.readyTask(t, 15)
@@ -547,7 +646,86 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 	}
 }
 
+func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
+	for i, role := range []string{"refiner", "planner", "implementer", "reviewer"} {
+		t.Run(role, func(t *testing.T) {
+			f := newRunner(t, runner.RunnerOptions{})
+			seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./... -short\"\n")
+			profile := claudecode.DefaultProfiles()[role]
+			profile.Harness = f.h.name
+			f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
+				runner.RunnerOptions{DataDir: f.data, Projects: []string{"web"}, Slots: []runner.Slot{{Profile: role + "-1", Role: role, Harness: profile}}})
+			tk := f.ticket(t, 20+i, "Brief me")
+			if role != "refiner" {
+				f.fire(t, tk.Ref, "accept", "start")
+			}
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: role}); err != nil {
+				t.Fatal(err)
+			}
+			f.start(t)
+			s := f.session(t)
+			commands := 0
+			for _, tool := range s.spec.AllowedTools {
+				cmd, ok := strings.CutPrefix(tool, "Bash(")
+				if !ok {
+					continue
+				}
+				commands++
+				if want := "- `" + strings.TrimSuffix(cmd, ")") + "`\n"; !strings.Contains(s.spec.Brief, want) {
+					t.Errorf("the brief does not list %s, which the harness allows", tool)
+				}
+			}
+			if commands == 0 {
+				t.Fatalf("allowed tools = %q, want shell commands to check", s.spec.AllowedTools)
+			}
+			if role == "implementer" && !strings.Contains(s.spec.Brief, "- `go test *`\n") {
+				t.Error("the implementer's brief does not list the check command go test")
+			}
+		})
+	}
+}
+
+func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		DataDir: f.data, Projects: []string{"web"},
+		Slots: []runner.Slot{{Profile: "planner-1", Role: "planner", Harness: harness.Profile{Harness: f.h.name, AllowedTools: []string{"Read", "Bash(istari *)"}}}},
+	})
+	tk := f.ticket(t, 17, "Plan me")
+	f.fire(t, tk.Ref, "accept", "start")
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "planner"}); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	spec := f.session(t).spec
+	result := spec.Env["ISTARI_RESULT"]
+	if want := filepath.Join(f.data, "runs", spec.Env["ISTARI_RUN"], "result.yaml"); result != want {
+		t.Fatalf("ISTARI_RESULT = %q, want %q in the run's directory", result, want)
+	}
+	want := []string{"Read", "Bash(istari *)", "Write(/" + result + ")", "Edit(/" + result + ")"}
+	if !slices.Equal(spec.AllowedTools, want) {
+		t.Fatalf("a planner's allowed tools = %q, want %q: its profile and the result file", spec.AllowedTools, want)
+	}
+}
+
+func TestTheImplementerGetsNoResultFile(t *testing.T) {
+	f := newRunner(t, runner.RunnerOptions{})
+	f.readyTask(t, 18)
+	f.start(t)
+	spec := f.session(t).spec
+	if v, ok := spec.Env["ISTARI_RESULT"]; ok {
+		t.Fatalf("the implementer's ISTARI_RESULT = %q, want none", v)
+	}
+	for _, tool := range spec.AllowedTools {
+		if strings.HasPrefix(tool, "Write(") || strings.HasPrefix(tool, "Edit(") {
+			t.Fatalf("the implementer's allowed tools = %q, want no rule for a single file", spec.AllowedTools)
+		}
+	}
+}
+
 func TestOtherRolesDoNotGetTheCheckCommands(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./...\"\n")
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})

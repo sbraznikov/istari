@@ -29,7 +29,7 @@ The words of istari, as `docs/design.md` and the code use them. Code, tests, mes
 
 - **Ticket standard**: the structure (`.istari/ticket-standard.toml`, checked by code) and the quality (`.istari/ticket-standard.md`, judged by the refiner) a ticket must have before work starts. [4.5]
 - **Deviation**: one way a ticket falls short of the standard. [4.5]
-- **Admission**: a ticket that meets the standard moves to `ready`: on its own when a trusted member wrote it, or when a trusted member admits it. [4.5]
+- **Admission**: a ticket that meets the standard moves to `ready`: on its own when a trusted member wrote it (unless the project's `admission` is `"label"`), when an agent created it for an admitted ticket, or when a trusted member admits it. [4.5, 12]
 - **Trusted**: the members whose tickets are admitted without a human; the project's `trusted`, or everyone with write access. [4.5, 12]
 - **Needs**: the tickets a ticket depends on (`- Needs: #12`); it starts only when they are done. [4.1, 4.5]
 - **Size**: `XS`, `S`, `M`, `L`, `XL`; sets the budget and, above `max_size`, requires a split. [4.7]

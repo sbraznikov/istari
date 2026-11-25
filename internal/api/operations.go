@@ -304,6 +304,13 @@ func (s *Server) operations() map[string]operation {
 		}),
 		// Runs (spec sections 7.2 and 9).
 		"run.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.runs.List(ctx) }),
+		// The slots paused because their harness did not start (spec 7.3).
+		"runner.slots": read(func(context.Context, Empty) (any, error) {
+			if s.runner == nil {
+				return nil, nil
+			}
+			return s.runner.Paused(), nil
+		}),
 		"run.show": read(func(ctx context.Context, r RunRequest) (any, error) { return s.runs.Get(ctx, r.ID) }),
 		"run.logs": read(func(ctx context.Context, r RunLogsRequest) (any, error) { return s.runLogs(ctx, r) }),
 		"run.stop": write(okAgain, func(ctx context.Context, r RunActRequest) (any, error) {
@@ -360,7 +367,8 @@ func (s *Server) operations() map[string]operation {
 		// findings and records the report; the verdict is the pipeline's.
 		"review.submit": write(okAgain, func(ctx context.Context, r ReviewSubmitRequest) (any, error) { return s.submitReview(ctx, r) }),
 		// refine.submit is the refiner's structured result (spec 4.5): code
-		// checks and applies it; what it rejects fails the run.
+		// checks and applies it; what it rejects fails the run, unless a later
+		// result of the run is accepted.
 		"refine.submit": write(okAgain, func(ctx context.Context, r RefineSubmitRequest) (any, error) {
 			run, isAgent := runOf(ctx)
 			switch {
@@ -380,6 +388,9 @@ func (s *Server) operations() map[string]operation {
 					return nil, rerr
 				}
 				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+			}
+			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
+				return nil, err
 			}
 			return OK{OK: true}, nil
 		}),

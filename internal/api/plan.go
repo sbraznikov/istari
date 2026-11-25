@@ -107,8 +107,8 @@ type PlanAnswer struct {
 }
 
 // submitPlan checks, records and, for a split, carries out the planner's
-// plan. What code rejects fails the run, except a split child that misses
-// the ticket standard: the planner fixes it in the same run (spec 4.3).
+// plan. What code rejects fails the run, unless a later plan of the run is
+// accepted.
 func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, error) {
 	run, isAgent := runOf(ctx)
 	switch {
@@ -128,6 +128,9 @@ func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, erro
 			return nil, rerr
 		}
 		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+	}
+	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
+		return nil, err
 	}
 	return answer, nil
 }

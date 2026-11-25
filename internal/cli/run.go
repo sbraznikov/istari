@@ -2,8 +2,10 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -166,30 +168,30 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	refine := &cobra.Command{Use: "refine", Short: "For the refiner: submit the result of refining a ticket", Args: Args(cobra.NoArgs)}
 	var file string
 	submit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <result.yaml>", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <result.yaml>]", Short: "Submit the verdict, size, deviations and assumptions (and a rewrite, questions or a decision card)", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
-		data, err := readFileOrStdin(cmd, file)
+		data, err := readResult(cmd, file)
 		if err != nil {
 			return err
 		}
-		var ok api.OK // istari parses and judges it; a malformed result fails the run
+		var ok api.OK // istari parses and judges it; a malformed result fails the run unless it is corrected
 		if err := opts.call(cmd, "refine.submit", key, api.RefineSubmitRequest{Actor: opts.Actor, Result: string(data)}, &ok); err != nil {
 			return err
 		}
 		return render(cmd.OutOrStdout(), opts, ok, []string{"OK"}, [][]string{{"refine result applied"}})
 	})
-	submit.Flags().StringVar(&file, "file", "", "the result, YAML; - reads it from standard input")
+	submit.Flags().StringVar(&file, "file", "", "the result, YAML; - reads it from standard input; without it, $ISTARI_RESULT")
 	refine.AddCommand(submit)
 	plan := &cobra.Command{Use: "plan", Short: "For the planner: submit the plan of a ticket", Args: Args(cobra.NoArgs)}
 	var planFile string
 	planSubmit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <plan.yaml>", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <plan.yaml>]", Short: "Submit the slices, seams, change zone and, if needed, the split", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
-		data, err := readFileOrStdin(cmd, planFile)
+		data, err := readResult(cmd, planFile)
 		if err != nil {
 			return err
 		}
-		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run
+		var answer api.PlanAnswer // istari parses and checks it; a rejected plan fails the run unless it is corrected
 		if err := opts.call(cmd, "plan.submit", key, api.PlanSubmitRequest{Actor: opts.Actor, Plan: string(data)}, &answer); err != nil {
 			return err
 		}
@@ -199,14 +201,14 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, answer, []string{"WHAT", "VALUE"}, rows)
 	})
-	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input")
+	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input; without it, $ISTARI_RESULT")
 	plan.AddCommand(planSubmit)
 	review := &cobra.Command{Use: "review", Short: "For the reviewer: submit the review of a pull request", Args: Args(cobra.NoArgs)}
 	var reviewFile string
 	reviewSubmit := writeCommand(opts, &cobra.Command{
-		Use: "submit --file <review.yaml>", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
+		Use: "submit [--file <review.yaml>]", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
 	}, func(cmd *cobra.Command, _ []string, key string) error {
-		data, err := readFileOrStdin(cmd, reviewFile)
+		data, err := readResult(cmd, reviewFile)
 		if err != nil {
 			return err
 		}
@@ -217,7 +219,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		rows := [][]string{{"accepted", strconv.Itoa(answer.Accepted)}, {"dropped", strconv.Itoa(answer.Dropped)}}
 		return render(cmd.OutOrStdout(), opts, answer, []string{"FINDINGS", "COUNT"}, rows)
 	})
-	reviewSubmit.Flags().StringVar(&reviewFile, "file", "", "the review, YAML; - reads it from standard input")
+	reviewSubmit.Flags().StringVar(&reviewFile, "file", "", "the review, YAML; - reads it from standard input; without it, $ISTARI_RESULT")
 	review.AddCommand(reviewSubmit)
 	pr := &cobra.Command{Use: "pr", Short: "For the implementer: open the pull request", Args: Args(cobra.NoArgs)}
 	var prTitle, prBody string
@@ -247,8 +249,25 @@ func budgetText(w api.Whoami) string {
 	return fmt.Sprintf("$%.2f of $%.2f spent, $%.2f left", w.SpentUSD, w.BudgetUSD, w.BudgetLeftUSD)
 }
 
-// readFileOrStdin reads a file, or standard input for "-": an agent whose
-// tools cannot write files passes its result through a heredoc.
+// readResult reads a role's result: the file given, standard input for "-",
+// or without --file the run's result file, $ISTARI_RESULT (spec section
+// 7.6): the one file the refiner, the planner and the reviewer may write.
+func readResult(cmd *cobra.Command, path string) ([]byte, error) {
+	if path != "" {
+		return readFileOrStdin(cmd, path)
+	}
+	result := os.Getenv("ISTARI_RESULT")
+	if result == "" {
+		return nil, usageError{fmt.Errorf("--file is required (- for standard input) outside a run that has a result file, ISTARI_RESULT")}
+	}
+	data, err := os.ReadFile(result)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("no result in $ISTARI_RESULT (%s): write the result there first, or pass --file", result)
+	}
+	return data, err
+}
+
+// readFileOrStdin reads a file, or standard input for "-".
 func readFileOrStdin(cmd *cobra.Command, path string) ([]byte, error) {
 	if path == "" {
 		return nil, usageError{fmt.Errorf("--file is required (- for standard input)")}

@@ -44,6 +44,10 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 					failed++
 				}
 				checks = append(checks, c)
+				// Who admits tickets in each project (spec 4.5).
+				for _, p := range cfg.Projects {
+					checks = append(checks, check{Name: "admission " + p.Name, OK: true, Detail: string(p.Admission.OrDefault())})
+				}
 			}
 			if cfgErr == nil && len(syncRepos(cfg)) > 0 {
 				c := check{Name: "tracker github", OK: true}
@@ -105,6 +109,21 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 						names = append(names, orDash(o.Ticket)+" "+o.Dir)
 					}
 					c.Detail = fmt.Sprintf("%d orphan(s), remove with istari workspace prune: %s", len(orphans), strings.Join(names, "; "))
+					failed++
+				}
+				checks = append(checks, c)
+			}
+			// Slots whose harness did not start three times in a row
+			// (spec 7.3), as the running daemon sees them.
+			var paused []runner.PausedSlot
+			if err := opts.call(cmd, "runner.slots", "", api.Empty{}, &paused); err == nil {
+				c := check{Name: "runner slots", OK: len(paused) == 0}
+				if !c.OK {
+					var names []string
+					for _, p := range paused {
+						names = append(names, fmt.Sprintf("%s paused until %s: %s", p.Slot, p.Until.Local().Format("15:04:05"), p.Error))
+					}
+					c.Detail = strings.Join(names, "; ")
 					failed++
 				}
 				checks = append(checks, c)

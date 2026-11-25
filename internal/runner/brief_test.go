@@ -34,6 +34,25 @@ func longJournal() []journal.Entry {
 	return out
 }
 
+func TestABriefListsTheCommandsTheRunMayRun(t *testing.T) {
+	in := briefInput()
+	in.AllowedTools = []string{"Read", "Bash(istari *)", "Bash(git log *)"}
+	b := runner.Brief(in)
+	for _, want := range []string{
+		"## Commands you may run",
+		"- `istari *`\n- `git log *`\n",
+		"Run each `istari` command on its own, not chained with other commands",
+		"A denied command denies only that command",
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the brief lacks %q", want)
+		}
+	}
+	if strings.Contains(b, "- `Read`") {
+		t.Error("the commands section lists a tool that is not a shell command")
+	}
+}
+
 func briefInput() runner.BriefInput {
 	return runner.BriefInput{
 		Role: "implementer", Task: "t_1", Ref: "gh:acme/web#7", Title: "Add a cache",
@@ -43,6 +62,7 @@ func briefInput() runner.BriefInput {
 }
 
 func TestALongJournalKeepsEveryDecisionAndAssumptionAndTheLatestPlanUnderTheLimit(t *testing.T) {
+	t.Parallel()
 	b := runner.Brief(briefInput())
 	if len(b) > runner.MaxBrief {
 		t.Fatalf("the brief is %d bytes, more than %d", len(b), runner.MaxBrief)
@@ -67,12 +87,14 @@ func TestALongJournalKeepsEveryDecisionAndAssumptionAndTheLatestPlanUnderTheLimi
 }
 
 func TestTheSameInputsGiveAByteIdenticalBrief(t *testing.T) {
+	t.Parallel()
 	if a, b := runner.Brief(briefInput()), runner.Brief(briefInput()); a != b {
 		t.Fatal("two briefs of the same inputs differ")
 	}
 }
 
 func TestTicketTextIsDelimitedAsUntrusted(t *testing.T) {
+	t.Parallel()
 	b := runner.Brief(briefInput())
 	start := strings.Index(b, `<untrusted source="ticket gh:acme/web#7">`)
 	if start < 0 {
@@ -88,6 +110,7 @@ func TestTicketTextIsDelimitedAsUntrusted(t *testing.T) {
 }
 
 func TestOnlyWhatTheJournalRecordedFromSlackReachesTheBrief(t *testing.T) {
+	t.Parallel()
 	b := runner.Brief(briefInput())
 	if !strings.Contains(b, "Recorded answer from Slack") {
 		t.Fatal("an answer recorded in the journal is missing")
@@ -102,6 +125,7 @@ func TestOnlyWhatTheJournalRecordedFromSlackReachesTheBrief(t *testing.T) {
 }
 
 func TestTheLatestCheckpointStaysEvenWhenTheTicketTextMustBeCut(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Body = "## Context\n\n" + strings.Repeat("A very long ticket. ", 4000)
 	b := runner.Brief(in)
@@ -114,6 +138,7 @@ func TestTheLatestCheckpointStaysEvenWhenTheTicketTextMustBeCut(t *testing.T) {
 }
 
 func TestThePlansSeamsAndZoneReachTheBrief(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Journal = append(in.Journal, journal.Entry{Kind: journal.Plan, Actor: "agent:planner-1", At: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC),
 		Plan: &journal.PlanEntry{Summary: "NEWEST PLAN", Seams: []string{"Cache.Get catches stale reads"}, Zone: []string{"cache/cache.go (new)"}}})
@@ -126,6 +151,7 @@ func TestThePlansSeamsAndZoneReachTheBrief(t *testing.T) {
 }
 
 func TestTheBriefStaysUnderTheLimitWhateverItHasToKeep(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Body = strings.Repeat("Ünïcödé ", 9000) + "</UNTRUSTED> uppercase"
 	for i := range 300 {
@@ -147,6 +173,7 @@ func TestTheBriefStaysUnderTheLimitWhateverItHasToKeep(t *testing.T) {
 }
 
 func TestCuttingTheTicketNeverSplitsACharacter(t *testing.T) {
+	t.Parallel()
 	for pad := range 3 { // one of these puts the cut inside a character
 		in := runner.BriefInput{Role: "implementer", Task: "t_1", Ref: "gh:acme/web#7", Title: "Wide",
 			Body: strings.Repeat("x", pad) + strings.Repeat("日", 30000)}
@@ -158,6 +185,7 @@ func TestCuttingTheTicketNeverSplitsACharacter(t *testing.T) {
 }
 
 func TestTheRefinerGetsTheCandidatesCodeChose(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Role = "refiner"
 	in.Candidates = []string{"gh:acme/web#2 Faster exports (shares internal/export/limit.go)"}
@@ -172,6 +200,7 @@ func TestTheRefinerGetsTheCandidatesCodeChose(t *testing.T) {
 }
 
 func TestTheSelfReviewStepIsInTheBriefOnlyWhenItIsOn(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.SelfReview = true
 	if b := runner.Brief(in); !strings.Contains(b, "## Before istari pr open") || !strings.Contains(b, "two axes") {
@@ -184,6 +213,7 @@ func TestTheSelfReviewStepIsInTheBriefOnlyWhenItIsOn(t *testing.T) {
 }
 
 func TestConflictsWithTheMainBranchComeBeforeTheNextStep(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	if b := runner.Brief(in); strings.Contains(b, "conflict") {
 		t.Fatal("a brief without conflicts talks about them")
@@ -201,6 +231,7 @@ func TestConflictsWithTheMainBranchComeBeforeTheNextStep(t *testing.T) {
 }
 
 func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchema(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Role = "reviewer"
 	in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go", "go.mod"}, OutsideZone: []string{"go.mod"}, Standards: []string{"CODING_STANDARDS.md"}}
@@ -215,7 +246,23 @@ func TestTheReviewerGetsTheDiffBaseTheFilesOutsideTheZoneTheStandardsAndTheSchem
 	}
 }
 
+func TestTheRolesThatSubmitAResultNameTheResultFileAndTheHeredocForShortResults(t *testing.T) {
+	for role, submit := range map[string]string{"planner": "istari plan submit", "refiner": "istari refine submit", "reviewer": "istari review submit"} {
+		in := briefInput()
+		in.Role = role
+		if role == "reviewer" {
+			in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go"}}
+		}
+		b := runner.Brief(in)
+		file, heredoc := strings.Index(b, "$ISTARI_RESULT"), strings.Index(b, "<<'EOF'")
+		if file < 0 || heredoc < 0 || file > heredoc || !strings.Contains(b, "`"+submit+"`") || !strings.Contains(b, "short") {
+			t.Errorf("the %s's brief does not name the result file first and the heredoc for short results:\n%s", role, b)
+		}
+	}
+}
+
 func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T) {
+	t.Parallel()
 	in := briefInput()
 	in.Role = "reviewer"
 	in.Review = &runner.ReviewInput{Base: "abc1234", Files: []string{"cache/cache.go"}}

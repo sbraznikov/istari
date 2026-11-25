@@ -52,6 +52,7 @@ zone: [cache/cache.go, cache/cache_test.go (new)]
 `
 
 func TestAPlanWithoutSeamsOrZoneIsRejected(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"no seams":      "summary: s\nslices: [a]\nzone: [cache/cache.go]\n",
 		"no zone":       "summary: s\nslices: [a]\nseams: [{name: X, catches: c, misses: m}]\n",
@@ -66,12 +67,14 @@ func TestAPlanWithoutSeamsOrZoneIsRejected(t *testing.T) {
 }
 
 func TestAPlanWithAnUnquotedColonIsRefusedWithItsLineAndTheFix(t *testing.T) {
+	t.Parallel()
 	plan := "slices: [a]\nsummary: A cache: in front of the store\n"
 	_, err := runner.ParsePlanResult([]byte(plan))
 	refusesUnquotedColon(t, err, 2)
 }
 
 func TestAZonePathThatDoesNotExistAndIsNotNewIsRejected(t *testing.T) {
+	t.Parallel()
 	f := newPlans(t)
 	res, err := runner.ParsePlanResult([]byte(strings.Replace(goodPlan, "cache/cache.go,", "cache/missing.go,", 1)))
 	if err != nil {
@@ -83,6 +86,7 @@ func TestAZonePathThatDoesNotExistAndIsNotNewIsRejected(t *testing.T) {
 }
 
 func TestAPlanIsJournaledWithItsSeamsAsAnAssumptionWithoutTheGate(t *testing.T) {
+	t.Parallel()
 	f := newPlans(t)
 	res, err := runner.ParsePlanResult([]byte(goodPlan))
 	if err != nil {
@@ -108,6 +112,7 @@ func TestAPlanIsJournaledWithItsSeamsAsAnAssumptionWithoutTheGate(t *testing.T) 
 }
 
 func TestAZoneLargerThanTheSizeRevisesTheSize(t *testing.T) {
+	t.Parallel()
 	f := newPlans(t)
 	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", f.run.Ticket, "XS"); err != nil {
 		t.Fatal(err)
@@ -121,6 +126,7 @@ func TestAZoneLargerThanTheSizeRevisesTheSize(t *testing.T) {
 }
 
 func TestATicketAboveMaxSizeMustBeSplit(t *testing.T) {
+	t.Parallel()
 	f := newPlans(t)
 	if _, err := f.tickets.SetSize(ctx, "agent:refiner-1", f.run.Ticket, "L"); err != nil {
 		t.Fatal(err)
@@ -141,6 +147,7 @@ func TestATicketAboveMaxSizeMustBeSplit(t *testing.T) {
 }
 
 func TestADirectoryInTheZoneIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newPlans(t)
 	res, _ := runner.ParsePlanResult([]byte(strings.Replace(goodPlan, "cache/cache.go,", "cache/,", 1)))
 	if _, err := f.plans.Check(ctx, f.run, res, runner.PlanSettings{MaxSize: "L"}); err == nil || !strings.Contains(err.Error(), "directory") {

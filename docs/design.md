@@ -197,13 +197,17 @@ any unfinished state ──► canceled ──► new (reopen)
 | T10 | `awaiting_approval` | `merge_failed` | `in_progress` | system | a conflict or red CI after the branch is updated. The repeat review is limited to the conflict resolution (section 4.9) |
 | T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
-| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed |
+| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
 | T14 | `canceled` | `reopen` | `new` | human | — |
 | T15 | `ready` | `edited` | `new` | system | the text of the ticket's mandatory sections has changed (compared by hash); editing labels and fixing typos outside these sections does not trigger the check |
 
 `done` is not reopened: a regression is filed as a new ticket with a link to the original one.
 
+**A finished ticket has no open tasks.** The transition to `done` (T11, T12) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
+
 **Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
+
+A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
@@ -211,7 +215,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
-| `waiting_dependency` | during the work it turned out that a ticket that is not yet completed is needed, usually in a neighboring repository | system, when the dependency ticket is completed |
+| `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
 
 **State machine rules.**
@@ -238,7 +242,9 @@ canceled — from any open state
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
+- A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
 
 ### 4.3 Default pipeline
 
@@ -328,6 +334,8 @@ Refiner does not change the meaning of the ticket and does not add requirements 
 **The table's priority.** The priority in the ticket's table becomes its stored priority (section 4.9) when the ticket is admitted and has none yet; the author is recorded as the one who set it. A ticket created with `istari ticket create` gets its table's priority at once. A ticket the planner creates by splitting its ticket gets the parent's priority, unless its own table states another one. From then on the stored priority is the source: a later edit of the table does not change it. When the table and the stored priority differ, the journal says so once, naming both; nothing else happens, and the difference is not a deviation from the standard.
 
 Trusted members are the project's `trusted` list (section 12); a project without the list, or with an empty one, trusts everyone with write access to the repository.
+
+The project key `admission` (section 12) says whether the first condition applies. `"trusted"`, the default, admits a trusted author's ticket on its own. `"label"` admits a ticket only by a trusted member's manual admission or by inheritance from an admitted ticket: a trusted author is not enough, and until a trusted member admits it the ticket is checked against the standard and waits in `new` without a refiner run. Tickets already admitted when the mode changes stay as they are.
 
 **Which tickets inherit the budget.** Admission is always inherited; the budget is not:
 
@@ -757,7 +765,26 @@ claude --print "$(cat brief.md)" \
 | `--permission-mode`, `--allowedTools` | what the agent is allowed to do without confirmation: there is nobody to ask. The implementer also gets the program and subcommand of each command in `[checks]` (`go test ./... -short` → `Bash(go test *)`), read from the main branch, so it can run one test while it writes it |
 | `--max-budget-usd` | the spending cap of the run on the harness side, in addition to the istari budget |
 
+**What the brief says about allowed tools.** In a mode where nobody is asked (`dontAsk`), a command that no rule allows is denied, and a compound command (`a; b | c`) is denied whole when one of its parts is. So the brief has a section "Commands you may run" that lists every shell rule of the run's `--allowedTools` (`istari *`, `git log *`, …). The list is taken from the same allowed tools the harness gets, after the profile and the implementer's check rules are applied, so it cannot drift from the rules. The section also says:
+
+- run each `istari` command on its own, not chained with other commands;
+- a denied command denies only that command: the others, and the `istari` commands that submit the result (`istari review submit`, …) and `istari complete` above all, still work.
+
+The read-only roles (refiner, planner, reviewer) may run `git log`, `git diff`, `git show` and `istari`; the reviewer may also run `git fetch origin main`, so it can see what the main branch has.
+
+**Allowed tools of the roles.** The refiner, the planner and the reviewer change nothing in the repository: they get the reading tools (`Read`, `Grep`, `Glob`), `Bash(istari *)` and git's reading commands, and, as their one write, the run's result file. The Runner gives each of their runs the path `ISTARI_RESULT` (`<data_dir>/runs/<run>/result.yaml`, inside the run's own directory) and allows writing that one path (`Write(//<path>)`, `Edit(//<path>)`). The guard hook refuses a file tool of these roles on any other path, so a settings file in the repository cannot widen it. The implementer keeps its tools and gets no result file.
+
+The result file exists because a heredoc does not carry a long result. Claude Code's shell parser gives up on a long command ("Parser aborted (timeout, resource limit, or over-length)"), and then `Bash(istari *)` is not matched and the command is refused. Measured on 2026-11-25: a heredoc `istari` command of 9,014 and of 9,335 characters was allowed; one of 9,999, 10,000, 10,125 and 13,842 characters was refused, whatever the lines and characters in it.
+
 After that the Runner watches the process: while it is alive, it extends the lease; based on the exit code and on whether the agent called `istari complete`, it marks the task as completed or failed; when the timeout or the budget is exceeded, it stops the process.
+
+**When the harness does not start.** If `Start` returns an error (the program is missing, cannot be executed, or exits before the session begins), no agent has run. The Runner does not fail the task: it waits a few seconds and releases it to `ready` without spending an attempt (section 4.2). Each Runner slot counts its start failures in a row; a successful start resets the count. After three in a row the slot stops claiming tasks for a minute, so it does not hand the same tasks round in a loop, and the daemon log says so with the slot and the error:
+
+```
+runner implementer-2: paused for 1m: the harness did not start: claudecode: start claude: fork/exec /Users/pc/.local/bin/claude: no such file or directory
+```
+
+While a slot is paused, `istari doctor` shows a failing `runner slots` row with the slot, the error and the time it tries again. After the minute the slot claims again; if the harness starts, it works as before.
 
 For another harness only the command and the parsing of its output change. That is what an adapter is: it knows which command starts a specific harness without a terminal, how to pass it the brief and the instruction, and how to read its event stream.
 
@@ -784,7 +811,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - Global concurrency limits: per project, per role, for the whole installation.
-- `istari pause --all` stops handing out tasks; running runs finish gracefully.
+- `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
 ### 7.6 How the implementer and the reviewer work
 
@@ -869,6 +896,8 @@ Review rules:
 
 Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets a hold and waits for a human.
 
+**How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
+
 **Repository requirements.** The Standards axis is the more precise, the more complete `CODING_STANDARDS.md`, `CONTRIBUTING.md`, `GLOSSARY.md` and the ADRs are. `istari doctor` reports which of them are missing.
 
 **Customization.** The role instructions are ordinary files in the repository. They can be edited for the project; the built-in versions serve as a starting point.
@@ -878,7 +907,7 @@ Any finding returns the ticket for rework. For a code smell the implementer eith
 The principle: less model, more deterministic code. The model is non-deterministic, costs money on every call and can be confidently wrong, so four rules apply.
 
 1. **The model does only what requires judgment.** Everything that can be expressed as a rule, a table or a check is done by code.
-2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A rejection fails the run. A submission refused only because the ticket is not yet in the state it belongs to fails nothing: code releases the run's task, and the refusal tells the agent to end its run without a result (section 4.2).
+2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A refusal is recorded in the journal and marks the run as rejected; the agent can correct its result and submit it again within the same run. A later submit of the same kind that code accepts clears the mark, and the run then ends as its `istari complete` says. A run whose mark is not cleared fails, with the reason of its last refusal. A submission refused only because the ticket is not yet in the state it belongs to fails nothing: code releases the run's task, and the refusal tells the agent to end its run without a result (section 4.2).
 3. **The model's claims are verified by code.** "The tests are green", "the change is reversible", "this is a quote from the ticket" are not taken on trust.
 4. **State transitions and irreversible actions are performed only by code**, according to its own rules. The model supplies the input data for them.
 
@@ -960,7 +989,7 @@ Event families: `ticket.*`, `task.*` (created, ready, claimed, renewed, released
 ```
 istari init                          # create a project from a repository, create .istari/
 istari repo add|remove|list          # project repositories
-istari daemon [--config]             # start the daemon; daemon install — as a system service
+istari daemon [--config] [--paused]  # start the daemon (--paused: hand-out paused); daemon install — as a system service
 istari whoami                        # role, ticket, task, permissions (for an agent)
 istari doctor                        # check Slack, tracker, VCS, harnesses
 istari slack setup                   # create the Slack app from a manifest, store the tokens
@@ -1175,6 +1204,7 @@ repo    = "acme/web"
 tickets = { provider = "github" }     # by default — issues of the same repository
 slack   = { work = "#web-agents", decisions = "#web-decisions", owner = "@alex" }
 trusted = ["alex"]                    # admitted without a human (section 4.5); absent — everyone with write access
+admission = "trusted"                 # "trusted" | "label" (section 4.5): "label" — only a trusted member's manual admission; absent — "trusted"
 max_concurrent_runs = 2               # claimed tasks at once in this project; absent — no own limit
 
 [[project]]                           # a service made of two repositories
