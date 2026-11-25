@@ -196,15 +196,15 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var merged func(ctx context.Context, ref string) (bool, error)
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
-	var conflict func(ctx context.Context, ref string) (string, bool, error)
+	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
-		conflict = func(ctx context.Context, ref string) (string, bool, error) {
+		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if errors.Is(err, store.ErrNotFound) {
-				return "", false, nil
+				return pipeline.PRConflict{}, false, nil
 			}
-			return pr.MergeHead, err == nil && pr.Mergeable == vcs.MergeableDirty, err
+			return pipeline.PRConflict{PR: pr.Number, Head: pr.MergeHead}, err == nil && pr.Mergeable == vcs.MergeableDirty, err
 		}
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)

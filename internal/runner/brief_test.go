@@ -234,7 +234,7 @@ func TestAConflictRoundsBriefNamesTheConflictAndItsFiles(t *testing.T) {
 	t.Parallel()
 	in := briefInput() // a long journal: the brief has to leave entries out
 	in.Journal = append(in.Journal, journal.Entry{Kind: journal.Note, Actor: "system", At: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC),
-		Text: "the pull request is in conflict with the main branch at h1: the ticket returns for rework (T10, merge_failed)"})
+		Text: "pull request #7 is in conflict with the main branch at h1: the ticket returns for rework (T10, merge_failed)"})
 	in.Conflicts = []string{"internal/vcs/watch.go"} // what MergeMain found
 	b := runner.Brief(in)
 	first, next := strings.Index(b, "## First: resolve the merge conflicts"), strings.Index(b, "## Next step")

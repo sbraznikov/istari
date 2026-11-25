@@ -870,10 +870,11 @@ func TestAReviewDoneWithoutAReportGivesNoVerdict(t *testing.T) {
 }
 
 // conflictFixture is an engine whose PR watch reports the pull requests in
-// dirty (ticket → head) in conflict with main, with its ticket in_review.
+// dirty (ticket → pull request and head) in conflict with main, with its
+// ticket in_review.
 type conflictFixture struct {
 	*engineFixture
-	dirty   map[string]string
+	dirty   map[string]pipeline.PRConflict
 	ci      map[string]string
 	reports reports
 	journal *journal.Journal
@@ -881,11 +882,14 @@ type conflictFixture struct {
 
 func inReviewWithConflicts(t *testing.T, defaults config.Defaults) *conflictFixture {
 	t.Helper()
-	c := &conflictFixture{dirty: map[string]string{}, ci: map[string]string{}, reports: reports{}}
+	c := &conflictFixture{dirty: map[string]pipeline.PRConflict{}, ci: map[string]string{}, reports: reports{}}
 	c.engineFixture = newEngine(t, defaults, nil)
 	c.journal = journal.New(nil, c.store, nil)
 	checks := func(_ context.Context, ref string) (string, bool) { s, ok := c.ci[ref]; return s, ok }
-	conflict := func(_ context.Context, ref string) (string, bool, error) { h, ok := c.dirty[ref]; return h, ok, nil }
+	conflict := func(_ context.Context, ref string) (pipeline.PRConflict, bool, error) {
+		pr, ok := c.dirty[ref]
+		return pr, ok, nil
+	}
 	c.engine = pipeline.NewEngine(c.tasks, c.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Review: c.reports.of, Journal: c.journal, Conflict: conflict})
 	c.readyTicket(t, ref)
 	c.reconcile(t)
@@ -953,7 +957,7 @@ func (c *conflictFixture) taskCount(t *testing.T) int {
 
 // assertConflictRound checks that the ticket returned by merge_failed with
 // a ready implement in round 2 after the completed one, a journal note that
-// names the head once, and that reconciling again changes nothing.
+// names the pull request and the head once, and that reconciling again changes nothing.
 func (c *conflictFixture) assertConflictRound(t *testing.T, head string) {
 	t.Helper()
 	if st, tr := c.state(t, ref), c.lastTrigger(t); st != core.TicketInProgress || tr != "merge_failed" {
@@ -963,8 +967,8 @@ func (c *conflictFixture) assertConflictRound(t *testing.T, head string) {
 	if pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady || len(impl.Needs) != 1 || pipeline.RoundOf(core.Task{ID: impl.Needs[0]}) != 1 {
 		t.Fatalf("implement = %+v (round %d), want a ready round 2 after round 1's", impl, pipeline.RoundOf(impl))
 	}
-	if notes := c.notesNaming(t, head); len(notes) != 1 {
-		t.Fatalf("notes naming %s = %q, want one", head, notes)
+	if notes := c.notesNaming(t, head); len(notes) != 1 || !strings.Contains(notes[0], "pull request #7") {
+		t.Fatalf("notes naming %s = %q, want one that names pull request #7", head, notes)
 	}
 	tasks := c.taskCount(t)
 	c.reconcile(t)
@@ -981,7 +985,7 @@ func TestAPullRequestInConflictReturnsAnAwaitingApprovalTicketForRework(t *testi
 		t.Fatalf("the ticket is %s without a conflict, want awaiting_approval", st)
 	}
 	approve, merge := c.stage(t, ref, "approve"), c.stage(t, ref, "merge")
-	c.dirty[ref] = "h1"
+	c.dirty[ref] = pipeline.PRConflict{PR: 7, Head: "h1"}
 	c.reconcile(t)
 	for _, id := range []string{approve.ID, merge.ID} {
 		if task, _ := c.tasks.Get(ctx, id); task.State != core.TaskCanceled {
@@ -995,7 +999,7 @@ func TestAPullRequestInConflictReturnsAnInReviewTicketAndEndsItsReview(t *testin
 	t.Parallel()
 	c := inReviewWithConflicts(t, config.Defaults{})
 	review := c.stage(t, ref, "review")
-	c.dirty[ref] = "h1"
+	c.dirty[ref] = pipeline.PRConflict{PR: 7, Head: "h1"}
 	c.reconcile(t)
 	if task, _ := c.tasks.Get(ctx, review.ID); task.State != core.TaskCanceled {
 		t.Fatalf("the open review is %s, want canceled", task.State)
@@ -1006,7 +1010,7 @@ func TestAPullRequestInConflictReturnsAnInReviewTicketAndEndsItsReview(t *testin
 func TestAConflictRoundDoesNotCountAgainstMaxReviewRounds(t *testing.T) {
 	t.Parallel()
 	c := inReviewWithConflicts(t, config.Defaults{MaxReviewRounds: 2})
-	c.dirty[ref] = "h1"
+	c.dirty[ref] = pipeline.PRConflict{PR: 7, Head: "h1"}
 	c.reconcile(t) // round 2, a conflict round
 	delete(c.dirty, ref)
 	c.finish(t, ref, "implement", "agent:implementer-1") // the conflict is resolved and pushed

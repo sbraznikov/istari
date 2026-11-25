@@ -54,7 +54,7 @@ type EngineOptions struct {
 	// pull request in conflict with its base at istari's head; a ticket in
 	// review or awaiting approval then returns for rework through T10 (spec
 	// 4.8). nil: conflicts are not watched.
-	Conflict func(ctx context.Context, ref string) (head string, dirty bool, err error)
+	Conflict func(ctx context.Context, ref string) (pr PRConflict, dirty bool, err error)
 	// Journal is where the engine notes what it does not act on: a ticket
 	// that got open needs after its pull request was opened (spec 4.1).
 	// nil: nothing is noted.
@@ -459,11 +459,20 @@ func (e *Engine) needOpen(ctx context.Context, tk core.Ticket) bool {
 	return slices.ContainsFunc(tk.Needs, func(n string) bool { return e.state(ctx, n) != core.TicketDone })
 }
 
+// PRConflict is the PR watch's reading of a ticket's pull request that
+// GitHub reports in conflict with its base: the pull request's number and
+// the head GitHub judged.
+type PRConflict struct {
+	PR   int
+	Head string
+}
+
 // conflictNote is the journal note on a ticket whose pull request GitHub
-// reports in conflict with main at head.
-func conflictNote(head string) string {
-	return fmt.Sprintf("the pull request is in conflict with the main branch at %s: the ticket returns for rework (T10, merge_failed). "+
-		"The implement run merges the main branch and resolves the conflict first; the review of this round looks only at the conflict resolution (spec 4.8)", head)
+// reports in conflict with main. GitHub names no files: the implement run
+// journals those the merge finds.
+func conflictNote(c PRConflict) string {
+	return fmt.Sprintf("pull request #%d is in conflict with the main branch at %s: the ticket returns for rework (T10, merge_failed). "+
+		"The implement run merges the main branch and resolves the conflict first; the review of this round looks only at the conflict resolution (spec 4.8)", c.PR, c.Head)
 }
 
 // conflict returns a ticket in review or awaiting approval for rework when
@@ -475,7 +484,7 @@ func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returne
 	if e.opts.Conflict == nil || r.n == 0 { // a ticket without the engine's tasks is not moved on
 		return false, nil
 	}
-	head, dirty, err := e.opts.Conflict(ctx, tk.Ref)
+	pr, dirty, err := e.opts.Conflict(ctx, tk.Ref)
 	if err != nil {
 		return false, err
 	}
@@ -485,7 +494,7 @@ func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returne
 		if !dirty {
 			return false, nil
 		}
-		handled, err := e.noted(ctx, tk.Ref, conflictNote(head))
+		handled, err := e.noted(ctx, tk.Ref, conflictNote(pr))
 		if err != nil || handled {
 			return false, err
 		}
@@ -494,7 +503,7 @@ func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returne
 		}
 	}
 	if dirty {
-		if err := e.noteOnce(ctx, tk.Ref, conflictNote(head)); err != nil {
+		if err := e.noteOnce(ctx, tk.Ref, conflictNote(pr)); err != nil {
 			return false, err
 		}
 	}
