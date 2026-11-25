@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,7 +102,8 @@ func NewPlans(ws *Workspaces, j *journal.Journal, k *core.Tickets, sizer Sizer) 
 // Check validates a plan against the repository and the ticket (spec 4.9):
 // the zone's paths exist on the main branch or are marked new; the number of
 // files matches the size, else the size is revised; a ticket larger than
-// max_size must be split.
+// max_size must be split. A split's children get the table of the standard
+// and must meet it before any is created (spec 4.3).
 func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettings) (PlanResult, error) {
 	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
@@ -157,8 +159,16 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 			return PlanResult{}, err
 		}
 		for i, pt := range split.Tickets {
-			split.Tickets[i].Body = withTable(pt, priority, ref.Repo)
-			if err := checkChild(ctx, std, run.Dir, ref.Repo, split.Tickets[i]); err != nil {
+			repo := ref.Repo
+			if pt.Repo != "" {
+				repo = pt.Repo
+			}
+			split.Tickets[i].Body = withTable(pt, priority, repo)
+			root := "" // the run's checkout is of the parent's repository
+			if strings.EqualFold(repo, ref.Repo) {
+				root = run.Dir
+			}
+			if err := checkChild(ctx, standard.Checker{Standard: std, Repo: repo, Root: root}, split.Tickets[i]); err != nil {
 				return PlanResult{}, err
 			}
 		}
@@ -170,24 +180,19 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 // standardOf is the ticket standard of the checkout in dir: its
 // .istari/ticket-standard.toml, else the default.
 func standardOf(dir string) (standard.Standard, error) {
+	if dir == "" {
+		return standard.Default(), nil
+	}
 	path := filepath.Join(dir, ".istari", "ticket-standard.toml")
-	if _, err := os.Stat(path); dir == "" || err != nil {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return standard.Default(), nil
 	}
 	return standard.Load(path)
 }
 
 // checkChild checks a split child with its table against the structural
-// standard, as istari ticket check does (spec 4.3 and 4.5). Its paths are
-// checked in the run's checkout when the child is of the parent's repository.
-func checkChild(ctx context.Context, std standard.Standard, dir, parentRepo string, pt tickets.PlanTicket) error {
-	checker := standard.Checker{Standard: std, Repo: parentRepo}
-	if pt.Repo != "" {
-		checker.Repo = pt.Repo
-	}
-	if strings.EqualFold(checker.Repo, parentRepo) {
-		checker.Root = dir
-	}
+// standard, as istari ticket check does (spec 4.3 and 4.5).
+func checkChild(ctx context.Context, checker standard.Checker, pt tickets.PlanTicket) error {
 	got, err := checker.Check(ctx, standard.Draft{Title: pt.Title, Body: pt.Body, Labels: pt.Labels})
 	if err != nil {
 		return err
@@ -207,12 +212,9 @@ func checkChild(ctx context.Context, std standard.Standard, dir, parentRepo stri
 var ErrChildStandard = errors.New("fix the child and submit the plan again")
 
 // withTable is a split child's body with the table of the ticket standard
-// at its end (spec 4.3): its type and size, the parent's priority and
-// repository unless the child names another.
+// at its end (spec 4.3): its type and size, the parent's priority and its
+// repository.
 func withTable(pt tickets.PlanTicket, priority, repo string) string {
-	if pt.Repo != "" {
-		repo = pt.Repo
-	}
 	return strings.TrimRight(pt.Body, "\n") + "\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n" +
 		fmt.Sprintf("| %s | %s | %s | `%s` |\n", pt.Type, pt.Size, priority, repo)
 }

@@ -247,7 +247,7 @@ func TestASplitWithAChildThatMissesTheStandardIsRefusedBeforeAnyIssue(t *testing
 			issues := f.gh.IssueCount()
 			good := tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "bug", Size: "S"}
 			_, err := f.plans.Check(ctx, f.run, splitPlan(good, tc.child), runner.PlanSettings{MaxSize: "L"})
-			if err == nil || !strings.Contains(err.Error(), "child b") || !strings.Contains(err.Error(), tc.named) || strings.Contains(err.Error(), "child a") {
+			if err == nil || !strings.Contains(err.Error(), "child b ") || !strings.Contains(err.Error(), tc.named) || strings.Contains(err.Error(), "child a ") {
 				t.Fatalf("Check = %v, want child b refused with its %s named", err, tc.named)
 			}
 			if f.gh.IssueCount() != issues {

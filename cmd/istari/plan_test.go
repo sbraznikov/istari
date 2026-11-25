@@ -34,6 +34,11 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	if code != 0 || !strings.Contains(out, refs["top"]+"  new") || !strings.Contains(out, "needs "+refs["base"]+"  new") {
 		t.Fatalf("ticket deps: exit %d %s\n%s", code, stderr, out)
 	}
+	other := filepath.Join(t.TempDir(), "other.yaml")
+	os.WriteFile(other, []byte("tickets:\n  - key: away\n    title: Elsewhere\n    repo: acme/other\n"), 0o644)
+	if _, stderr, code := d.cli(t, "ticket", "create", "--file", other); code == 0 || !strings.Contains(stderr, "acme/other is no repository istari syncs") || gh.IssueCount() != 2 {
+		t.Fatalf("a ticket in a repository istari does not sync: exit %d, %d issues\n%s", code, gh.IssueCount(), stderr)
+	}
 	md := filepath.Join(t.TempDir(), "one.md")
 	os.WriteFile(md, []byte("# A single ticket\n\n## Context\n\nOne.\n"), 0o644)
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
