@@ -166,11 +166,13 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	for _, t := range all {
 		byRef[t.Ref] = t
 	}
-	// The budget is the first ticket's of a chain of budget_of.
+	// The budget is the first ticket's of a chain of budget_of. The chain
+	// stops at a child of a split: it has a budget of its own (spec section
+	// 4.5).
 	root := func(t core.Ticket) core.Ticket {
 		for range len(all) + 1 {
 			parent, ok := byRef[t.BudgetOf]
-			if t.BudgetOf == "" || !ok {
+			if t.BudgetOf == "" || !ok || slices.Contains(parent.Children, t.Ref) {
 				break
 			}
 			t = parent
@@ -185,7 +187,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 		}
 	}
 	// A ticket that shares a budget has the budget of the one it shares
-	// (spec section 4.5: it inherits the parent's budget).
+	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
 	if size == "" {
 		size = "M"
@@ -307,7 +309,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) {
 		return
 	}
 	if capped && budget <= 0 {
-		if err := r.tasks.Block(bg, lease, blockBudget); err != nil {
+		if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
 			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
 		}
 		return
@@ -485,7 +487,7 @@ loop:
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
 		case <-over:
 			reason := fmt.Sprintf("the run budget of $%.2f is spent", run.BudgetUSD)
-			stopWith(ending{reason: reason, outcome: func(c context.Context, l core.Lease) error { return r.tasks.Block(c, l, blockBudget) }, save: true})
+			stopWith(ending{reason: reason, outcome: r.blockForBudget(tk.Ref), save: true})
 		case who := <-stop:
 			reason := "stopped by " + who
 			stopWith(ending{reason: reason, outcome: r.failWith(reason), save: true})
@@ -540,6 +542,21 @@ func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (re
 
 func (r *Runner) failWith(reason string) func(context.Context, core.Lease) error {
 	return func(ctx context.Context, l core.Lease) error { return r.tasks.Fail(ctx, l, reason) }
+}
+
+// blockForBudget blocks the task as budget_exceeded and holds its ticket for
+// the same reason, so the block shows on the ticket (spec sections 4.1, 7.5).
+// A hold that cannot be set is logged; the block stands.
+func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease) error {
+	return func(ctx context.Context, l core.Lease) error {
+		if err := r.tasks.Block(ctx, l, blockBudget); err != nil {
+			return err
+		}
+		if _, err := r.tickets.SetHold(ctx, "system", ticket, blockBudget); err != nil {
+			log.Printf("istari: runner: hold %s: %v", ticket, err)
+		}
+		return nil
+	}
 }
 
 // stream writes the harness's events to the transcript and the log, and

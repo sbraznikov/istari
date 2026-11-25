@@ -44,6 +44,9 @@ var transitionTable = []struct {
 	{"T9", core.TicketAwaitingApproval, "changes_requested", core.TicketInProgress},
 	{"T10", core.TicketAwaitingApproval, "merge_failed", core.TicketInProgress},
 	{"T11", core.TicketAwaitingApproval, "merged", core.TicketDone},
+	{"T11", core.TicketInProgress, "merged", core.TicketDone},
+	{"T11", core.TicketInReview, "merged", core.TicketDone},
+	{"T11", core.TicketCanceled, "merged", core.TicketDone},
 	{"T12", core.TicketInProgress, "children_done", core.TicketDone},
 	{"T13", core.TicketNew, "cancel", core.TicketCanceled},
 	{"T13", core.TicketReady, "cancel", core.TicketCanceled},
@@ -169,7 +172,7 @@ func TestEveryPairOutsideTheTableIsRejectedAndAppendsNothing(t *testing.T) {
 	}
 }
 
-func TestCanceledLeavesOnlyThroughReopen(t *testing.T) {
+func TestACanceledTicketReopensToNew(t *testing.T) {
 	t.Parallel()
 	tickets, _ := newTickets(t, nil)
 	bringTo(t, tickets, core.TicketCanceled)

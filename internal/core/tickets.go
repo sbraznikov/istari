@@ -78,8 +78,9 @@ type Ticket struct {
 	// Needs are the tickets this one waits for (spec section 4.9), as its
 	// text names them.
 	Needs []string `json:"needs,omitempty"`
-	// BudgetOf is the ticket whose budget this one shares: it was created by
-	// an agent at work on that ticket (spec section 4.5).
+	// BudgetOf is the ticket this one was created from by an agent at work
+	// on it, and whose admission it inherits. It shares that ticket's budget
+	// unless it is one of that ticket's Children (spec section 4.5).
 	BudgetOf string `json:"budget_of,omitempty"`
 	// Children are the tickets a split made of this one (T5); it is done
 	// when they all are (T12).
@@ -112,6 +113,13 @@ var transitions = func() []transition {
 		{"T10", TicketAwaitingApproval, "merge_failed", TicketInProgress},
 		{"T11", TicketAwaitingApproval, "merged", TicketDone},
 		{"T12", TicketInProgress, "children_done", TicketDone},
+		// T11 also finishes a ticket whose PR a human merged before the
+		// pipeline got to awaiting_approval, and repairs one canceled because
+		// that merge closed its issue (spec 4.8). After T12, so that
+		// TriggerTo(in_progress, done) stays children_done.
+		{"T11", TicketInProgress, "merged", TicketDone},
+		{"T11", TicketInReview, "merged", TicketDone},
+		{"T11", TicketCanceled, "merged", TicketDone},
 		{"T14", TicketCanceled, "reopen", TicketNew},
 		{"T15", TicketReady, "edited", TicketNew},
 	}
