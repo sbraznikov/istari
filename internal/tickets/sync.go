@@ -1062,24 +1062,26 @@ func (s *Syncer) SetPriority(ctx context.Context, actor, refText, priority strin
 func (s *Syncer) Created(ctx context.Context, refs []Ref, budgetOf string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inherit := false
+	var parent core.Ticket
 	if budgetOf != "" {
-		parent, err := s.tickets.Get(ctx, budgetOf)
-		if err != nil {
+		var err error
+		if parent, err = s.tickets.Get(ctx, budgetOf); err != nil {
 			return err
 		}
-		inherit = parent.State != core.TicketNew && parent.State != core.TicketCanceled
 	}
 	var errs []error
 	for _, ref := range refs {
-		if err := s.created(ctx, ref, budgetOf, inherit); err != nil {
+		if err := s.created(ctx, ref, parent); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit bool) error {
+// created mirrors one ticket istari created; parent is the ticket an agent
+// was working on, zero for none. The ticket takes its table's priority at
+// once, or the parent's when the table states none (spec 4.5).
+func (s *Syncer) created(ctx context.Context, ref Ref, parent core.Ticket) error {
 	repo, ok := s.repoOf(ref)
 	if !ok {
 		return nil // a repository istari does not sync
@@ -1088,10 +1090,28 @@ func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit 
 	if err != nil {
 		return err
 	}
+	conf, err := s.conformance(ctx, repo, t)
+	if err != nil {
+		return err
+	}
+	inherit := parent.Ref != "" && parent.State != core.TicketNew && parent.State != core.TicketCanceled
+	nt := core.NewTicket{Ref: ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL}
 	if inherit {
-		_, err := s.tickets.CreateWith(ctx, "human:"+t.Author, core.NewTicket{Ref: ref.String(), Project: repo.Project, Title: t.Title, Author: t.Author, URL: t.URL, BudgetOf: budgetOf})
-		var ce *core.Error
-		if err != nil && !(errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket) {
+		nt.BudgetOf = parent.Ref
+	}
+	tk, err := s.tickets.CreateWith(ctx, "human:"+t.Author, nt)
+	var ce *core.Error
+	switch {
+	case errors.As(err, &ce) && ce.Code == core.CodeInvalidTicket:
+		// istari has it already
+	case err != nil:
+		return err
+	default:
+		own := conf
+		if own.Priority == "" {
+			own.Priority = parent.Priority
+		}
+		if err := s.tablePriority(ctx, &syncing{repo: repo, t: t, tk: tk}, own); err != nil {
 			return err
 		}
 	}
@@ -1102,13 +1122,11 @@ func (s *Syncer) created(ctx context.Context, ref Ref, budgetOf string, inherit 
 	if !inherit {
 		return nil
 	}
-	tk, err := s.tickets.Get(ctx, ref.String())
-	if err != nil || tk.State != core.TicketNew {
+	if tk, err = s.tickets.Get(ctx, ref.String()); err != nil || tk.State != core.TicketNew {
 		return err
 	}
-	conf, err := s.conformance(ctx, repo, t)
-	if err != nil || len(conf.Deviations) > 0 {
-		return err // it waits for the refiner like any other
+	if len(conf.Deviations) > 0 {
+		return nil // it waits for the refiner like any other
 	}
 	base, version, err := s.base(ctx, ref.String())
 	if err != nil {
