@@ -50,6 +50,7 @@ func TestScaffoldWritesValidTOMLAndKeepsExistingFiles(t *testing.T) {
 }
 
 func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
+	t.Parallel()
 	for _, lang := range []map[string]string{{"go.mod": "module x\n"}, {}} {
 		root := tree(t, lang)
 		if _, err := project.Scaffold(root); err != nil {
@@ -66,10 +67,17 @@ func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pipeline.toml (%v) does not load: %v", lang, err)
 		}
+		review := false
 		for _, task := range p.Expand(pipeline.Settings{}) {
-			if task.Stage == "review" && !slices.Contains(task.Needs, "verify") {
-				t.Fatalf("review needs %v, want verify among them", task.Needs)
+			if task.Stage == "review" {
+				review = true
+				if !slices.Contains(task.Needs, "verify") {
+					t.Fatalf("review needs %v, want verify among them", task.Needs)
+				}
 			}
+		}
+		if !review {
+			t.Fatalf("pipeline.toml (%v) has no review task, want one", lang)
 		}
 	}
 }

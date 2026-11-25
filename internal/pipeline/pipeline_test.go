@@ -104,6 +104,7 @@ func TestAnUnknownRoleOrACycleIsRejectedWithItsLine(t *testing.T) {
 }
 
 func TestAReviewStageThatDoesNotNeedVerifyIsRefusedWithTheFix(t *testing.T) {
+	t.Parallel()
 	p, err := pipeline.Parse([]byte(`[[stage]]
 name = "implement"
 role = "implementer"
@@ -127,6 +128,7 @@ needs = ["implement"]
 }
 
 func TestThisRepositorysPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("../../.istari/pipeline.toml")
 	if err != nil {
 		t.Fatal(err)
