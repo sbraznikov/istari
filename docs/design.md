@@ -237,6 +237,7 @@ canceled — from any open state
 - The lease is 5 minutes by default; Runner renews it at every third of the term.
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
+- An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task that it was handed out before its ticket was ready, with the ticket's state.
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 
 ### 4.3 Default pipeline
@@ -847,7 +848,7 @@ Any finding returns the ticket for rework. For a code smell the implementer eith
 The principle: less model, more deterministic code. The model is non-deterministic, costs money on every call and can be confidently wrong, so four rules apply.
 
 1. **The model does only what requires judgment.** Everything that can be expressed as a rule, a table or a check is done by code.
-2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it.
+2. **The model's result is structured data.** A plan, a review report, a decision card and a ticket check result are submitted against a schema, and code rejects whatever does not conform to it. A rejection fails the run. A submission refused only because the ticket is not yet in the state it belongs to fails nothing: code releases the run's task, and the refusal tells the agent to end its run without a result (section 4.2).
 3. **The model's claims are verified by code.** "The tests are green", "the change is reversible", "this is a quote from the ticket" are not taken on trust.
 4. **State transitions and irreversible actions are performed only by code**, according to its own rules. The model supplies the input data for them.
 
