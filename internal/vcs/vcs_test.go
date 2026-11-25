@@ -512,3 +512,29 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 		t.Fatalf("vcs.checks events = %v, want the failure once", got)
 	}
 }
+
+func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	entries, _ := j.Stored(ctx, ref)
+	if len(entries) != 1 || entries[0].CI == nil || !strings.Contains(entries[0].CI.Error, "404") || entries[0].CI.Commit != "abc123" {
+		t.Fatalf("journal = %+v, want a ci entry that says the log could not be read and why", entries)
+	}
+	if !strings.Contains(journal.Text(entries[0]), "could not be read") {
+		t.Fatalf("entry text = %s", journal.Text(entries[0]))
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure, so rework starts", got)
+	}
+}
+
+func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetStatus("def456", "failure")
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "def456"); err == nil || !strings.Contains(err.Error(), "commit status") {
+		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
+	}
+}

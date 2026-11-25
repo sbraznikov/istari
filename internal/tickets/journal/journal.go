@@ -268,9 +268,11 @@ func Text(e Entry) string {
 	case CI:
 		c := e.CI
 		s := "**CI failure**" + by + ": " + c.Check + " on `" + c.Commit + "`" + linkLine(c.URL)
-		switch {
-		case c.Error != "":
+		if c.Error != "" {
 			s += "\n\nThe log could not be read: " + c.Error
+		}
+		switch {
+		case c.Output == "":
 		case c.Cut:
 			s += "\n\nThe end of the output, cut to its last part:\n\n" + fence(c.Output)
 		default:
