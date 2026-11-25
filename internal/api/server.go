@@ -108,7 +108,15 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	if opts.Tracker != nil {
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent})
+		var jt journal.Tracker
+		if t, ok := opts.Tracker.(journal.Tracker); ok {
+			jt = t
+		}
+		j := journal.New(jt, ns, opts.Clock)
+		note := func(ctx context.Context, ref tickets.Ref, text string) error {
+			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
@@ -182,9 +190,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		entries, err := journal.New(nil, ns, nil).Stored(ctx, r)
 		return slices.ContainsFunc(entries, func(e journal.Entry) bool { return e.Kind == journal.Plan }), err
 	}
+	var merged func(ctx context.Context, ref string) (bool, error)
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	if srv.watch != nil {
+		merged = srv.watch.SeenMerged
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if err != nil || pr.Checks == "" {
@@ -201,7 +211,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			return opts.VCS.MarkReady(ctx, pr.Repo, pr.Number)
 		}
 	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
@@ -297,6 +307,19 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 		}
 	}
 	return out
+}
+
+// merged tells sync whether a ticket's pull request is merged (spec 4.8):
+// fresh asks GitHub while the PR watch has not seen it closed yet.
+func (s *Server) merged(ctx context.Context, ref string, fresh bool) (bool, error) {
+	switch {
+	case s.watch == nil:
+		return false, nil
+	case fresh:
+		return s.watch.Merged(ctx, ref)
+	default:
+		return s.watch.SeenMerged(ctx, ref)
+	}
 }
 
 // RunVCS polls the tracked pull requests every interval until ctx ends: their
