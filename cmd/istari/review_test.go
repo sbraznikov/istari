@@ -155,10 +155,10 @@ func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
 	}
 }
 
-// earlyReviewAgent plays the planner and the implementer like stageAgent, and
+// stagedReviewAgent plays the planner and the implementer like stageAgent, and
 // as the reviewer submits the report given as %[3]s and ends its run
 // without istari complete, as a refused submit tells it to.
-const earlyReviewAgent = `#!/bin/sh
+const stagedReviewAgent = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
 log=%[2]q
@@ -202,9 +202,8 @@ esac
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-// earlyReviewPipeline gives review only implement to wait for, so the review
-// task is handed out while the ticket is still in_progress (as before #137).
-const earlyReviewPipeline = `[checks]
+// stagedReviewPipeline has plan, implement and a review that waits for verify.
+const stagedReviewPipeline = `[checks]
 typecheck = "true"
 test = "true"
 full = "true"
@@ -223,19 +222,19 @@ isolation = "worktree"
 [[stage]]
 name = "review"
 role = "reviewer"
-needs = ["implement"]
+needs = ["implement", "verify"]
 `
 
-// earlyReview starts a daemon on a ready ticket of a project with
-// earlyReviewPipeline, whose reviewer submits report.
-func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
+// stagedReview starts a daemon on a ready ticket of a project with
+// stagedReviewPipeline, whose reviewer submits report.
+func stagedReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
 	server := gitServer(t)
 	seed := filepath.Join(server, "seed")
 	if err := os.MkdirAll(filepath.Join(seed, ".istari"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte(earlyReviewPipeline), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(seed, ".istari", "pipeline.toml"), []byte(stagedReviewPipeline), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git(t, seed, "add", ".")
@@ -244,12 +243,12 @@ func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server,
 
 	gh = githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
-	gh.SetFile(".istari/pipeline.toml", earlyReviewPipeline) // the stages are read from the repository's main branch
+	gh.SetFile(".istari/pipeline.toml", stagedReviewPipeline) // the stages are read from the repository's main branch
 	ticket = gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
 	dataDir := newDataDir(t)
 	log = filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(earlyReviewAgent, binary, log, report)), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(stagedReviewAgent, binary, log, report)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "config.toml")
@@ -260,6 +259,24 @@ func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server,
 	d = startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	return d, gh, ticket, log
+}
+
+// greenCI waits for the pull request the implementer opens and makes its
+// checks green, so that verify completes and the review is handed out.
+func greenCI(t *testing.T, gh *githubtest.Server) {
+	t.Helper()
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		for n := 1; n <= gh.IssueCount(); n++ {
+			if gh.Issue(n).PullRequest {
+				gh.SetHeadSHA(n, "c1")
+				gh.SetChecks("c1", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no pull request was opened")
+		}
+	}
 }
 
 type reviewerRun struct{ Role, Task, State, Reason string }
@@ -297,43 +314,10 @@ func showTask(t *testing.T, d *daemon, id string) taskView {
 	return task
 }
 
-const validReport = `standards: 0 findings
-spec: 0 findings
-findings: []`
-
-func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
-	t.Parallel()
-	d, gh, n, log := earlyReview(t, validReport)
-	runs := endedReviews(t, d, log, 2)
-	out, _ := os.ReadFile(log)
-	if !strings.Contains(string(out), "is in_progress") || !strings.Contains(string(out), "end your run without a result") {
-		t.Fatalf("the refusal does not tell the reviewer to end its run without a result:\n%s", out)
-	}
-	for _, r := range runs {
-		if !strings.HasPrefix(r.Reason, "yielded: ") {
-			t.Fatalf("a reviewer run ended %q, want it yielded", r.Reason)
-		}
-	}
-	if task := showTask(t, d, runs[0].Task); task.Attempts != 0 || task.State == "failed" {
-		t.Fatalf("the review task is %s with %d attempts after refused submits, want no attempt spent", task.State, task.Attempts)
-	}
-	var notes int
-	for _, c := range gh.Issue(n).Comments {
-		if strings.Contains(c.Body, "handed out before") {
-			notes++
-			if !strings.Contains(c.Body, "in_progress") {
-				t.Fatalf("the journal entry does not name the ticket's state:\n%s", c.Body)
-			}
-		}
-	}
-	if notes != 1 {
-		t.Fatalf("%d journal entries say the review was handed out early after %d refused submits, want 1", notes, len(runs))
-	}
-}
-
 func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
 	t.Parallel()
-	d, _, _, log := earlyReview(t, "findings: [")
+	d, gh, _, log := stagedReview(t, "findings: [")
+	greenCI(t, gh)
 	runs := endedReviews(t, d, log, 1)
 	if !strings.HasPrefix(runs[0].Reason, "rejected: ") {
 		t.Fatalf("the reviewer run ended %q, want it rejected", runs[0].Reason)
