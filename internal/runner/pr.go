@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -43,17 +44,39 @@ func CheckDescription(body string) error {
 	return nil
 }
 
+// fullRed is what the journal says of a pr open stopped by red full checks.
+const fullRed = "the full checks fail: the pull request is not opened"
+
+// lastCheckpoint returns the last checkpoint entry of a journal that match
+// accepts, or nil.
+func lastCheckpoint(entries []journal.Entry, match func(*journal.CheckpointEntry) bool) *journal.CheckpointEntry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if cp := entries[i].Checkpoint; cp != nil && match(cp) {
+			return cp
+		}
+	}
+	return nil
+}
+
+// anyCheckpoint accepts every checkpoint entry.
+func anyCheckpoint(*journal.CheckpointEntry) bool { return true }
+
+// shortCommit is the form of a commit the journal keeps: its first 12
+// characters, so that entries compare by the same string.
+func shortCommit(sha string) string { return sha[:min(12, len(sha))] }
+
 // PullRequests opens the pull requests of tickets (spec section 7.7: opening
 // is gated by the full check suite run by code).
 type PullRequests struct {
-	cp     *Checkpoints
-	client *vcs.Client
-	watch  *vcs.Watcher
+	cp      *Checkpoints
+	client  *vcs.Client
+	watch   *vcs.Watcher
+	tickets *core.Tickets // holds a ticket whose main branch fails its checks too
 }
 
 // NewPullRequests returns the opener.
-func NewPullRequests(cp *Checkpoints, c *vcs.Client, w *vcs.Watcher) *PullRequests {
-	return &PullRequests{cp: cp, client: c, watch: w}
+func NewPullRequests(cp *Checkpoints, c *vcs.Client, w *vcs.Watcher, t *core.Tickets) *PullRequests {
+	return &PullRequests{cp: cp, client: c, watch: w, tickets: t}
 }
 
 // Open runs the full checks of the main branch's pipeline in the run's
@@ -83,17 +106,29 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	} else if dirty != "" {
 		return vcs.Opened{}, fmt.Errorf("pr: the worktree has uncommitted changes; commit them with istari checkpoint first:\n%s", dirty)
 	}
-	if based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir); err != nil {
+	based, main, err := p.cp.ws.BasedOnMain(ctx, ws, run.Dir)
+	if err != nil {
 		return vcs.Opened{}, err
-	} else if !based {
+	}
+	if !based {
 		return vcs.Opened{}, fmt.Errorf("pr: the branch is not based on the current %s: merge origin/%s, resolve, make a checkpoint, then open the pull request", main, main)
 	}
 	head, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
 	if err != nil {
 		return vcs.Opened{}, err
 	}
+	commit := shortCommit(head)
+	entries, err := p.cp.journal.Stored(ctx, ref)
+	if err != nil {
+		return vcs.Opened{}, err
+	}
+	// The same code fails the same way: running the checks again only costs
+	// time (spec 7.7, a red full suite).
+	if last := lastCheckpoint(entries, anyCheckpoint); last != nil && last.Done == fullRed && last.Commit == commit {
+		return vcs.Opened{}, fmt.Errorf("pr: the full checks already failed on %s, and the branch has not changed since: change the code, or merge origin/%s, make a checkpoint, then open the pull request", commit, main)
+	}
 	// Only the result of a run by code goes into the journal (spec 7.7).
-	entry := &journal.CheckpointEntry{Branch: ws.Branch, Commit: head[:min(12, len(head))], Checks: map[string]string{}}
+	entry := &journal.CheckpointEntry{Branch: ws.Branch, Commit: commit, Checks: map[string]string{}}
 	record := func(done string) error {
 		entry.Done = done
 		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
@@ -114,7 +149,21 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Checks[name] = "green"
 	} else {
 		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
-		if err := record("the full checks fail: the pull request is not opened"); err != nil {
+		if entry.Main, err = p.onMain(ctx, run.Ticket, ws, main, name, full, entries); err != nil {
+			return vcs.Opened{}, err
+		}
+		if entry.Main.Result == "red" {
+			question := fmt.Sprintf("%s fails `%s` at %s", main, name, entry.Main.Commit)
+			entry.Notes = append(entry.Notes, question+" as well: the failure is not the ticket's")
+			if err := record(fullRed); err != nil {
+				return vcs.Opened{}, err
+			}
+			if err := p.ask(ctx, run, ref, question); err != nil {
+				return vcs.Opened{}, err
+			}
+			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s; a human is asked and the ticket is held needs_input: end your run, do not try again:\n%s", question, output)
+		}
+		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err
 		}
 		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
@@ -151,4 +200,55 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 	}
 	entry.PR = pr.URL
 	return pr, record(fmt.Sprintf("pull request #%d %s", pr.Number, done))
+}
+
+// ask raises a question for a human in the ticket's journal and holds the
+// ticket needs_input until it is answered (spec 4.1).
+func (p *PullRequests) ask(ctx context.Context, run Run, ref tickets.Ref, question string) error {
+	q := journal.Entry{Kind: journal.Question, Actor: "system", ID: run.ID + "-main", Text: question}
+	if err := p.cp.journal.Append(ctx, ref, q); err != nil {
+		return err
+	}
+	_, err := p.tickets.SetHold(ctx, "system", run.Ticket, "needs_input")
+	var ce *core.Error
+	if errors.As(err, &ce) && ce.Code == core.CodeTicketHeld {
+		return nil
+	}
+	return err
+}
+
+// mainSuffix marks the scratch worktree, next to the ticket's own, in which
+// a red check runs again on the main branch's tip.
+const mainSuffix = ".main"
+
+// onMain returns the result of a red check on the main branch's tip, which
+// tells whether the failure is the ticket's (spec 7.7). It is kept per main
+// commit: a result the journal has for the tip is used again; otherwise the
+// command runs once in a scratch checkout of the tip.
+func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, main, name, cmd string, entries []journal.Entry) (*journal.MainCheck, error) {
+	tip, err := gitOut(ctx, p.cp.ws.clonePath(ws.Repo), "rev-parse", "refs/remotes/origin/"+main)
+	if err != nil {
+		return nil, err
+	}
+	onTip := func(cp *journal.CheckpointEntry) bool {
+		return cp.Main != nil && cp.Main.Commit == shortCommit(tip) && cp.Main.Check == name
+	}
+	if cp := lastCheckpoint(entries, onTip); cp != nil {
+		return cp.Main, nil
+	}
+	dir := ws.Dir + mainSuffix
+	remove, err := p.cp.ws.Scratch(ctx, ticket, dir)
+	if err != nil {
+		return nil, err
+	}
+	defer remove()
+	// Scratch fetched again: the result is of the commit it checked out.
+	if tip, err = gitOut(ctx, dir, "rev-parse", "HEAD"); err != nil {
+		return nil, err
+	}
+	m := &journal.MainCheck{Commit: shortCommit(tip), Check: name, Result: "green"}
+	if passed, output := runCheck(ctx, dir, cmd); !passed {
+		m.Result, m.Output = "red", output
+	}
+	return m, nil
 }

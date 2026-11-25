@@ -73,6 +73,9 @@ type Issue struct {
 	Branch      string   // a pull request's head branch
 	Base        string   // a pull request's base branch
 	HeadSHA     string   // a pull request's head commit
+	BaseSHA     string   // a pull request's base commit
+	Mergeable   *bool    // a pull request's mergeable: nil (null) until GitHub computed it
+	MergeState  string   // its mergeable_state, e.g. clean or dirty (conflicts)
 	Reviews     []Review // a pull request's reviews
 	Merged      bool
 	MergeMethod string

@@ -112,6 +112,17 @@ type CheckpointEntry struct {
 	Notes    []string          `json:"notes,omitempty"` // what code found, e.g. a slice without a test change
 	Files    []string          `json:"files,omitempty"`
 	PR       string            `json:"pr,omitempty"`
+	// Main is the red check run again on the main branch's tip, to tell
+	// whose failure it is (spec section 7.7).
+	Main *MainCheck `json:"main,omitempty"`
+}
+
+// MainCheck is the result of a check run on a commit of the main branch.
+type MainCheck struct {
+	Commit string `json:"commit"`
+	Check  string `json:"check"`
+	Result string `json:"result"`           // green or red
+	Output string `json:"output,omitempty"` // the end of a red run's output
 }
 
 // ReviewEntry is the result of the review stage; the details are in the PR.

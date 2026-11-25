@@ -196,8 +196,16 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var merged func(ctx context.Context, ref string) (bool, error)
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
+	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
+		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
+			pr, err := srv.watch.PullRequestOf(ctx, ref)
+			if errors.Is(err, store.ErrNotFound) {
+				return pipeline.PRConflict{}, false, nil
+			}
+			return pipeline.PRConflict{PR: pr.Number, Head: pr.MergeHead}, err == nil && pr.Mergeable == vcs.MergeableDirty, err
+		}
 		checks = func(ctx context.Context, ref string) (string, bool) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if err != nil || pr.Checks == "" {
@@ -215,7 +223,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	// The engine's notes go to the ticket when the tracker takes comments.
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Journal: j})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
@@ -223,7 +231,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		})
 	}
 	if srv.saves != nil && srv.vcs != nil {
-		srv.prs = runner.NewPullRequests(srv.saves, srv.vcs, srv.watch)
+		srv.prs = runner.NewPullRequests(srv.saves, srv.vcs, srv.watch, srv.tickets)
 	}
 	if srv.spaces != nil {
 		var jt journal.Tracker
@@ -348,6 +356,15 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 
 // Runner returns the runner, or nil when it is off; the daemon runs it.
 func (s *Server) Runner() *runner.Runner { return s.runner }
+
+// ReasonDaemonRestarted is how a run ends that a daemon left running.
+const ReasonDaemonRestarted = "the daemon restarted"
+
+// EndRunsLeftRunning ends the runs a previous daemon left running; the
+// daemon calls it on start, before the runner starts a run (spec section 7.2).
+func (s *Server) EndRunsLeftRunning(ctx context.Context) error {
+	return s.runs.EndLeftRunning(ctx, ReasonDaemonRestarted)
+}
 
 // Scheduler returns the scheduler; the daemon runs it.
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sched }

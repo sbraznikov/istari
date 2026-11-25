@@ -94,7 +94,7 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 	f.run(t)
 	child := f.gh.Seed("Found while working", conforming, "carol")
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: child}
-	if err := f.sync.Created(ctx, []tickets.Ref{ref}, ghRef(parent)); err != nil {
+	if err := f.sync.Created(ctx, "agent:implementer-1", []tickets.Ref{ref}, ghRef(parent)); err != nil {
 		t.Fatalf("Created: %v", err)
 	}
 	tk := f.ticket(t, child)
@@ -103,7 +103,7 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 	}
 	// Without an admitted parent, the ticket waits for admission as any other.
 	other := f.gh.Seed("A human's", conforming, "carol")
-	if err := f.sync.Created(ctx, []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: other}}, ""); err != nil {
+	if err := f.sync.Created(ctx, "human:carol", []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: other}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if tk := f.ticket(t, other); tk.State != "new" || tk.BudgetOf != "" {
@@ -118,7 +118,7 @@ func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t 
 	plain := f.gh.Seed("Child", withTablePriority(""), "alex")
 	own := f.gh.Seed("Child with its own", withTablePriority("P2"), "alex")
 	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: plain}, {Provider: "gh", Repo: githubtest.Repo, Number: own}}
-	if err := f.sync.Created(ctx, refs, ghRef(parent)); err != nil {
+	if err := f.sync.Created(ctx, "agent:planner-1", refs, ghRef(parent)); err != nil {
 		t.Fatalf("Created: %v", err)
 	}
 	if tk := f.ticket(t, plain); tk.State != "ready" || tk.Priority != "P0" {
@@ -135,7 +135,7 @@ func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t 
 func TestATicketIstariCreatesGetsItsTablesPriorityAtOnce(t *testing.T) {
 	f := newSync(t)
 	n := f.gh.Seed("Created by istari ticket create", conforming, "carol") // not trusted: it stays new
-	if err := f.sync.Created(ctx, []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: n}}, ""); err != nil {
+	if err := f.sync.Created(ctx, "human:carol", []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: n}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if tk := f.ticket(t, n); tk.State != "new" || tk.Priority != "P1" {

@@ -564,3 +564,117 @@ func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
 		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
 	}
 }
+
+// watchFixture is a tracked pull request of ticket #3 that istari pushed h1
+// to, on main at m1.
+func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, string, int) {
+	t.Helper()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pushed(ctx, ticket, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "h1")
+	gh.SetBaseSHA(pr.Number, "m1")
+	return gh, s, w, ticket, pr.Number
+}
+
+// conflicts returns the vcs.conflicted events of a ticket as head@base:state.
+func conflicts(t *testing.T, s store.Store, ticket string) []string {
+	t.Helper()
+	events, err := s.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: vcs.EventConflict}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range events {
+		var p struct{ Head, Base, State string }
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, p.Head+"@"+p.Base+":"+p.State)
+	}
+	return out
+}
+
+func mustPoll(t *testing.T, w *vcs.Watcher) {
+	t.Helper()
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+}
+
+func TestAPullRequestInConflictIsRecordedOnce(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, n := watchFixture(t)
+	gh.SetMergeable(n, new(false), "dirty")
+	mustPoll(t, w)
+	mustPoll(t, w) // nothing new
+	if got := conflicts(t, s, ticket); len(got) != 1 || got[0] != "h1@m1:dirty" {
+		t.Fatalf("conflicts = %v, want one at h1@m1", got)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != vcs.MergeableDirty || tr.MergeHead != "h1" {
+		t.Fatalf("tracked = %+v, want dirty at h1", tr)
+	}
+}
+
+func TestAnUnknownMergeableRecordsNothingUntilGitHubAnswers(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, n := watchFixture(t)
+	gh.SetMergeable(n, nil, "unknown") // GitHub is still computing
+	mustPoll(t, w)
+	if got := conflicts(t, s, ticket); len(got) != 0 {
+		t.Fatalf("conflicts = %v, want none while mergeable is null", got)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != "" {
+		t.Fatalf("tracked = %+v, want no reading", tr)
+	}
+	gh.SetMergeable(n, new(false), "dirty")
+	mustPoll(t, w)
+	if got := conflicts(t, s, ticket); len(got) != 1 || got[0] != "h1@m1:dirty" {
+		t.Fatalf("conflicts = %v, want one at h1@m1 once GitHub answered", got)
+	}
+}
+
+func TestAPushForgetsTheConflictAndAMovedBaseIsANewOne(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, n := watchFixture(t)
+	gh.SetMergeable(n, new(false), "dirty")
+	mustPoll(t, w)
+	if err := w.Pushed(ctx, ticket, "h2"); err != nil { // the conflict round merged main
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != "" {
+		t.Fatalf("after the push: %+v, want the reading forgotten", tr)
+	}
+	mustPoll(t, w) // GitHub still shows h1 as dirty: stale
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != "" {
+		t.Fatalf("the replaced head's reading is taken: %+v", tr)
+	}
+	gh.SetHeadSHA(n, "h2")
+	gh.SetMergeable(n, new(true), "clean")
+	mustPoll(t, w)
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Mergeable != vcs.MergeableClean || tr.MergeHead != "h2" {
+		t.Fatalf("after the clean reading: %+v, want clean at h2", tr)
+	}
+	gh.SetBaseSHA(n, "m2") // another ticket merged into main
+	gh.SetMergeable(n, new(false), "dirty")
+	mustPoll(t, w)
+	if got := conflicts(t, s, ticket); len(got) != 2 || got[1] != "h2@m2:dirty" {
+		t.Fatalf("conflicts = %v, want h1@m1, then h2@m2", got)
+	}
+}

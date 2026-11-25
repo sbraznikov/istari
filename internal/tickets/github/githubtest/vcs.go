@@ -55,6 +55,21 @@ func (s *Server) SetHeadSHA(n int, sha string) {
 	s.issues[n].HeadSHA = sha
 }
 
+// SetBaseSHA sets the base commit of a pull request.
+func (s *Server) SetBaseSHA(n int, sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[n].BaseSHA = sha
+}
+
+// SetMergeable sets what GitHub says about merging a pull request into its
+// base: mergeable nil is null (not computed yet), state its mergeable_state.
+func (s *Server) SetMergeable(n int, mergeable *bool, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[n].Mergeable, s.issues[n].MergeState = mergeable, state
+}
+
 // SetChecks sets the check runs of a commit.
 func (s *Server) SetChecks(sha string, checks ...Check) {
 	s.mu.Lock()
@@ -177,10 +192,18 @@ func (s *Server) pullJSON(i *Issue) map[string]any {
 	return map[string]any{
 		"number": i.Number, "node_id": pullNodeID(i.Number), "draft": i.Draft,
 		"state": i.State, "merged": i.Merged, "title": i.Title, "body": i.Body,
+		"mergeable": i.Mergeable, "mergeable_state": mergeableState(i), // GitHub computes them lazily: null until then
 		"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", Repo, i.Number),
 		"head":     map[string]any{"ref": i.Branch, "sha": i.HeadSHA, "repo": map[string]any{"full_name": Repo}},
-		"base":     map[string]any{"ref": i.Base},
+		"base":     map[string]any{"ref": i.Base, "sha": i.BaseSHA},
 	}
+}
+
+func mergeableState(i *Issue) string {
+	if i.MergeState == "" {
+		return "unknown"
+	}
+	return i.MergeState
 }
 
 // pullNodeID is a pull request's GraphQL node id.
