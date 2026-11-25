@@ -31,7 +31,7 @@ type daemon struct {
 // syncBuffer is a buffer the daemon's stderr is copied into while a test
 // reads it.
 type syncBuffer struct {
-	mu sync.Mutex
+	mu sync.Mutex // serializes the daemon's writes and the test's reads of b
 	b  bytes.Buffer
 }
 
