@@ -44,6 +44,9 @@ func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testin
 	if len(tr) != 2 || tr[0].Trigger != "create" || tr[0].Actor != "agent:implementer-2" {
 		t.Fatalf("transitions = %+v, want create by agent:implementer-2", tr)
 	}
+	if tr[1].Trigger != "accept" || tr[1].Rule != "agent" || tr[1].Parent != ref(parent) {
+		t.Fatalf("T2 = %+v, want accept by the rule agent with the parent %s", tr[1], ref(parent))
+	}
 }
 
 func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {

@@ -1028,16 +1028,17 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	}
 	switch x.tk.State {
 	case core.TicketNew:
-		actor := "system"
+		actor, rule := "system", admittedAs{rule: ruleTrustedAuthor}
 		sponsored, err := s.sponsored(ctx, x.repo, x.base)
 		if err != nil {
 			return err
 		}
 		switch {
 		case sponsored:
-			actor = "human:" + x.base.Sponsor
+			actor, rule = "human:"+x.base.Sponsor, admittedAs{rule: ruleHumanAdmission}
 		case x.tk.BudgetOf != "":
 			// an agent created it for an admitted ticket: it inherits that admission
+			rule = admittedAs{rule: ruleAgent, parent: x.tk.BudgetOf}
 		default:
 			if admits, err := s.authorAdmits(ctx, x.repo, x.t.Author); err != nil || !admits {
 				return err
@@ -1047,7 +1048,7 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 		if err != nil || len(conf.Deviations) > 0 {
 			return err
 		}
-		return s.admit(ctx, x, actor, conf)
+		return s.admit(ctx, x, actor, rule, conf)
 	case core.TicketReady:
 		conf, err := s.conformance(ctx, x.repo, x.t)
 		if err != nil {
@@ -1083,13 +1084,33 @@ func (s *Syncer) admission(ctx context.Context, x *syncing) error {
 	return nil
 }
 
-// admit fires T2 and writes the new state out, remembering the hash. A ticket
-// without a stored priority takes its table's, set by its author (spec 4.5).
-func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, conf Conformance) error {
+// The rules that admit a ticket, as T2's payload names them (spec 4.5).
+const (
+	ruleTrustedAuthor  = "trusted_author"
+	ruleAgent          = "agent"
+	ruleHumanAdmission = "human_admission"
+)
+
+// admittedAs is the rule that admits a ticket and, for ruleAgent, the
+// admitted ticket the agent created it on.
+type admittedAs struct{ rule, parent string }
+
+func (a admittedAs) payload() map[string]any {
+	p := map[string]any{"rule": a.rule}
+	if a.parent != "" {
+		p["parent"] = a.parent
+	}
+	return p
+}
+
+// admit fires T2 by rule and writes the new state out, remembering the hash.
+// A ticket without a stored priority takes its table's, set by its author
+// (spec 4.5).
+func (s *Syncer) admit(ctx context.Context, x *syncing, actor string, rule admittedAs, conf Conformance) error {
 	if err := s.tablePriority(ctx, x, conf); err != nil {
 		return err
 	}
-	next, err := s.tickets.Fire(ctx, actor, x.tk.Ref, "accept")
+	next, err := s.tickets.FireWith(ctx, actor, x.tk.Ref, "accept", rule.payload())
 	if err != nil {
 		return err
 	}
@@ -1249,7 +1270,7 @@ func (s *Syncer) created(ctx context.Context, actor string, ref Ref, parent core
 	if err != nil {
 		return err
 	}
-	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", conf)
+	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", admittedAs{rule: ruleAgent, parent: parent.Ref}, conf)
 }
 
 // Ready admits a ticket by hand (istari ticket ready): login must be a
@@ -1304,5 +1325,5 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 		x.base.Sponsor = login
 		return s.record(ctx, x, EventAdmissionRequested, "human:"+login, tk, map[string]any{"deviations": conf.Deviations})
 	}
-	return s.admit(ctx, x, "human:"+login, conf)
+	return s.admit(ctx, x, "human:"+login, admittedAs{rule: ruleHumanAdmission}, conf)
 }
