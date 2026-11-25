@@ -364,21 +364,42 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 	}
 }
 
-func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
-	t.Parallel()
-	f := newEngine(t, config.Defaults{}, nil)
+// gainsAnOpenNeed takes ref to the given state, then gives it a need on
+// a new, open ticket after that state was reached. It returns the need.
+func (f *engineFixture) gainsAnOpenNeed(t *testing.T, state core.TicketState) string {
+	t.Helper()
 	need := "gh:acme/web#2"
 	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
 		t.Fatal(err)
 	}
 	f.readyTicket(t, ref)
 	f.reconcile(t)
+	if state != core.TicketPlanning {
+		f.finish(t, ref, "plan", "agent:planner-1")
+		f.reconcile(t)
+	}
+	if state == core.TicketInReview {
+		f.finish(t, ref, "implement", "agent:implementer-1")
+		if _, err := f.tickets.Fire(ctx, "agent:implementer-1", ref, "pr_ready"); err != nil { // istari pr open
+			t.Fatal(err)
+		}
+	}
+	if st := f.state(t, ref); st != state {
+		t.Fatalf("the ticket is %s before it gains a need, want %s", st, state)
+	}
 	if _, err := f.tickets.SetNeeds(ctx, "agent:refiner-1", ref, []string{need}); err != nil { // the refiner's rewrite
 		t.Fatal(err)
 	}
+	return need
+}
+
+func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, nil)
+	f.gainsAnOpenNeed(t, core.TicketPlanning)
 	f.reconcile(t)
-	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketPlanning || tk.Hold != "waiting_dependency" {
-		t.Fatalf("a planning ticket with an open need = %s, hold %q; want planning on waiting_dependency", tk.State, tk.Hold)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketPlanning || hold != "waiting_dependency" {
+		t.Fatalf("a planning ticket with an open need = %s, hold %q; want planning on waiting_dependency", st, hold)
 	}
 	if l, err := f.tasks.ClaimReady(ctx, "agent:planner-1", "planner"); err == nil {
 		t.Fatalf("the held ticket's plan task was handed out: %+v", l)
@@ -388,20 +409,10 @@ func TestAPlanningTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
 func TestAnInProgressTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
 	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
-	need := "gh:acme/web#2"
-	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
-		t.Fatal(err)
-	}
-	f.readyTicket(t, ref)
+	f.gainsAnOpenNeed(t, core.TicketInProgress)
 	f.reconcile(t)
-	f.finish(t, ref, "plan", "agent:planner-1")
-	f.reconcile(t)
-	if _, err := f.tickets.SetNeeds(ctx, "agent:implementer-1", ref, []string{need}); err != nil {
-		t.Fatal(err)
-	}
-	f.reconcile(t)
-	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "waiting_dependency" {
-		t.Fatalf("an in_progress ticket with an open need = %s, hold %q; want in_progress on waiting_dependency", tk.State, tk.Hold)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInProgress || hold != "waiting_dependency" {
+		t.Fatalf("an in_progress ticket with an open need = %s, hold %q; want in_progress on waiting_dependency", st, hold)
 	}
 	if l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err == nil {
 		t.Fatalf("the held ticket's implement task was handed out: %+v", l)
@@ -411,29 +422,26 @@ func TestAnInProgressTicketWhoseNeedsGainAnOpenTicketIsHeld(t *testing.T) {
 func TestAHeldInProgressTicketGoesOnInItsRoundWhenItsNeedIsDone(t *testing.T) {
 	t.Parallel()
 	f := newEngine(t, config.Defaults{}, nil)
-	need := "gh:acme/web#2"
-	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
-		t.Fatal(err)
-	}
-	f.readyTicket(t, ref)
-	f.reconcile(t)
-	f.finish(t, ref, "plan", "agent:planner-1")
-	f.reconcile(t)
-	if _, err := f.tickets.SetNeeds(ctx, "agent:implementer-1", ref, []string{need}); err != nil {
-		t.Fatal(err)
-	}
+	need := f.gainsAnOpenNeed(t, core.TicketInProgress)
 	f.reconcile(t)
 	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
 		if _, err := f.tickets.Fire(ctx, "system", need, tr); err != nil {
 			t.Fatal(err)
 		}
 	}
-	before, _ := f.tasks.List(ctx)
-	f.reconcile(t)
-	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "" {
-		t.Fatalf("after its need is done the ticket = %s, hold %q; want in_progress, no hold", tk.State, tk.Hold)
+	before, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if after, _ := f.tasks.List(ctx); len(after) != len(before) {
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInProgress || hold != "" {
+		t.Fatalf("after its need is done the ticket = %s, hold %q; want in_progress, no hold", st, hold)
+	}
+	after, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
 		t.Fatalf("tasks went from %d to %d; want the ticket to go on with its round", len(before), len(after))
 	}
 	l, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
@@ -450,27 +458,16 @@ func TestAnInReviewTicketThatGainsAnOpenNeedIsNotHeldAndNotedOnce(t *testing.T) 
 	f := newEngine(t, config.Defaults{}, nil)
 	j := journal.New(nil, f.store, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Journal: j})
-	need := "gh:acme/web#2"
-	if _, err := f.tickets.Create(ctx, "human:alex", need, "web"); err != nil {
+	f.gainsAnOpenNeed(t, core.TicketInReview)
+	f.reconcile(t)
+	f.reconcile(t)
+	if st, hold := f.state(t, ref), f.hold(t, ref); st != core.TicketInReview || hold != "" {
+		t.Fatalf("an in_review ticket with an open need = %s, hold %q; want in_review, no hold", st, hold)
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
 		t.Fatal(err)
 	}
-	f.readyTicket(t, ref)
-	f.reconcile(t)
-	f.finish(t, ref, "plan", "agent:planner-1")
-	f.reconcile(t)
-	f.finish(t, ref, "implement", "agent:implementer-1")
-	if _, err := f.tickets.Fire(ctx, "agent:implementer-1", ref, "pr_ready"); err != nil { // istari pr open
-		t.Fatal(err)
-	}
-	if _, err := f.tickets.SetNeeds(ctx, "human:alex", ref, []string{need}); err != nil {
-		t.Fatal(err)
-	}
-	f.reconcile(t)
-	f.reconcile(t)
-	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
-		t.Fatalf("an in_review ticket with an open need = %s, hold %q; want in_review, no hold", tk.State, tk.Hold)
-	}
-	r, _ := tickets.ParseRef(ref)
 	entries, err := j.Stored(ctx, r)
 	if err != nil {
 		t.Fatal(err)
@@ -609,7 +606,11 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "waiting_dependency" {
 		t.Fatalf("a parent with a canceled child has hold %q, want waiting_dependency", tk.Hold)
 	}
-	if cleared, _ := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: core.EventTicketHoldCleared}, 0); len(cleared) != 0 {
+	cleared, err := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: core.EventTicketHoldCleared}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 0 {
 		t.Fatalf("the canceled child's hold was cleared %d times; a human clears it", len(cleared))
 	}
 }
