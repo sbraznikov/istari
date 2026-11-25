@@ -181,3 +181,19 @@ at  = ["checkpoint"]
 		t.Error("verify_red = false was not read")
 	}
 }
+
+func TestACheckTableWithAnUnknownKeyOrMomentIsRefusedWithItsLine(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ file, says string }{
+		{"[checks]\ntest = \"true\"\ntidy = { run = \"go mod tidy -diff\", when = [\"pr\"] }\n", `.istari/pipeline.toml line 3: check "tidy": unknown key "when"`},
+		{"[checks]\ntest = \"true\"\n\ntidy = { run = \"x\", at = [\"nightly\"] }\n", `.istari/pipeline.toml line 4: check "tidy": at "nightly" is not checkpoint or pr`},
+		{"[checks]\ntest = \"true\"\n\n[checks.lint]\nrun = \"x\"\nevery = \"day\"\n", `.istari/pipeline.toml line 6: check "lint": unknown key "every"`},
+		{"[checks]\nlint = { at = [\"pr\"] }\n", `.istari/pipeline.toml line 2: check "lint": a check table needs run`},
+		{"[checks]\nlint = 3\n", `.istari/pipeline.toml line 2: check "lint"`},
+	} {
+		_, err := pipeline.Parse([]byte(tc.file))
+		if err == nil || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%q: %v, want an error that says %q", tc.file, err, tc.says)
+		}
+	}
+}

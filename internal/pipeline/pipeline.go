@@ -111,7 +111,7 @@ func Parse(data []byte) (Pipeline, error) {
 		}
 		return Pipeline{}, fmt.Errorf("%s: %w", Path, err)
 	}
-	checks, err := parseChecks(raw.Checks)
+	checks, err := parseChecks(data, raw.Checks)
 	if err != nil {
 		return Pipeline{}, err
 	}
