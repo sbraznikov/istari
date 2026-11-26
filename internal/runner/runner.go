@@ -263,6 +263,26 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	return left, true, nil
 }
 
+// LiftBudgetHold is a human's decision on an exceeded budget (spec section
+// 7.5, istari ticket unhold): it unblocks the ticket's tasks blocked
+// budget_exceeded and then clears the hold, so an interrupted call leaves the
+// ticket held and a repeat finishes it.
+func (r *Runner) LiftBudgetHold(ctx context.Context, actor, ref string, anyway bool) (core.Ticket, error) {
+	all, err := r.tasks.List(ctx)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	for _, task := range all {
+		if task.Ticket != ref || task.State != core.TaskBlocked || task.BlockKind != blockBudget {
+			continue
+		}
+		if err := r.tasks.Unblock(ctx, actor, task.ID); err != nil {
+			return core.Ticket{}, err
+		}
+	}
+	return r.tickets.ClearHold(ctx, actor, ref, blockBudget)
+}
+
 // Working tells which of this runner's live runs works on a task, if any.
 func (r *Runner) Working(ctx context.Context, task string) (run string, ok bool) {
 	runs, err := r.runs.List(ctx)

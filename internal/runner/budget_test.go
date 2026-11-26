@@ -219,3 +219,35 @@ func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T
 		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
 	}
 }
+
+// spendTheBudget lets an XS ticket's only run spend all of its $2, so its
+// task is blocked budget_exceeded and the ticket is held.
+func spendTheBudget(t *testing.T, f *runFixture, n int) (core.Ticket, core.Task) {
+	t.Helper()
+	tk, task := f.readyTask(t, n)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	return tk, task
+}
+
+func TestLiftingABudgetHoldAfterRaisingTheSizeRunsTheTaskAgain(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 70)
+	sized(t, f, tk.Ref, "S")
+	lifted, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifted.Hold != "" {
+		t.Fatalf("hold = %q after lifting, want none", lifted.Hold)
+	}
+	s := f.session(t) // the task is ready again and handed out
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 3 {
+		t.Fatalf("the next run is capped at $%v, want the S budget of $5 less the $2 spent", s.spec.MaxBudgetUSD)
+	}
+}
