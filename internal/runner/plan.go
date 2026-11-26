@@ -3,7 +3,11 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 // Seam is a public boundary a test observes, agreed before the first test:
@@ -97,7 +102,8 @@ func NewPlans(ws *Workspaces, j *journal.Journal, k *core.Tickets, sizer Sizer) 
 // Check validates a plan against the repository and the ticket (spec 4.9):
 // the zone's paths exist on the main branch or are marked new; the number of
 // files matches the size, else the size is revised; a ticket larger than
-// max_size must be split.
+// max_size must be split. A split's children get the table of the standard
+// and must meet it before any is created (spec 4.3).
 func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettings) (PlanResult, error) {
 	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
@@ -141,7 +147,76 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 	if size != "" && s.MaxSize != "" && slices.Index(core.Sizes(), size) > slices.Index(core.Sizes(), s.MaxSize) && (res.Split == nil || len(res.Split.Tickets) == 0) {
 		return PlanResult{}, fmt.Errorf("plan: the ticket is %s, larger than max_size %s: it must be split into child tickets (split:)", size, s.MaxSize)
 	}
+	if res.Split != nil {
+		split := *res.Split
+		split.Tickets = slices.Clone(split.Tickets)
+		priority := tk.Priority
+		if priority == "" {
+			priority = core.DefaultPriority
+		}
+		std, err := standardOf(run.Dir)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		for i, pt := range split.Tickets {
+			repo := ref.Repo
+			if pt.Repo != "" {
+				repo = pt.Repo
+			}
+			split.Tickets[i].Body = withTable(pt, priority, repo)
+			root := "" // the run's checkout is of the parent's repository
+			if strings.EqualFold(repo, ref.Repo) {
+				root = run.Dir
+			}
+			if err := checkChild(ctx, standard.Checker{Standard: std, Repo: repo, Root: root}, split.Tickets[i]); err != nil {
+				return PlanResult{}, err
+			}
+		}
+		res.Split = &split
+	}
 	return res, nil
+}
+
+// standardOf is the ticket standard of the checkout in dir: its
+// .istari/ticket-standard.toml, else the default.
+func standardOf(dir string) (standard.Standard, error) {
+	if dir == "" {
+		return standard.Default(), nil
+	}
+	path := filepath.Join(dir, ".istari", "ticket-standard.toml")
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return standard.Default(), nil
+	}
+	return standard.Load(path)
+}
+
+// checkChild checks a split child with its table against the structural
+// standard, as istari ticket check does (spec 4.3 and 4.5).
+func checkChild(ctx context.Context, checker standard.Checker, pt tickets.PlanTicket) error {
+	got, err := checker.Check(ctx, standard.Draft{Title: pt.Title, Body: pt.Body, Labels: pt.Labels})
+	if err != nil {
+		return err
+	}
+	if got.OK() {
+		return nil
+	}
+	var deviations []string
+	for _, d := range got.Deviations {
+		deviations = append(deviations, d.Message)
+	}
+	return fmt.Errorf("plan: child %s does not meet the ticket standard: %s: %w", pt.Key, strings.Join(deviations, "; "), ErrChildStandard)
+}
+
+// ErrChildStandard is a split refused for a child that misses the ticket
+// standard: the planner fixes it and submits again in the same run.
+var ErrChildStandard = errors.New("fix the child and submit the plan again")
+
+// withTable is a split child's body with the table of the ticket standard
+// at its end (spec 4.3): its type and size, the parent's priority and its
+// repository.
+func withTable(pt tickets.PlanTicket, priority, repo string) string {
+	return strings.TrimRight(pt.Body, "\n") + "\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n" +
+		fmt.Sprintf("| %s | %s | %s | `%s` |\n", pt.Type, pt.Size, priority, repo)
 }
 
 // Record writes a checked plan: the plan entry, its seams as an assumption

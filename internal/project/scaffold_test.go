@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -46,6 +47,60 @@ func TestScaffoldWritesValidTOMLAndKeepsExistingFiles(t *testing.T) {
 		if _, err := toml.DecodeFile(filepath.Join(root, ".istari", "ticket-standard.toml"), &standard); err != nil {
 			t.Fatalf("ticket-standard.toml: %v", err)
 		}
+	}
+}
+
+// The commented examples of [checks]: a line "# <Language>:" opens a group,
+// each "#   <key> = <value>" below it is one example.
+func TestTheInitTemplateShowsCheckExamplesForSeveralLanguages(t *testing.T) {
+	t.Parallel()
+	root := tree(t, map[string]string{})
+	if _, err := project.Scaffold(root); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".istari", "pipeline.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pipeline.Parse(data); err != nil {
+		t.Fatalf("the written pipeline: %v", err)
+	}
+	groups := map[string][]string{}
+	language := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if name, ok := strings.CutPrefix(line, "# "); ok && strings.HasSuffix(name, ":") && !strings.Contains(name, " ") {
+			language = strings.TrimSuffix(name, ":")
+		} else if example, ok := strings.CutPrefix(line, "#   "); ok && language != "" {
+			groups[language] = append(groups[language], example)
+		} else {
+			language = ""
+		}
+	}
+	for _, want := range []string{"Go", "Python", "TypeScript"} {
+		if len(groups[want]) == 0 {
+			t.Errorf("no examples for %s in:\n%s", want, data)
+		}
+	}
+	tables, placeholders, testFiles := 0, 0, 0
+	for language, examples := range groups {
+		file := "[checks]\n" + strings.Join(examples, "\n") + "\n"
+		p, err := pipeline.Parse([]byte(file))
+		if err != nil {
+			t.Errorf("the %s examples do not parse: %v\n%s", language, err, file)
+			continue
+		}
+		for _, c := range p.Checks.List {
+			if len(c.At) == 1 {
+				tables++
+			}
+			if c.TakesTests() {
+				placeholders++
+			}
+		}
+		testFiles += len(p.Checks.TestFiles)
+	}
+	if tables == 0 || placeholders == 0 || testFiles == 0 {
+		t.Errorf("examples with at %d, with {files}/{dirs} %d, test_files %d: want each shown", tables, placeholders, testFiles)
 	}
 }
 

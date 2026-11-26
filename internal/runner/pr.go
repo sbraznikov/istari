@@ -44,6 +44,19 @@ func CheckDescription(body string) error {
 	return nil
 }
 
+// prChecks are the checks that run before istari pr open: every check at pr,
+// and the tests when there is no full suite.
+func prChecks(checks pipeline.Checks) []pipeline.Check {
+	var out []pipeline.Check
+	_, full := checks.Get("full")
+	for _, c := range checks.List {
+		if c.RunsAt(pipeline.AtPR) || (c.Name == "test" && !full) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // fullRed is what the journal says of a pr open stopped by red full checks.
 const fullRed = "the full checks fail: the pull request is not opened"
 
@@ -133,27 +146,38 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 		entry.Done = done
 		return p.cp.journal.Append(ctx, ref, journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry})
 	}
-	checks, _, err := p.cp.ws.checks(ctx, ws.Repo)
+	checks, err := p.cp.ws.checks(ctx, ws.Repo)
 	if err != nil {
 		return vcs.Opened{}, err
 	}
-	name := "full"
-	full, ok := checks[name]
-	if !ok {
-		name = "test" // without a full suite, the tests
-		full, ok = checks[name]
+	suite := "full" // the whole suite; without one, the tests
+	if _, ok := checks.Get(suite); !ok {
+		suite = "test"
 	}
-	if !ok {
-		entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
-	} else if passed, output := runCheck(ctx, run.Dir, full); passed {
-		entry.Checks[name] = "green"
-	} else {
-		entry.Checks[name], entry.Red, entry.Failures = "red", true, map[string]string{name: output}
-		if entry.Main, err = p.onMain(ctx, run.Ticket, ws, main, name, full, entries); err != nil {
-			return vcs.Opened{}, err
+	var red []string // the outputs of the red checks
+	for _, check := range prChecks(checks) {
+		if check.TakesTests() {
+			entry.Notes = append(entry.Notes, check.Name+": not run, it runs the slice's tests through {files} or {dirs}; the whole suite is full")
+			continue
 		}
-		if entry.Main.Result == "red" {
-			question := fmt.Sprintf("%s fails `%s` at %s", main, name, entry.Main.Commit)
+		passed, output := recordCheck(ctx, entry, run.Dir, check.Name, check.Run)
+		if passed {
+			continue
+		}
+		red = append(red, check.Name+":\n"+output)
+		// Whether a red suite is the ticket's failure, the main branch tells.
+		if check.Name == suite {
+			if entry.Main, err = p.onMain(ctx, run.Ticket, ws, main, check.Name, check.Run, entries); err != nil {
+				return vcs.Opened{}, err
+			}
+		}
+	}
+	if _, ok := entry.Checks[suite]; !ok {
+		entry.Notes = append(entry.Notes, "full: no command in the main branch's "+pipeline.Path)
+	}
+	if len(red) > 0 {
+		if entry.Main != nil && entry.Main.Result == "red" {
+			question := fmt.Sprintf("%s fails `%s` at %s", main, entry.Main.Check, entry.Main.Commit)
 			entry.Notes = append(entry.Notes, question+" as well: the failure is not the ticket's")
 			if err := record(fullRed); err != nil {
 				return vcs.Opened{}, err
@@ -161,12 +185,12 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 			if err := p.ask(ctx, run, ref, question); err != nil {
 				return vcs.Opened{}, err
 			}
-			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s; a human is asked and the ticket is held needs_input: end your run, do not try again:\n%s", question, output)
+			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s; a human is asked and the ticket is held needs_input: end your run, do not try again:\n%s", question, strings.Join(red, "\n\n"))
 		}
 		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err
 		}
-		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", output)
+		return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, so the pull request is not opened:\n%s", strings.Join(red, "\n\n"))
 	}
 	if err := p.cp.push(ctx, ws, run.Dir); err != nil {
 		return vcs.Opened{}, err

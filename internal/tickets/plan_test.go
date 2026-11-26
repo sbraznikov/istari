@@ -38,6 +38,7 @@ tickets:
 `
 
 func TestAValidPlanIsCreatedInOrderWithKeysReplacedAndChildrenLinked(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
 	p, err := tickets.ParsePlan([]byte(planYAML))
@@ -65,6 +66,7 @@ func TestAValidPlanIsCreatedInOrderWithKeysReplacedAndChildrenLinked(t *testing.
 }
 
 func TestAPlanWithACycleOrAnUnknownKeyCreatesNothing(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"cycle":       "tickets:\n  - key: a\n    title: A\n    needs: [b]\n  - key: b\n    title: B\n    needs: [a]\n",
 		"unknown key": "tickets:\n  - key: a\n    title: A\n    needs: [nowhere]\n",
@@ -87,6 +89,7 @@ func TestAPlanWithACycleOrAnUnknownKeyCreatesNothing(t *testing.T) {
 }
 
 func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex") // alex admits; carol, the authors of the new tickets, is not trusted
 	parent := f.gh.Seed("Parent", conforming, "bob")
 	f.gh.SetPermission("alex", "write")
@@ -112,6 +115,7 @@ func TestATicketAnAgentCreatesForAnAdmittedTicketIsAdmittedAndSharesItsBudget(t 
 }
 
 func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	parent := f.gh.Seed("Parent", withTablePriority("P0"), "alex")
 	f.run(t)
@@ -133,6 +137,7 @@ func TestTheChildrenOfASplitTicketGetItsPriorityUnlessTheirTableSaysOtherwise(t 
 }
 
 func TestATicketIstariCreatesGetsItsTablesPriorityAtOnce(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Created by istari ticket create", conforming, "carol") // not trusted: it stays new
 	if err := f.sync.Created(ctx, "human:carol", []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: n}}, ""); err != nil {
@@ -147,6 +152,7 @@ func TestATicketIstariCreatesGetsItsTablesPriorityAtOnce(t *testing.T) {
 }
 
 func TestKeysAreReplacedOnlyAsWholeReferencesOutsideCode(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
 	p, err := tickets.ParsePlan([]byte("tickets:\n  - key: base\n    title: Base\n  - key: base-x\n    title: Base X\n  - key: top\n    title: Top\n    needs: [base, base-x]\n    body: \"See #base and #base-x, not #basement.\\n\\n```\\n#base stays\\n```\\n\"\n"))
@@ -165,6 +171,7 @@ func TestKeysAreReplacedOnlyAsWholeReferencesOutsideCode(t *testing.T) {
 }
 
 func TestABodyNamingAKeyCreatedLaterIsRefusedBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
 	p, _ := tickets.ParsePlan([]byte("tickets:\n  - key: first\n    title: First\n    body: \"Before #second.\"\n  - key: second\n    title: Second\n    needs: [first]\n"))

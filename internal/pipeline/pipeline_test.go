@@ -205,3 +205,62 @@ func TestWithThePlanGateTheImplementerWaitsForAHuman(t *testing.T) {
 		t.Fatalf("implement = %v, want it to need the approval", got[2])
 	}
 }
+
+func TestAProjectNamesItsOwnChecksAndWhenTheyRun(t *testing.T) {
+	t.Parallel()
+	p, err := pipeline.Parse([]byte(`[checks]
+typecheck = "go vet ./..."
+test      = "go test -short {dirs}"
+full      = "go test ./..."
+format    = "test -z \"$(gofmt -l .)\""
+tidy      = { run = "go mod tidy -diff", at = ["pr"] }
+verify_red = false
+
+[checks.lint]
+run = "golangci-lint run"
+at  = ["checkpoint"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type check struct {
+		Name, Run string
+		At        []string
+	}
+	var got []check
+	for _, c := range p.Checks.List {
+		got = append(got, check{c.Name, c.Run, c.At})
+	}
+	want := []check{
+		{"typecheck", "go vet ./...", []string{"checkpoint"}},
+		{"test", "go test -short {dirs}", []string{"checkpoint"}},
+		{"full", "go test ./...", []string{"pr"}},
+		{"format", `test -z "$(gofmt -l .)"`, []string{"checkpoint", "pr"}},
+		{"lint", "golangci-lint run", []string{"checkpoint"}},
+		{"tidy", "go mod tidy -diff", []string{"pr"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checks = %+v\nwant %+v", got, want)
+	}
+	if p.Checks.VerifyRed {
+		t.Error("verify_red = false was not read")
+	}
+}
+
+func TestACheckTableWithAnUnknownKeyOrMomentIsRefusedWithItsLine(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ file, says string }{
+		{"[checks]\ntest = \"true\"\ntidy = { run = \"go mod tidy -diff\", when = [\"pr\"] }\n", `.istari/pipeline.toml line 3: check "tidy": unknown key "when"`},
+		{"[checks]\ntest = \"true\"\n\ntidy = { run = \"x\", at = [\"nightly\"] }\n", `.istari/pipeline.toml line 4: check "tidy": at "nightly" is not checkpoint or pr`},
+		{"[checks]\ntest = \"true\"\n\n[checks.lint]\nrun = \"x\"\nevery = \"day\"\n", `.istari/pipeline.toml line 6: check "lint": unknown key "every"`},
+		{"[checks]\nlint = { at = [\"pr\"] }\n", `.istari/pipeline.toml line 2: check "lint": a check table needs run`},
+		{"[checks]\nlint = 3\n", `.istari/pipeline.toml line 2: check "lint"`},
+		{"[checks]\ntest = \"true\"\nverify_red = \"yes\"\n", `.istari/pipeline.toml line 3: verify_red is true or false`},
+		{"[checks]\ntest_files = \"**/*_test.go\"\n", `.istari/pipeline.toml line 2: test_files is a list of glob patterns`},
+	} {
+		_, err := pipeline.Parse([]byte(tc.file))
+		if err == nil || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%q: %v, want an error that says %q", tc.file, err, tc.says)
+		}
+	}
+}

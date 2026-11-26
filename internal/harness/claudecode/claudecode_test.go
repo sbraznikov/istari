@@ -297,6 +297,54 @@ func TestTheAgentGetsOnlyItsOwnEnvironment(t *testing.T) {
 	}
 }
 
+func TestTheAgentFindsTheDaemonsOwnBinaryFirstOnItsPath(t *testing.T) {
+	// Serial: sets PATH with t.Setenv. The test binary stands in for the
+	// istari binary the daemon runs from; its directory is not on PATH.
+	t.Setenv("PATH", "/usr/bin:/bin")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	s.Wait()
+	want := "PATH=" + filepath.Dir(self) + ":/usr/bin:/bin\n"
+	if env := f.read(t, "env"); !strings.Contains("\n"+env, "\n"+want) {
+		t.Fatalf("the agent's environment lacks %q:\n%s", want, env)
+	}
+}
+
+func TestWithoutADaemonPathTheAgentStillFindsTheDaemonsOwnBinary(t *testing.T) {
+	// Serial: unsets PATH. The agent's PATH then holds only the test
+	// binary's directory, so the fake names env by absolute path and runs
+	// in a mode that does nothing else.
+	t.Setenv("PATH", "")
+	os.Unsetenv("PATH")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFake(t)
+	script := strings.Replace(fakeClaude, "env > ", "/usr/bin/env > ", 1)
+	if err := os.WriteFile(f.bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "exit", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, s)
+	s.Wait()
+	want := "PATH=" + filepath.Dir(self) + "\n"
+	if env := f.read(t, "env"); !strings.Contains("\n"+env, "\n"+want) {
+		t.Fatalf("the agent's environment lacks %q:\n%s", want, env)
+	}
+}
+
 func TestSendIsNotSupportedInPrintMode(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
