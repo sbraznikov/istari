@@ -401,19 +401,28 @@ func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
 	if blocked := f.waitTask(t, task.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
 		t.Fatalf("block kind = %q after the run let start anyway, want budget_exceeded", blocked.BlockKind)
 	}
-	// The hold follows the block; under parallel tests it can land later.
-	for deadline := time.Now().Add(waitFor); ; time.Sleep(20 * time.Millisecond) {
-		held, _ := f.tickets.Get(ctx, tk.Ref)
-		if held.Hold == "budget_exceeded" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("hold = %q after the run let start anyway, want budget_exceeded", held.Hold)
-		}
-	}
+	f.waitHold(t, tk.Ref, "budget_exceeded") // the hold follows the block
 	select {
 	case s := <-f.h.started:
 		t.Fatalf("a second run started after one unhold --anyway: capped at $%v", s.spec.MaxBudgetUSD)
 	default:
+	}
+}
+
+// waitHold waits until the ticket's hold is want. It reads the hold rather
+// than waiting on a ticket.hold_set event, since a ticket held a second time
+// already has the first.
+func (f *runFixture) waitHold(t *testing.T, ref, want string) {
+	t.Helper()
+	deadline := time.Now().Add(waitFor)
+	for {
+		tk, err := f.tickets.Get(ctx, ref)
+		if err == nil && tk.Hold == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hold of %s = %q, want %q", ref, tk.Hold, want)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

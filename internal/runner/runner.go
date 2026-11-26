@@ -298,6 +298,8 @@ func (r *Runner) waiveBudget(ctx context.Context, actor string, tk core.Ticket) 
 		return err
 	}
 	w := budgetWaiver{Ticket: tk.Ref, By: actor, At: r.opts.Clock().UTC()}
+	// Marshalling a struct of strings and a time, and a map of strings,
+	// cannot fail.
 	data, _ := json.Marshal(w)
 	raw, _ := json.Marshal(map[string]any{"ticket": tk.Ref, "actor": actor})
 	_, err := r.store.Append(ctx, store.Event{Type: EventBudgetWaived, At: w.At, Actor: actor, Project: tk.Project, Ticket: tk.Ref, Payload: raw},
@@ -324,7 +326,8 @@ func (r *Runner) useBudgetWaiver(ctx context.Context, ref, run string) (use stor
 		return store.Change{}, false, nil
 	}
 	w.Run = run
-	data, _ := json.Marshal(w)
+	data, _ := json.Marshal(w) // a struct of strings and a time cannot fail to marshal
+
 	return store.Change{Kind: budgetWaiverKind, ID: ref, Data: data, IfVersion: rec.Version}, true, nil
 }
 
