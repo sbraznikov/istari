@@ -30,7 +30,11 @@ type daemonLog struct {
 	buf bytes.Buffer
 }
 
-func (l *daemonLog) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.buf.Write(p) }
+func (l *daemonLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
 
 // line returns the first line containing want, or "".
 func (l *daemonLog) line(want string) string {
