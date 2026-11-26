@@ -120,7 +120,7 @@ func linked(p NewPullRequest, ref tickets.Ref) string {
 // Status is what a pull request's checks and reviews say.
 type Status struct {
 	HeadSHA string
-	Checks  string // "", pending, success or failure
+	Checks  string // "", pending, success or failure; pending while any check runs
 	Review  string // none, approved or changes_requested
 	By      string // who gave the deciding review
 	Merged  bool
@@ -175,17 +175,18 @@ func (c *Client) checkRuns(ctx context.Context, repo, sha string) ([]checkRun, e
 	}
 }
 
-// checks sums up a commit's check runs and its combined status: failure if
-// any failed, pending if any still runs, success if all passed, "" if there
-// are none.
+// checks sums up a commit's check runs and its combined status: pending if
+// any still runs, failure if all finished and any failed, success if all
+// passed, "" if there are none. A head is red only once its runs have
+// finished: while a job still runs there is nothing to rerun (spec 4.3).
 func (c *Client) checks(ctx context.Context, repo, sha string) (string, error) {
 	state := ""
 	add := func(s string) {
 		switch {
-		case s == "failure" || state == "failure":
-			state = "failure"
 		case s == "pending" || state == "pending":
 			state = "pending"
+		case s == "failure" || state == "failure":
+			state = "failure"
 		case s == "success":
 			state = "success"
 		}

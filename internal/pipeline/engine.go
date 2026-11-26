@@ -43,9 +43,11 @@ type EngineOptions struct {
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// Rerun is asked on red CI before a rework round: it reruns the failed
 	// jobs of the head once when the implementer answered them as not caused
-	// by the change (spec 4.3); started means verify waits for the new
-	// result and starts no round. nil: red CI always starts a round.
-	Rerun func(ctx context.Context, ref string) (started bool, err error)
+	// by the change (spec 4.3). RerunStarted: verify waits for the new
+	// result and starts no round; RerunSpent: the head was answered again
+	// after its one rerun or refusal, so the ticket is held needs_input.
+	// nil: red CI always starts a round.
+	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
 	// pull request is left as it is.
@@ -323,15 +325,13 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	gap, err := e.resumeGap(ctx, tk, r)
-	if err != nil {
-		return err
-	}
-	if gap {
+	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && !r.conflict) && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
-		// tracker (istari recover): it gets the stages of its state on. A
-		// resume cut short between its creates gets the rest of them.
-		if err := e.expand(ctx, tk, 1, false, resumeFrom(tk.State)); err != nil {
+		// tracker (istari recover): it gets the stages of its state on.
+		// Its first round is expanded again, as expand skips the tasks that
+		// exist: a daemon stopped while it made them left out the rest, and
+		// round.done reads a stage without a task as completed.
+		if err := e.expand(ctx, tk, 1, false, from); err != nil {
 			return err
 		}
 		tasks, err := e.tasks.List(ctx)
@@ -470,46 +470,13 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 		return e.verdict(ctx, tk, r, fire)
 	case core.TicketAwaitingApproval:
-		// Only istari's own merge task fires T11 here: a round a resume cut
-		// short before it made the merge task has merged nothing.
+		// Only istari's own merge task fires T11 here: a round cut short
+		// before it made the merge task has merged nothing.
 		if m, ok := r.tasks[StageMerge]; ok && m.State == core.TaskCompleted {
 			return fire("merged") // T11
 		}
 	}
 	return nil
-}
-
-// resumeGap tells whether a ticket past planning lacks a stage its state
-// resumes from (resumeFrom): it has no tasks at all, or only a first round
-// that a resume cut short. A first round that started at planning has every
-// stage, and tasks made by hand are their maker's.
-func (e *Engine) resumeGap(ctx context.Context, tk core.Ticket, r round) (bool, error) {
-	from := resumeFrom(tk.State)
-	if from == nil || r.others > 0 || len(tk.Children) > 0 || r.n > 1 || r.conflict {
-		return false, nil
-	}
-	if r.n == 0 {
-		return true, nil
-	}
-	for _, t := range r.tasks {
-		if t.Role == "planner" {
-			return false, nil // it started at planning: no pipeline to read
-		}
-	}
-	ref, err := tickets.ParseRef(tk.Ref)
-	if err != nil {
-		return false, err
-	}
-	p, err := e.Load(ctx, ref.Repo)
-	if err != nil {
-		return false, err
-	}
-	for _, spec := range p.Expand(p.Settings(e.opts.Defaults)) {
-		if _, ok := r.tasks[spec.Stage]; from(spec) && !ok {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 const waitingDependency = "waiting_dependency"
@@ -689,9 +656,14 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
 		return err
 	case "failure":
-		// A rerun is no round: verify waits for its result.
+		// A rerun is no round: verify waits for its result. A head answered
+		// unrelated again after its one rerun opens no second round on it.
 		if e.opts.Rerun != nil {
-			if started, err := e.opts.Rerun(ctx, tk.Ref); err != nil || started {
+			switch outcome, err := e.opts.Rerun(ctx, tk.Ref); {
+			case err != nil || outcome == core.RerunStarted:
+				return err
+			case outcome == core.RerunSpent:
+				_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 				return err
 			}
 		}

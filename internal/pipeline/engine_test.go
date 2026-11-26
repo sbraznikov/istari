@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -784,10 +785,13 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 	ci := "failure"
 	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
 	var reruns int
-	rerun := func(context.Context, string) (bool, error) {
+	rerun := func(context.Context, string) (core.RerunOutcome, error) {
 		reruns++
 		ci = "" // the watch forgets the red result until it reads the rerun's
-		return reruns == 1, nil
+		if reruns == 1 {
+			return core.RerunStarted, nil
+		}
+		return core.RerunNone, nil
 	}
 	defaults := config.Defaults{MaxReviewRounds: 1}
 	f := newEngine(t, defaults, nil)
@@ -814,7 +818,7 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
 	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "failure", true }
-	rerun := func(context.Context, string) (bool, error) { return false, nil } // already rerun, or not answered
+	rerun := func(context.Context, string) (core.RerunOutcome, error) { return core.RerunNone, nil } // not answered
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
 	f.readyTicket(t, ref)
@@ -899,6 +903,65 @@ func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *t
 	}
 }
 
+func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns while race runs, want none", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a pending head started round %d, want none", pipeline.RoundOf(impl))
+	}
+	p.gh.SetCheck("abc123", "race", "completed", "success")
+	for range 2 { // the first reads the head red and reruns, the second reads the rerun
+		if err := p.watch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p.reconcile(t)
+	}
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns once the run finished, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("a refused rerun left implement in round %d, want its one rework round 2", pipeline.RoundOf(impl))
+	}
+	// Round 2 has nothing to change on the same head and answers unrelated again.
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("second Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("the second answer started round %d, want no round after 2", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
+		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
+	}
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns, want none", p.gh.Reruns())
+	}
+}
+
 func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
 	t.Parallel()
 	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
@@ -958,46 +1021,9 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	}
 }
 
-// awaitingApproval is the trigger path of a ticket recovered in
-// awaiting_approval.
-var awaitingApproval = []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"}
-
-// cutShortResume leaves the ticket in awaiting_approval with the round a
-// resume cut short between its creates: the approve task and no merge task.
-// The approve task is the one a full resume makes, taken from a twin store.
-func cutShortResume(t *testing.T) *engineFixture {
-	t.Helper()
-	twin := newEngine(t, config.Defaults{}, nil)
-	f := newEngine(t, config.Defaults{}, nil)
-	for _, fx := range []*engineFixture{twin, f} {
-		if _, err := fx.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
-			t.Fatal(err)
-		}
-		for _, tr := range awaitingApproval {
-			if _, err := fx.tickets.Fire(ctx, "system", ref, tr); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	twin.reconcile(t)
-	approve := twin.stage(t, ref, "approve")
-	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: ref, Project: "web", Role: approve.Role}); err != nil {
-		t.Fatal(err)
-	}
-	return f
-}
-
-func TestACutShortResumeInAwaitingApprovalDoesNotMerge(t *testing.T) {
-	t.Parallel()
-	f := cutShortResume(t)
-	f.reconcile(t)
-	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
-		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: nothing merged it (T11)", st)
-	}
-}
-
-// A round that started at planning is never refilled (resumeGap), so only
-// the T11 guard keeps a round cut short before its merge task from merging.
+// A later round is never refilled the way a recovered first round is, so
+// only the T11 guard keeps a round cut short before its merge task from
+// merging.
 func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	t.Parallel()
 	twin := newEngine(t, config.Defaults{}, nil)
@@ -1011,15 +1037,18 @@ func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The round is the ticket's second: its first round's tasks under round
+	// 2 IDs, the merge task left out.
 	for _, task := range all {
 		if pipeline.StageOf(task) == pipeline.StageMerge {
 			continue
 		}
-		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: task.ID, Ticket: ref, Project: "web", Role: task.Role}); err != nil {
+		id := strings.Replace(task.ID, "_r1_", "_r2_", 1)
+		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: ref, Project: "web", Role: task.Role}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, tr := range awaitingApproval {
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
 		if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
 			t.Fatal(err)
 		}
@@ -1030,19 +1059,35 @@ func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	}
 }
 
-func TestACutShortResumeGetsItsMissingStagesAndMergesByIstari(t *testing.T) {
+func TestARecoveredTicketWhoseStagesADaemonStoppedMakingGetsTheRest(t *testing.T) {
 	t.Parallel()
-	f := cutShortResume(t)
-	f.reconcile(t)
-	approve, merge := f.stage(t, ref, "approve"), f.stage(t, ref, "merge")
-	if pipeline.RoundOf(merge) != 1 || merge.State != core.TaskWaiting || len(merge.Needs) != 1 || merge.Needs[0] != approve.ID {
-		t.Fatalf("merge task = %+v, want round 1 waiting for %s", merge, approve.ID)
+	awaitingApproval := func() *engineFixture {
+		f := newEngine(t, config.Defaults{}, nil)
+		if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
 	}
-	f.finish(t, ref, "approve", "human:alex")
-	f.finish(t, ref, "merge", "system")
+	whole := awaitingApproval()
+	whole.reconcile(t)
+	approve := whole.stage(t, ref, "approve")
+
+	// The daemon stopped after it made the approve task, before the merge task.
+	f := awaitingApproval()
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: approve.Ticket, Project: approve.Project, Role: approve.Role, MaxAttempts: approve.MaxAttempts}); err != nil {
+		t.Fatal(err)
+	}
 	f.reconcile(t)
-	if st := f.state(t, ref); st != core.TicketDone {
-		t.Fatalf("after istari's merge the ticket is %s, want done (T11)", st)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("the ticket is %s, want awaiting_approval: nothing merged it", st)
+	}
+	if merge := f.stage(t, ref, pipeline.StageMerge); merge.State != core.TaskWaiting || !slices.Equal(merge.Needs, []string{approve.ID}) {
+		t.Fatalf("merge is %s needing %v, want waiting on %s", merge.State, merge.Needs, approve.ID)
 	}
 }
 

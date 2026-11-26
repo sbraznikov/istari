@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
@@ -315,5 +316,113 @@ func TestABudgetHoldIsLiftedAnywayWithoutRaisingTheSize(t *testing.T) {
 	unblocked := f.waitEvent(t, "task.unblocked")
 	if !strings.Contains(string(unblocked.Payload), "budget_exceeded") {
 		t.Fatalf("task.unblocked = %s, want the budget_exceeded block of %s lifted", unblocked.Payload, task.ID)
+	}
+}
+
+func TestLiftingABudgetHoldAnywayLetsTheNextRunStart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 73)
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 2 {
+		t.Fatalf("the run let start anyway is capped at $%v, want the XS budget of $2", s.spec.MaxBudgetUSD)
+	}
+	if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != "" {
+		t.Fatalf("hold = %q while the run let start anyway runs, want none", held.Hold)
+	}
+}
+
+func TestARunLetStartAnywayStartsAfterADaemonRestart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 75)
+	sized(t, f, tk.Ref, "XS")
+	stop := f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	stop()
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon restarts: a new runner over the same store.
+	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + f.root + "/remotes"}), runner.RunnerOptions{
+		Budgets: budgets, DataDir: f.data, Projects: []string{"web"}, Lease: time.Minute,
+		Slots: []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+	})
+	f.start(t)
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 2 {
+		t.Fatalf("the run let start anyway is capped at $%v after a restart, want the XS budget of $2", s.spec.MaxBudgetUSD)
+	}
+}
+
+func TestAnUnholdAnywayIsUsedUpByTheNextRunEvenWithBudgetLeft(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 76)
+	sized(t, f, tk.Ref, "XS")
+	stop := f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	stop()
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, tk.Ref, "S") // before the next claim: $3 left
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // a run with budget left, $4 spent in all
+	sized(t, f, tk.Ref, "XS")     // spent again
+	next := implement(t, f, tk.Ref)
+	if blocked := f.waitTask(t, next.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+	select {
+	case s := <-f.h.started:
+		t.Fatalf("an unhold --anyway that no run needed let a later run start: capped at $%v", s.spec.MaxBudgetUSD)
+	case <-time.After(time.Second):
+	}
+}
+
+func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 74)
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent another $2, failed
+	if blocked := f.waitTask(t, task.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("block kind = %q after the run let start anyway, want budget_exceeded", blocked.BlockKind)
+	}
+	f.waitHold(t, tk.Ref, "budget_exceeded") // the hold follows the block
+	select {
+	case s := <-f.h.started:
+		t.Fatalf("a second run started after one unhold --anyway: capped at $%v", s.spec.MaxBudgetUSD)
+	default:
+	}
+}
+
+// waitHold waits until the ticket's hold is want. It reads the hold rather
+// than waiting on a ticket.hold_set event, since a ticket held a second time
+// already has the first.
+func (f *runFixture) waitHold(t *testing.T, ref, want string) {
+	t.Helper()
+	deadline := time.Now().Add(waitFor)
+	for {
+		tk, err := f.tickets.Get(ctx, ref)
+		if err == nil && tk.Hold == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hold of %s = %q, want %q", ref, tk.Hold, want)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
