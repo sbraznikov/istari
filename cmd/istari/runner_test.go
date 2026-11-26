@@ -35,6 +35,7 @@ push '{"actor":"x","branch":"istari/6/other"}' > "$out/push_other"
 push '{"actor":"x"}' > "$out/push_own"
 echo done > feature.txt
 "$istari" checkpoint "Did the work; next nothing" > "$out/checkpoint" 2>&1
+printf '## Summary\n\nWork.\n\n## Evidence\n\nNone.\n\n## Merge Danger\n\ntwo-way, none\n' | "$istari" pr open --title "Work" --body-file - > "$out/pr" 2>&1
 pwd > "$out/pwd"
 "$istari" whoami --json > "$out/whoami" 2>&1
 "$istari" ticket show gh:acme/web#99 > /dev/null 2> "$out/scope"; echo "exit $?" >> "$out/scope"

@@ -42,6 +42,26 @@ func (s *Server) rejectOrYield(ctx context.Context, run runner.Run, err error) e
 	return &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
 }
 
+// requirePullRequest refuses an implementer's istari complete while its
+// ticket has no tracked pull request (spec 4.3): the run yields, so its task
+// is released, not completed, and verify does not wait for a pull request
+// that does not exist. Without GitHub access there are no pull requests to
+// require.
+func (s *Server) requirePullRequest(ctx context.Context, run runner.Run) error {
+	if s.watch == nil {
+		return nil
+	}
+	_, err := s.watch.PullRequestOf(ctx, run.Ticket)
+	if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	reason := "the ticket has no pull request: an implement task is done only after istari pr open"
+	if _, err := s.runs.Yield(ctx, run.ID, reason); err != nil {
+		return err
+	}
+	return &core.Error{Code: core.CodeInvalidState, Message: reason + ". This run ends without a result and costs no attempt: stop now; the task is handed out again, and its next run opens the pull request"}
+}
+
 // RunLogs is a piece of a run's transcript.
 type RunLogs struct {
 	Lines []json.RawMessage    `json:"lines"`
