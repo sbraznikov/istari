@@ -12,6 +12,7 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/tickets/standard"
 )
 
 type planFixture struct {
@@ -134,7 +135,12 @@ func TestATicketAboveMaxSizeMustBeSplit(t *testing.T) {
 	if _, err := f.plans.Check(ctx, f.run, res, runner.PlanSettings{MaxSize: "M"}); err == nil || !strings.Contains(err.Error(), "split") {
 		t.Fatalf("Check = %v, want a split required", err)
 	}
-	split, _ := runner.ParsePlanResult([]byte(goodPlan + "split:\n  tickets:\n    - key: one\n      title: First half\n"))
+	body := "      body: |\n        " + strings.ReplaceAll(strings.TrimRight(childBody, "\n"), "\n", "\n        ") + "\n"
+	split, err := runner.ParsePlanResult([]byte(goodPlan + "split:\n  tickets:\n    - key: one\n      title: First half\n      type: feature\n      size: M\n" + body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.run.Dir = f.dir(31)
 	if _, err := f.plans.Check(ctx, f.run, split, runner.PlanSettings{MaxSize: "M"}); err != nil {
 		t.Fatalf("a split plan: %v", err)
 	}
@@ -149,8 +155,20 @@ func TestADirectoryInTheZoneIsRefused(t *testing.T) {
 	}
 }
 
-func TestASplitMakesAdmittedChildrenAndLeavesTheParentWithoutTasks(t *testing.T) {
-	t.Parallel()
+type splitFixture struct {
+	gh      *githubtest.Server
+	parent  int
+	ref     tickets.Ref
+	tickets *core.Tickets
+	tasks   *core.Tasks
+	plans   *runner.Plans
+	run     runner.Run
+}
+
+// newSplit is a parent ticket in planning, synced from a fake GitHub, and a
+// planner's run whose checkout holds cache/cache.go.
+func newSplit(t *testing.T) *splitFixture {
+	t.Helper()
 	gh := githubtest.New(t)
 	gh.SetPermission("alex", "write")
 	parent := gh.Seed("Too big", "## Context\n\nBig.\n", "alex")
@@ -173,9 +191,89 @@ func TestASplitMakesAdmittedChildrenAndLeavesTheParentWithoutTasks(t *testing.T)
 		}
 	}
 	plan, _ := tasks.Create(ctx, "system", core.NewTask{Ticket: ref.String(), Project: "web", Role: "planner"})
-	impl, _ := tasks.Create(ctx, "system", core.NewTask{Ticket: ref.String(), Project: "web", Role: "implementer", Needs: []string{plan.ID}})
-	plans := runner.NewPlans(nil, journal.New(nil, s, nil), k, nil).WithSplit(tasks, adapter, syncer.Created)
-	run := runner.Run{ID: "r_s", Ticket: ref.String(), Task: plan.ID, Role: "planner", Profile: "planner-1"}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "cache", "cache.go"), "package cache\n")
+	return &splitFixture{gh: gh, parent: parent, ref: ref, tickets: k, tasks: tasks,
+		plans: runner.NewPlans(nil, journal.New(nil, s, nil), k, nil).WithSplit(tasks, adapter, syncer.Created),
+		run:   runner.Run{ID: "r_s", Ticket: ref.String(), Task: plan.ID, Role: "planner", Profile: "planner-1", Dir: dir}}
+}
+
+// childBody is a child ticket's text after the standard, without the table.
+const childBody = "## Context\n\nThe cache in `cache/cache.go` is slow.\n\n" +
+	"## What needs to be done\n\n- Make it fast.\n\n" +
+	"## Acceptance criteria\n\n- [ ] It is fast.\n\n" +
+	"## Out of scope\n\n- Eviction.\n\n" +
+	"## Dependencies\n\n- Needs: none\n"
+
+// splitPlan is a plan whose zone needs no checkout, split into children.
+func splitPlan(children ...tickets.PlanTicket) runner.PlanResult {
+	return runner.PlanResult{Summary: "s", Slices: []string{"a"}, Seams: []runner.Seam{{Name: "X", Catches: "c", Misses: "m"}},
+		Zone: []string{"x.go (new)"}, Split: &tickets.Plan{Tickets: children}}
+}
+
+func TestSplitChildrenOfAP0ParentCarryTheTableAndMeetTheStandard(t *testing.T) {
+	f := newSplit(t)
+	if _, err := f.tickets.SetPriority(ctx, "human:alex", f.ref.String(), "P0"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.plans.Check(ctx, f.run, splitPlan(tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "bug", Size: "S"}), runner.PlanSettings{MaxSize: "L"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	children, err := f.plans.Split(ctx, f.run, *res.Split)
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	ref, _ := tickets.ParseRef(children[0])
+	created := f.gh.Issue(ref.Number).Body
+	table := "| Type | Size | Priority | Repository |\n|---|---|---|---|\n| bug | S | P0 | `" + githubtest.Repo + "` |\n"
+	if !strings.HasSuffix(created, table) {
+		t.Fatalf("the child's body:\n%s\nwant it to end with the table:\n%s", created, table)
+	}
+	checker := standard.Checker{Standard: standard.Default(), Root: f.run.Dir, Repo: githubtest.Repo}
+	if got, err := checker.Check(ctx, standard.Draft{Body: created}); err != nil || !got.OK() {
+		t.Fatalf("the child against the standard: %+v, %v", got.Deviations, err)
+	}
+}
+
+func TestASplitChildNamingAnotherRepositoryHasItInItsTable(t *testing.T) {
+	f := newSplit(t)
+	res, err := f.plans.Check(ctx, f.run, splitPlan(tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "feature", Size: "M", Repo: "acme/lib"}), runner.PlanSettings{MaxSize: "L"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if body := res.Split.Tickets[0].Body; !strings.HasSuffix(body, "| feature | M | P2 | `acme/lib` |\n") {
+		t.Fatalf("the child's body:\n%s\nwant acme/lib and the default priority in its table", body)
+	}
+}
+
+func TestASplitWithAChildThatMissesTheStandardIsRefusedBeforeAnyIssue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		child tickets.PlanTicket
+		named string
+	}{
+		"no size":      {tickets.PlanTicket{Key: "b", Title: "Half B", Body: childBody, Type: "bug"}, "size"},
+		"missing path": {tickets.PlanTicket{Key: "b", Title: "Half B", Body: strings.Replace(childBody, "cache/cache.go", "checkpoint_test.go", 1), Type: "bug", Size: "S"}, "checkpoint_test.go"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSplit(t)
+			issues := f.gh.IssueCount()
+			good := tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "bug", Size: "S"}
+			_, err := f.plans.Check(ctx, f.run, splitPlan(good, tc.child), runner.PlanSettings{MaxSize: "L"})
+			if err == nil || !strings.Contains(err.Error(), "child b ") || !strings.Contains(err.Error(), tc.named) || strings.Contains(err.Error(), "child a ") {
+				t.Fatalf("Check = %v, want child b refused with its %s named", err, tc.named)
+			}
+			if f.gh.IssueCount() != issues {
+				t.Fatalf("issues: %d, want %d: nothing created", f.gh.IssueCount(), issues)
+			}
+		})
+	}
+}
+
+func TestASplitMakesAdmittedChildrenAndLeavesTheParentWithoutTasks(t *testing.T) {
+	f := newSplit(t)
+	gh, parent, ref, k, tasks, plans, run := f.gh, f.parent, f.ref, f.tickets, f.tasks, f.plans, f.run
+	impl, _ := tasks.Create(ctx, "system", core.NewTask{Ticket: ref.String(), Project: "web", Role: "implementer", Needs: []string{run.Task}})
 	children, err := plans.Split(ctx, run, tickets.Plan{Tickets: []tickets.PlanTicket{{Key: "a", Title: "Half A"}, {Key: "b", Title: "Half B", Needs: []string{"a"}}}})
 	if err != nil {
 		t.Fatalf("Split: %v", err)
