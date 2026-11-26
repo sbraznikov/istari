@@ -32,8 +32,8 @@ const (
 	Checkpoint Kind = "checkpoint"
 	Review     Kind = "review"
 	Transition Kind = "transition"
-	Note       Kind = "note" // something istari noticed; ID names the task it is about
-	CI         Kind = "ci"   // a failed check on the pull request's head, with its output
+	Note       Kind = "note"    // something istari noticed; ID names the task it is about
+	CI         Kind = "ci"      // a failed check on the pull request's head, with its output
 	Comment    Kind = "comment" // a trusted member's comment on the issue while the ticket is in work
 )
 
