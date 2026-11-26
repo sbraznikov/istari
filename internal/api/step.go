@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/sbraznikov/istari/internal/core"
 )
@@ -29,15 +28,12 @@ func (r stepRequest) validate() error {
 	return fmt.Errorf("loop %q is not %s, %s, %s or %s", r.Loop, LoopScheduler, LoopPipeline, LoopSync, LoopWatch)
 }
 
-// steps serializes the passes of a stepped daemon: as the timed loops do,
-// no loop runs two passes at once.
-type steps struct{ mu sync.Mutex }
-
-// Step runs one pass of loop and returns when it has finished. A loop the
-// daemon has not configured, such as sync without a tracker, is refused.
+// Step runs one pass of loop and returns when it has finished. Steps run one
+// at a time, as each timed loop runs one pass at a time. A loop the daemon
+// has not configured, such as sync without a tracker, is refused.
 func (s *Server) Step(ctx context.Context, loop string) error {
-	s.steps.mu.Lock()
-	defer s.steps.mu.Unlock()
+	s.stepping.Lock()
+	defer s.stepping.Unlock()
 	switch loop {
 	case LoopScheduler:
 		return s.sched.Step(ctx)
