@@ -958,6 +958,39 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	}
 }
 
+// A daemon stopped while it gave a recovered ticket the stages of its state
+// leaves the round without its merge task: that is no merge (spec 4.8, T11).
+func TestARecoveredTicketWhoseStagesWereCutShortIsNotMerged(t *testing.T) {
+	t.Parallel()
+	awaitingApproval := func() *engineFixture {
+		f := newEngine(t, config.Defaults{}, nil)
+		if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+	whole := awaitingApproval()
+	whole.reconcile(t)
+	approve := whole.stage(t, ref, "approve")
+
+	f := awaitingApproval()
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: ref, Project: "web", Role: approve.Role, MaxAttempts: approve.MaxAttempts}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("the ticket is %s, want awaiting_approval", st)
+	}
+	if merge := f.stage(t, ref, pipeline.StageMerge); merge.State != core.TaskWaiting {
+		t.Fatalf("the merge task is %q, want waiting for approve", merge.State)
+	}
+}
+
 // reports are the findings code accepted in the report of each review task.
 type reports map[string]int
 

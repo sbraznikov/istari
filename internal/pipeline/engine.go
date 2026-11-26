@@ -267,6 +267,17 @@ func (r round) done(stages ...string) bool {
 	return true
 }
 
+// cutShort tells whether the engine's first round is missing or lacks its
+// merge task, the last stage of every pipeline: a daemon stopped while it
+// made the round's tasks one by one.
+func (r round) cutShort() bool {
+	if r.n == 0 {
+		return true
+	}
+	_, ok := r.tasks[StageMerge]
+	return r.n == 1 && !r.conflict && !ok
+}
+
 // Reconcile moves every ticket as far as its tasks allow. It is idempotent.
 func (e *Engine) Reconcile(ctx context.Context, all []core.Ticket) error {
 	tasks, err := e.tasks.List(ctx)
@@ -323,9 +334,10 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
+	if from := resumeFrom(tk.State); from != nil && r.cutShort() && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
-		// tracker (istari recover): it gets the stages of its state on.
+		// tracker (istari recover): it gets the stages of its state on, also
+		// those a daemon stopped in between did not make.
 		if err := e.expand(ctx, tk, 1, false, from); err != nil {
 			return err
 		}
@@ -465,7 +477,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 		return e.verdict(ctx, tk, r, fire)
 	case core.TicketAwaitingApproval:
-		if r.done(StageMerge) {
+		if m, ok := r.tasks[StageMerge]; ok && m.State == core.TaskCompleted {
 			return fire("merged") // T11
 		}
 	}
