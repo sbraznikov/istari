@@ -248,7 +248,7 @@ const mainSuffix = ".main"
 // onMain returns the result of a red check on the main branch's tip, which
 // tells whether the failure is the ticket's (spec 7.7). It is kept per main
 // commit: a result the journal has for the tip is used again; otherwise the
-// command runs once in a scratch checkout of the tip.
+// command runs in a scratch checkout of the tip, and a red run once more.
 func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, main, name, cmd string, entries []journal.Entry) (*journal.MainCheck, error) {
 	tip, err := gitOut(ctx, p.cp.ws.clonePath(ws.Repo), "rev-parse", "refs/remotes/origin/"+main)
 	if err != nil {
@@ -270,9 +270,15 @@ func (p *PullRequests) onMain(ctx context.Context, ticket string, ws Workspace, 
 	if tip, err = gitOut(ctx, dir, "rev-parse", "HEAD"); err != nil {
 		return nil, err
 	}
-	m := &journal.MainCheck{Commit: shortCommit(tip), Check: name, Result: "green"}
-	if passed, output := runCheck(ctx, dir, cmd); !passed {
-		m.Result, m.Output = "red", output
+	m := &journal.MainCheck{Commit: shortCommit(tip), Check: name, Result: "red"}
+	// One red run can be a flaky test: only a second red is kept.
+	for range 2 {
+		passed, output := runCheck(ctx, dir, cmd)
+		if passed {
+			m.Result, m.Output = "green", ""
+			break
+		}
+		m.Output = output
 	}
 	return m, nil
 }

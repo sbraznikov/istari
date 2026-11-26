@@ -118,6 +118,38 @@ func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
 	}
 }
 
+func TestAFullThatFailsOnMainOnceAndPassesOnTheSecondRunRaisesNoQuestion(t *testing.T) {
+	t.Parallel()
+	flaked := filepath.Join(t.TempDir(), "flaked")
+	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }; test -e "+flaked+" || { touch "+flaked+"; echo MAIN FLAKE; exit 1; }")
+	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
+	_, err := prs.Open(ctx, f.run, "Add the cache", description)
+	if err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") || strings.Contains(err.Error(), "end your run") {
+		t.Fatalf("pr open with a full check that flaked on main: %v", err)
+	}
+	if got := f.elsewhere(t, runs()); len(got) != 2 {
+		t.Fatalf("the full check ran %d times outside the ticket's worktree (%v), want twice on main", len(got), got)
+	}
+	main := strings.TrimSpace(gitIn(t, filepath.Join(f.root, "remotes", "acme", "web.git"), "rev-parse", "--short=12", "main"))
+	entries := prJournal(t, f)
+	for _, e := range entries {
+		if e.Kind == journal.Question {
+			t.Fatalf("a question was raised: %q", e.Text)
+		}
+	}
+	if last := entries[len(entries)-1].Checkpoint; last == nil || last.Main == nil || last.Main.Commit != main || last.Main.Result != "green" {
+		t.Fatalf("the entry = %+v, want main %s green", last, main)
+	}
+	if tk, err := f.tickets.Get(ctx, f.tk.Ref); err != nil || tk.Hold != "" {
+		t.Fatalf("ticket = %+v, %v; want it not held", tk, err)
+	}
+	if gh.IssueCount() != 0 {
+		t.Fatal("a pull request was opened")
+	}
+}
+
 func TestTheFullCheckRunsOnMainOncePerMainCommit(t *testing.T) {
 	t.Parallel()
 	f, _, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
@@ -141,10 +173,13 @@ func TestTheFullCheckRunsOnMainOncePerMainCommit(t *testing.T) {
 
 func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
 	t.Parallel()
-	f, gh, prs, _ := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
+	f, gh, prs, runs := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
 	_, err := prs.Open(ctx, f.run, "Add the cache", description)
 	if err == nil || !strings.Contains(err.Error(), "end your run") {
 		t.Fatalf("pr open with a full check red on main too: %v", err)
+	}
+	if got := f.elsewhere(t, runs()); len(got) != 2 {
+		t.Fatalf("the full check ran %d times outside the ticket's worktree (%v), want twice on main", len(got), got)
 	}
 	main := strings.TrimSpace(gitIn(t, filepath.Join(f.root, "remotes", "acme", "web.git"), "rev-parse", "--short=12", "main"))
 	entries := prJournal(t, f)
@@ -170,6 +205,15 @@ func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
 	}
 	if gh.IssueCount() != 0 {
 		t.Fatal("a pull request was opened")
+	}
+	write(t, filepath.Join(f.ws.Dir, "again"), "x\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "try again")
+	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "end your run") {
+		t.Fatalf("a later pr open on the same main tip: %v", err)
+	}
+	if got := f.elsewhere(t, runs()); len(got) != 0 {
+		t.Fatalf("a later pr open on the same main tip ran the full check on main again: %v", got)
 	}
 }
 
