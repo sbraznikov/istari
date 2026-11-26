@@ -383,71 +383,59 @@ func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
 	}
 }
 
-// waitingPlanner submits its plan when the test lets it: once while GitHub
-// refuses for the rate limit, once after, then completes.
+// waitingPlanner submits its plan in run n once the test lets it (the file
+// $log.go.n), and completes only when the plan was taken.
 const waitingPlanner = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
 log=%[2]q
-plan() {
-  "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+if [ "$ISTARI_ROLE" = planner ]; then
+  n=$(( $(cat "$log.n" 2>/dev/null || echo 0) + 1 )); echo $n > "$log.n"
+  while [ ! -e "$log.go.$n" ]; do sleep 0.05; done
+  if "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
 summary: Write the feature file
 slices: [the feature file]
 seams: [{name: feature.txt, catches: its presence, misses: its content}]
 zone: [feature.txt (new)]
 PLAN
-}
-if [ "$ISTARI_ROLE" = planner ]; then
-  touch "$log.started"
-  while [ ! -e "$log.refusing" ]; do sleep 0.05; done
-  plan
-  touch "$log.submitted"
-  while [ ! -e "$log.answering" ]; do sleep 0.05; done
-  plan
-  "$istari" complete "planned" >> "$log" 2>&1
+  then "$istari" complete "planned" >> "$log" 2>&1; fi
 fi
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-func TestAPlanSubmittedWhileGitHubRefusesForTheRateLimitIsLaterNotRejected(t *testing.T) {
+func TestAPlanSubmittedWhileGitHubRefusesForTheRateLimitCostsNoAttempt(t *testing.T) {
 	t.Parallel()
 	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(waitingPlanner, binary, log) })
-	// The planner is another process: the test polls its marker files.
-	await := func(file string) {
+	// signal lets the planner process of run n submit.
+	signal := func(n int) {
 		t.Helper()
-		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-			if _, err := os.Stat(file); err == nil {
-				return
-			}
-			if time.Now().After(deadline) {
-				// An unreadable log is safe here: it only feeds this failure message.
-				out, _ := os.ReadFile(log)
-				t.Fatalf("the planner did not reach %s\nagent log:\n%s\ndaemon:\n%s", filepath.Base(file), out, d.stderr)
-			}
-		}
-	}
-	// signal lets the planner process move on.
-	signal := func(file string) {
-		t.Helper()
-		if err := os.WriteFile(file, nil, 0o644); err != nil {
+		if err := os.WriteFile(fmt.Sprintf("%s.go.%d", log, n), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	await(log + ".started")
+	// The planner is another process: the test polls for its first run.
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(log + ".n"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no planner run started\ndaemon:\n%s", d.stderr)
+		}
+	}
 	gh.SetRateLimit(0, time.Now().Add(2*time.Second))
-	signal(log + ".refusing")
-	await(log + ".submitted")
+	signal(1)
+	endedRuns(t, d, log, "planner", 1)
 	gh.SetRateLimit(5000, time.Now().Add(time.Hour))
-	signal(log + ".answering")
-	runs := endedRuns(t, d, log, "planner", 1)
+	signal(2)
+	yielded, completed := yieldedAndCompleted(t, endedRuns(t, d, log, "planner", 2), log)
 	out, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "rate_limited") || strings.Contains(string(out), "invalid_ticket") {
-		t.Errorf("the plan submitted while GitHub refuses was not answered rate_limited:\n%s", out)
+	if !strings.Contains(string(out), "tracker_unavailable") || strings.Contains(string(out), "invalid_ticket") {
+		t.Errorf("the plan submitted while GitHub refuses was not answered as later:\n%s", out)
 	}
-	if runs[0].Reason != "completed: planned" {
-		t.Fatalf("the planner run ended %q, want completed: planned\nagent log:\n%s", runs[0].Reason, out)
+	if task := showTask(t, d, completed.Task); yielded.Task != completed.Task || task.Attempts != 0 {
+		t.Fatalf("the plan task is %+v, want the yielded task handed out again with no failed attempt", task)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -551,6 +552,32 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 	}
 	if gh.Issue(pr.Number).Draft {
 		t.Fatal("the pull request is still a draft")
+	}
+}
+
+func TestAReviewIsPublishedThroughAShortOutageAndUnavailableAfterALongOne(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).WithBackoff([]time.Duration{time.Millisecond, time.Millisecond, time.Millisecond})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := vcs.Review{Standards: vcs.Axis{Summary: "0 findings"}, Spec: vcs.Axis{Summary: "0 findings"}}
+	gh.FailNext(2)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err != nil {
+		t.Fatalf("PublishReview after two 500s: %v", err)
+	}
+	gh.FailNext(4)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview during an outage: %v, want ErrUnavailable", err)
+	}
+	gh.FailNextWith(1, http.StatusUnprocessableEntity)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err == nil || errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview answered 422: %v, want a plain error", err)
+	}
+	if got := len(gh.Issue(pr.Number).Reviews); got != 1 {
+		t.Fatalf("%d reviews, want the one published through the short outage", got)
 	}
 }
 

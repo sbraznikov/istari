@@ -45,17 +45,22 @@ type Options struct {
 	// ratelimit.Transport. The daemon gives every GitHub client one shared
 	// transport, so that istari doctor sees all requests (#208).
 	HTTPClient *http.Client
+	// Backoff are the waits before each retry of a write that met a server
+	// error, a rate limit or a network error (spec section 5); its length is
+	// the number of retries. nil: tickets.DefaultBackoff; empty: no retry.
+	Backoff []time.Duration
 }
 
 // Provider talks to GitHub Issues.
 type Provider struct {
-	base   string
-	token  string
-	http   *http.Client
-	mu     sync.Mutex      // serializes labels, self and files
-	labels map[string]bool // "owner/repo\x00label" known to exist
-	self   string          // the token's login, once known
-	files  map[string]file // "owner/repo\x00path" as the default branch's head had it
+	base    string
+	token   string
+	http    *http.Client
+	backoff []time.Duration
+	mu      sync.Mutex      // serializes labels, self and files
+	labels  map[string]bool // "owner/repo\x00label" known to exist
+	self    string          // the token's login, once known
+	files   map[string]file // "owner/repo\x00path" as the default branch's head had it
 }
 
 var (
@@ -133,7 +138,11 @@ func New(opts Options) *Provider {
 	client := *opts.HTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.HTTPClient = &client
-	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}, files: map[string]file{}}
+	if opts.Backoff == nil {
+		opts.Backoff = tickets.DefaultBackoff
+	}
+	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient,
+		backoff: opts.Backoff, labels: map[string]bool{}, files: map[string]file{}}
 }
 
 // Capabilities implements tickets.Provider.
@@ -738,28 +747,33 @@ func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []strin
 
 // apiError is a non-2xx answer of the API.
 type apiError struct {
-	Status      int
-	Message     string
-	RateLimited bool // GitHub refused for its rate limit: ask again later
+	Status  int
+	Message string
+	// Limited: GitHub refused for its rate limit (ratelimit.RateLimited), ask
+	// again later.
+	Limited bool
 }
 
 func (e *apiError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Message) }
 
 // errorOf is the apiError of a non-2xx answer with its message.
 func errorOf(res *http.Response, message string) *apiError {
-	e := &apiError{Status: res.StatusCode, Message: message, RateLimited: ratelimit.RateLimited(res)}
-	if e.RateLimited {
+	e := &apiError{Status: res.StatusCode, Message: message, Limited: ratelimit.RateLimited(res)}
+	if e.Limited {
 		e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
 	}
 	return e
 }
+
+// unavailable tells a server error or a rate limit from a refusal.
+func (e *apiError) unavailable() bool { return e.Status >= 500 || e.Limited }
 
 // Is makes 404 (missing), 410 (deleted) and 301 (transferred to another
 // repository) match tickets.ErrNotFound: the ticket is not at its ref; and a
 // refusal for the rate limit match ratelimit.ErrRateLimited.
 func (e *apiError) Is(target error) bool {
 	if target == ratelimit.ErrRateLimited {
-		return e.RateLimited
+		return e.Limited
 	}
 	if target != tickets.ErrNotFound {
 		return false
@@ -796,13 +810,46 @@ func (p *Provider) doPage(ctx context.Context, path string, out any) (string, er
 	return m[1], nil // an absolute URL, followed as given
 }
 
+// request sends one API request. A write that meets a server error, a rate
+// limit or a network error is tried again after each wait of the backoff
+// (spec section 5); a read is not, since the next poll reads again.
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) (*http.Response, error) {
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
 			return nil, err
 		}
+	}
+	var res *http.Response
+	send := func() (err error) {
+		res, err = p.send(ctx, method, path, data, out)
+		return err
+	}
+	if method == http.MethodGet {
+		return res, send()
+	}
+	err := tickets.RetryWrite(ctx, p.backoff, transient, send)
+	return res, err
+}
+
+// transient tells whether an error is the tracker's passing trouble: a server
+// error, a rate limit or a network error, not a refusal of the request.
+func transient(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.unavailable()
+	}
+	var network *url.Error
+	return errors.As(err, &network)
+}
+
+func (p *Provider) send(ctx context.Context, method, path string, data []byte, out any) (*http.Response, error) {
+	var reader io.Reader
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	target := path
@@ -816,7 +863,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Authorization", "Bearer "+p.token)
-	if body != nil {
+	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := p.http.Do(req)
@@ -824,7 +871,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		return nil, err
 	}
 	defer res.Body.Close()
-	data, err := io.ReadAll(res.Body)
+	reply, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -832,14 +879,14 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		var e struct {
 			Message string `json:"message"`
 		}
-		json.Unmarshal(data, &e)
+		json.Unmarshal(reply, &e)
 		if e.Message == "" {
-			e.Message = strconv.Quote(string(data))
+			e.Message = strconv.Quote(string(reply))
 		}
 		return nil, errorOf(res, e.Message)
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
+	if out != nil && len(reply) > 0 {
+		if err := json.Unmarshal(reply, out); err != nil {
 			return nil, fmt.Errorf("decoding %s %s: %w", method, path, err)
 		}
 	}

@@ -46,8 +46,15 @@ type Server struct {
 	deleted    map[int]bool
 	dropLabels bool
 	failNext   int
-	files      map[string]string // repository files on the default branch
-	commits    int               // commits on the default branch: its head
+	failStatus int
+
+	failCommentsOn   string // comments containing it fail
+	failComments     int
+	failCommentsWith int
+	failReviews      int // reviews of a pull request that fail
+	failReviewsWith  int
+	files            map[string]string // repository files on the default branch
+	commits          int               // commits on the default branch: its head
 
 	appID           int64
 	appKey          *rsa.PublicKey
@@ -165,7 +172,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		}
 		if s.failNext > 0 {
 			s.failNext--
-			s.write(w, http.StatusInternalServerError, map[string]string{"message": "Server Error"})
+			s.write(w, s.failStatus, map[string]string{"message": http.StatusText(s.failStatus)})
 			return
 		}
 		if gql, ok := strings.CutSuffix(s.prefix, "/v3"); ok && r.URL.Path == gql+"/graphql" {
@@ -485,6 +492,11 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct{ Body string }
 	json.NewDecoder(r.Body).Decode(&req)
+	if s.failComments > 0 && strings.Contains(req.Body, s.failCommentsOn) {
+		s.failComments--
+		s.write(w, s.failCommentsWith, map[string]string{"message": http.StatusText(s.failCommentsWith)})
+		return
+	}
 	c := s.addComment(i, s.TokenUser, req.Body)
 	s.write(w, http.StatusCreated, map[string]any{"id": c.ID, "html_url": fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", Repo, i.Number, c.ID)})
 }
@@ -654,10 +666,21 @@ func (s *Server) SetPermission(login, perm string) {
 }
 
 // FailNext makes the next n requests answer 500.
-func (s *Server) FailNext(n int) {
+func (s *Server) FailNext(n int) { s.FailNextWith(n, http.StatusInternalServerError) }
+
+// FailNextWith makes the next n requests answer status.
+func (s *Server) FailNextWith(n, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failNext = n
+	s.failNext, s.failStatus = n, status
+}
+
+// FailComments makes the next n comments that contain text answer status;
+// every other request is answered as usual.
+func (s *Server) FailComments(text string, n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCommentsOn, s.failComments, s.failCommentsWith = text, n, status
 }
 
 // SetPageSize sets how many items a page holds.
