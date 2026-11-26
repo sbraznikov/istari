@@ -274,7 +274,9 @@ func TestAnAnswerRefusedForTheRateLimitIsToldFromOtherRefusals(t *testing.T) {
 				w.WriteHeader(c.status)
 			}))
 			defer srv.Close()
-			res, err := http.Get(srv.URL)
+			// The server's own client: srv.Close of a parallel case closes the
+			// idle connections of http.DefaultTransport, in use here.
+			res, err := srv.Client().Get(srv.URL)
 			if err != nil {
 				t.Fatal(err)
 			}
