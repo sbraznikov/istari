@@ -170,8 +170,10 @@ func TestLiftingTheMainRedHoldStartsAnImplementRunThatOpensThePullRequest(t *tes
 	if pr := findPull(gh); pr > 0 {
 		t.Fatalf("pull request #%d opened while main is red", pr)
 	}
-	if impl, verify := taskState(t, d, ref, "implementer"), taskState(t, d, ref, "verify"); impl != "ready" || verify == "ready" {
-		t.Fatalf("while held: implement task %s, verify task %s; want implement ready and verify waiting", impl, verify)
+	// The yield marks the run; its task is released when the run ends.
+	waitFor(t, d, log, "implement task released", func() bool { return taskState(t, d, ref, "implementer") == "ready" })
+	if verify := taskState(t, d, ref, "verify"); verify == "ready" {
+		t.Fatalf("while held: verify task %s; want it waiting", verify)
 	}
 	if err := os.WriteFile(fixed, nil, 0o644); err != nil {
 		t.Fatal(err)
