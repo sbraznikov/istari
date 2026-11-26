@@ -14,6 +14,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
@@ -81,9 +82,7 @@ func startAgentDaemon(t *testing.T, agent string) *agentDaemon {
 	s.Close()
 
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(agent), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), agent)
 	gh := githubtest.New(t)
 	for range 5 { // issue #5 is the ticket: its journal goes there; closed, they are not synced or refined
 		gh.HumanClose(gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob"), "bob", "completed")

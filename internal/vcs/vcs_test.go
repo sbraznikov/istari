@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -285,7 +286,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
 	hooks := filepath.Join(root, "evil-hooks")
 	os.MkdirAll(hooks, 0o755)
-	os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n"), 0o755)
+	exectest.Write(t, filepath.Join(hooks, "pre-push"), "#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n")
 	git(t, work, "config", "core.hooksPath", hooks)
 	spec.Token = "secret-installation-token"
 	if err := vcs.Push(ctx, spec); err != nil {
