@@ -343,6 +343,11 @@ func (s *Server) operations() map[string]operation {
 					return nil, &core.Error{Code: core.CodeInvalidState, Message: "submit the review with istari review submit before istari complete"}
 				}
 			}
+			if run.Role == "implementer" {
+				if err := s.requirePullRequest(ctx, run); err != nil {
+					return nil, err
+				}
+			}
 			_, err := s.runs.Complete(ctx, run.ID, r.Message)
 			return ok(err)
 		}),
