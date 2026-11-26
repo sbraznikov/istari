@@ -10,7 +10,9 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
+	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // Requests of the operations. Actor names who acts: on the local socket the
@@ -102,6 +104,9 @@ type (
 	RunCompleteRequest struct {
 		Actor   string `json:"actor"`
 		Message string `json:"message,omitempty"`
+		// CIUnrelated is an implementer's answer that the red CI of its pull
+		// request is not caused by the change, and why (spec 4.3).
+		CIUnrelated string `json:"ci_unrelated,omitempty"`
 	}
 	DispatchRequest struct {
 		Actor   string `json:"actor"`
@@ -345,6 +350,11 @@ func (s *Server) operations() map[string]operation {
 			if !isAgent {
 				return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari complete is for an agent: it needs the run token in ISTARI_TOKEN"}
 			}
+			if r.CIUnrelated != "" {
+				if err := s.ciUnrelated(ctx, run, r.CIUnrelated); err != nil {
+					return nil, err
+				}
+			}
 			if run.Role == "reviewer" {
 				// The verdict needs the report (spec 7.6): a reviewer that
 				// ends without one fails its run, and the attempt counts.
@@ -512,4 +522,25 @@ func (s *Server) operations() map[string]operation {
 			return k.ClearHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),
 	}
+}
+
+// ciUnrelated records an implementer's answer that the red CI of its pull
+// request is not caused by the change; verify then reruns the failed jobs
+// once instead of starting a round (spec 4.3).
+func (s *Server) ciUnrelated(ctx context.Context, run runner.Run, reason string) error {
+	const next = "; complete without --ci-unrelated"
+	if run.Role != "implementer" {
+		return &core.Error{Code: CodeTokenForbidden, Message: "only the implementer answers a red CI as not caused by the change, not the " + run.Role + next}
+	}
+	if s.watch == nil {
+		return &core.Error{Code: core.CodeInvalidState, Message: "CI is not watched: istari has no GitHub access" + next}
+	}
+	err := s.watch.Unrelated(ctx, run.Ticket, reason)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no pull request istari watches: open it with istari pr open" + next}
+	case errors.Is(err, vcs.ErrNotRed):
+		return &core.Error{Code: core.CodeInvalidState, Message: err.Error() + ": wait until CI is red" + next}
+	}
+	return err
 }

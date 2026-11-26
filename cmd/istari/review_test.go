@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -45,14 +46,25 @@ type reviewed struct {
 	ref tickets.Ref
 	pr  int
 	log string
+
+	dataDir, config string
+	env             []string
 }
 
 func newReviewed(t *testing.T, agent string) reviewed {
 	t.Helper()
+	return newRecovered(t, agent, "in_review", nil)
+}
+
+// newRecovered is a ticket recovered in state, with its branch, its pull
+// request, the fake GitHub set up by before ahead of the recover, and a
+// daemon whose claude is agent.
+func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
-	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "istari:in_review")
+	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "istari:"+state)
 	branch := fmt.Sprintf("istari/%d/add-rate-limits", n)
 	seed := filepath.Join(server, "seed")
 	git(t, seed, "switch", "-q", "-c", branch)
@@ -63,6 +75,9 @@ func newReviewed(t *testing.T, agent string) reviewed {
 	git(t, seed, "commit", "-q", "-m", "feature")
 	git(t, seed, "push", "-q", "origin", branch)
 	pr := gh.SeedPull(branch, "feature")
+	if before != nil {
+		before(gh, pr)
+	}
 	// The journal says where the pull request is: recover watches it again.
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: n}
 	body, err := journal.Render(journal.Entry{Kind: journal.Checkpoint, Actor: "agent:implementer-1", At: time.Now().UTC(),
@@ -83,10 +98,26 @@ func newReviewed(t *testing.T, agent string) reviewed {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
-		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := startDaemonWithConfig(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "recover")
-	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log}
+	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log, dataDir: dataDir, config: config, env: env}
+}
+
+// restart stops the daemon and starts it again: its PR watch polls at once.
+func (r *reviewed) restart(t *testing.T) {
+	t.Helper()
+	r.d = restartDaemon(t, r.d, r.dataDir, r.config, r.env...)
+}
+
+// restartDaemon stops d and starts a daemon on the same data and config.
+func restartDaemon(t *testing.T, d *daemon, dataDir, config string, env ...string) *daemon {
+	t.Helper()
+	if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	d.cmd.Wait()
+	return startDaemonWithConfig(t, dataDir, config, env...)
 }
 
 func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) {

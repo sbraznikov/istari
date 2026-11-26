@@ -62,6 +62,7 @@ type Server struct {
 	issued          map[string]time.Time // installation tokens → expiry
 	checks          map[string][]Check   // commit → check runs
 	statuses        map[string]string    // commit → combined status
+	reruns          int                  // jobs rerun through the API
 	deletedBranches []string
 	counted         []string  // "METHOD path" of the requests that count against the quota
 	remaining       int       // the quota the answers report, with reset
@@ -157,6 +158,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)
 	mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", s.jobLogs)
+	mux.HandleFunc("POST "+repo+"/actions/jobs/{id}/rerun", s.rerunJob)
 	mux.HandleFunc("DELETE "+repo+"/git/refs/{ref...}", s.deleteRef)
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
