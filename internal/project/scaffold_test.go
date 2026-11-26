@@ -104,14 +104,20 @@ func TestTheInitTemplateShowsCheckExamplesForSeveralLanguages(t *testing.T) {
 	}
 }
 
-func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
+// The pipelines istari init writes, and this repository's own, which was
+// made from the same template.
+func TestTheInitPipelineAndThisRepositorysLoadAndTheirReviewWaitsForVerify(t *testing.T) {
 	t.Parallel()
-	for _, lang := range []map[string]string{{"go.mod": "module x\n"}, {}} {
+	files := map[string]string{"this repository": "../../.istari/pipeline.toml"}
+	for name, lang := range map[string]map[string]string{"init, Go": {"go.mod": "module x\n"}, "init, no language": {}} {
 		root := tree(t, lang)
 		if _, err := project.Scaffold(root); err != nil {
 			t.Fatal(err)
 		}
-		data, err := os.ReadFile(filepath.Join(root, ".istari", "pipeline.toml"))
+		files[name] = filepath.Join(root, ".istari", "pipeline.toml")
+	}
+	for name, path := range files {
+		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,14 +126,15 @@ func TestTheScaffoldedPipelineLoadsAndItsReviewWaitsForVerify(t *testing.T) {
 			err = p.Validate()
 		}
 		if err != nil {
-			t.Fatalf("pipeline.toml (%v) does not load: %v", lang, err)
+			t.Errorf("%s: the pipeline does not load: %v", name, err)
+			continue
 		}
 		// Warnings names a reviewer stage that does not need verify.
 		if !slices.ContainsFunc(p.Stages, func(s pipeline.Stage) bool { return s.Role == "reviewer" }) {
-			t.Fatalf("pipeline.toml (%v) has no reviewer stage, want one", lang)
+			t.Errorf("%s: the pipeline has no reviewer stage, want one", name)
 		}
 		if w := p.Warnings(); len(w) != 0 {
-			t.Fatalf("pipeline.toml (%v) warns %q, want its review to wait for verify", lang, w)
+			t.Errorf("%s: the pipeline warns %q, want its review to wait for verify", name, w)
 		}
 	}
 }
