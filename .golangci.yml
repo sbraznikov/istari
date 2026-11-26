@@ -5,6 +5,7 @@ linters:
   default: none
   enable:
     - staticcheck
+    - unused # staticcheck's U1000 (unused code), a linter of its own in golangci-lint
     - errcheck
     - nolintlint
   settings:
