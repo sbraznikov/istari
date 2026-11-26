@@ -129,12 +129,17 @@ func (f *runFixture) start(t *testing.T) context.CancelFunc {
 	return cancel
 }
 
+// waitFor bounds how long a test waits for the runner: preparing, stopping
+// and checkpointing a run spawn git, and under -race and parallel load that
+// takes over 10s.
+const waitFor = 30 * time.Second
+
 func (f *runFixture) session(t *testing.T) fakeSession {
 	t.Helper()
 	select {
 	case s := <-f.h.started:
 		return s
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitFor):
 		t.Fatal("the harness was not started")
 		return fakeSession{}
 	}
@@ -142,7 +147,7 @@ func (f *runFixture) session(t *testing.T) fakeSession {
 
 func (f *runFixture) waitTask(t *testing.T, id string, want core.TaskState) core.Task {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitFor)
 	for {
 		task, err := f.tasks.Get(ctx, id)
 		if err == nil && task.State == want {
@@ -158,7 +163,7 @@ func (f *runFixture) waitTask(t *testing.T, id string, want core.TaskState) core
 // waitEvent waits for the first event of typ and returns it.
 func (f *runFixture) waitEvent(t *testing.T, typ string) store.Event {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitFor)
 	for {
 		if events := f.events(t, typ); len(events) > 0 {
 			return events[0]
@@ -574,6 +579,7 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 }
 
 func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	_, task := f.readyTask(t, 16)
 	f.start(t)
@@ -714,8 +720,10 @@ func TestTheImplementerMayRunTheCheckCommandsOfTheMainBranch(t *testing.T) {
 }
 
 func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
+	t.Parallel()
 	for i, role := range []string{"refiner", "planner", "implementer", "reviewer"} {
 		t.Run(role, func(t *testing.T) {
+			t.Parallel()
 			f := newRunner(t, runner.RunnerOptions{})
 			seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntest = \"go test ./... -short\"\n")
 			profile := claudecode.DefaultProfiles()[role]
@@ -753,6 +761,7 @@ func TestEveryRolesBriefListsEveryCommandItsHarnessAllows(t *testing.T) {
 }
 
 func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
@@ -777,6 +786,7 @@ func TestAPlannerMayWriteItsResultFileInsideItsRunDirectoryAndNoOtherFile(t *tes
 }
 
 func TestTheImplementerGetsNoResultFile(t *testing.T) {
+	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{})
 	f.readyTask(t, 18)
 	f.start(t)

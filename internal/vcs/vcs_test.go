@@ -40,6 +40,7 @@ func appFixture(t *testing.T) (*githubtest.Server, *vcs.AppTokens) {
 }
 
 func TestTheAppGetsAnInstallationTokenAndKeepsItUntilItExpires(t *testing.T) {
+	t.Parallel()
 	gh, tokens := appFixture(t)
 	first, err := tokens.Token(ctx, githubtest.Repo)
 	if err != nil {
@@ -59,6 +60,7 @@ func TestTheAppGetsAnInstallationTokenAndKeepsItUntilItExpires(t *testing.T) {
 }
 
 func TestAnOpenedPullRequestLinksToItsTicket(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/add-limits", Base: "main", Title: "Add limits", Body: "## Summary\n\nLimits."})
@@ -72,6 +74,7 @@ func TestAnOpenedPullRequestLinksToItsTicket(t *testing.T) {
 }
 
 func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -124,6 +127,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 }
 
 func TestMergingUsesTheMethodAndDeletesTheBranch(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
@@ -169,6 +173,7 @@ func pushFixture(t *testing.T) (root, remote, work string, spec vcs.PushSpec) {
 }
 
 func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	own := spec.Own
 	if err := vcs.Push(ctx, spec); err != nil {
@@ -210,6 +215,7 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 }
 
 func TestAnAgentCannotRedirectThePush(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	elsewhere := filepath.Join(root, "elsewhere.git")
 	git(t, root, "init", "-q", "--bare", elsewhere)
@@ -236,6 +242,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 }
 
 func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -257,6 +264,7 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 }
 
 func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -287,6 +295,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 }
 
 func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	ticket := "gh:" + githubtest.Repo + "#3"
@@ -301,6 +310,7 @@ func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
 }
 
 func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -342,6 +352,7 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 }
 
 func TestAPullRequestIsFoundByItsURL(t *testing.T) {
+	t.Parallel()
 	if pr, ok := vcs.PullRequestAt("https://github.com/acme/web/pull/42"); !ok || pr.Number != 42 {
 		t.Fatalf("PullRequestAt = %+v, %v", pr, ok)
 	}
@@ -353,6 +364,7 @@ func TestAPullRequestIsFoundByItsURL(t *testing.T) {
 }
 
 func TestADraftPullRequestIsReadyForReviewAfterMarkReady(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
@@ -377,6 +389,7 @@ func TestADraftPullRequestIsReadyForReviewAfterMarkReady(t *testing.T) {
 }
 
 func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t, githubtest.Prefix("/api/v3"))
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
@@ -392,6 +405,7 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 }
 
 func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})

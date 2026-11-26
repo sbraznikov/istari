@@ -58,6 +58,7 @@ func types(events []store.Event) []string {
 }
 
 func TestAppendedEventIsReadBackWithCursorAndTime(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	appended := mustAppend(t, s, store.Event{
 		Type:    "task.claimed",
@@ -93,6 +94,7 @@ func TestAppendedEventIsReadBackWithCursorAndTime(t *testing.T) {
 }
 
 func TestReadReturnsExactlyTheEventsAfterTheCursorInOrder(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	var cursors []store.Cursor
 	for _, typ := range []string{"a.1", "a.2", "a.3", "a.4"} {
@@ -114,6 +116,7 @@ func TestReadReturnsExactlyTheEventsAfterTheCursorInOrder(t *testing.T) {
 }
 
 func TestFiltersReturnOnlyMatchingEvents(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	for _, e := range []store.Event{
 		{Type: "task.created", Project: "web", Ticket: "gh:acme/web#1"},
@@ -141,6 +144,7 @@ func TestFiltersReturnOnlyMatchingEvents(t *testing.T) {
 }
 
 func TestChangesAreAppliedWithTheirEvent(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	mustAppend(t, s, store.Event{Type: "task.created", Task: "t_1"},
 		store.Change{Kind: "task", ID: "t_1", Data: json.RawMessage(`{"state":"ready"}`)})
@@ -160,6 +164,7 @@ func TestChangesAreAppliedWithTheirEvent(t *testing.T) {
 }
 
 func TestAFailedChangeRollsBackItsEventAndTheOtherChanges(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	mustAppend(t, s, store.Event{Type: "task.created", Task: "t_1"},
 		store.Change{Kind: "task", ID: "t_1", Data: json.RawMessage(`{"state":"ready"}`)})
@@ -189,6 +194,7 @@ func TestAFailedChangeRollsBackItsEventAndTheOtherChanges(t *testing.T) {
 }
 
 func TestListReturnsTheRecordsOfOneKindByID(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	for _, c := range []store.Change{
 		{Kind: "task", ID: "t_2", Data: json.RawMessage(`2`)},
@@ -211,6 +217,7 @@ func TestListReturnsTheRecordsOfOneKindByID(t *testing.T) {
 }
 
 func TestConcurrentAppendsGetIncreasingCursorsAndNoneIsLost(t *testing.T) {
+	t.Parallel()
 	path := tempDB(t)
 	handles := []*store.SQLite{open(t, path), open(t, path)} // two handles stand in for two processes
 	const writers, perWriter = 8, 25
@@ -268,6 +275,7 @@ func TestConcurrentAppendsGetIncreasingCursorsAndNoneIsLost(t *testing.T) {
 }
 
 func TestCursorsIncreaseAsStrings(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	var prev store.Cursor
 	for i := range 12 { // past 9 → 10, where decimal strings stop sorting numerically
@@ -280,6 +288,7 @@ func TestCursorsIncreaseAsStrings(t *testing.T) {
 }
 
 func TestOpenAcceptsAPathWithURISpecialCharacters(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "a?b#c%d", "istari.db")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -292,6 +301,7 @@ func TestOpenAcceptsAPathWithURISpecialCharacters(t *testing.T) {
 }
 
 func TestInvalidJSONIsRejectedAndNothingIsWritten(t *testing.T) {
+	t.Parallel()
 	s := open(t, tempDB(t))
 	if _, err := s.Append(ctx, store.Event{Type: "e.1", Payload: json.RawMessage(`{not json`)}); err == nil {
 		t.Error("Append accepted an invalid payload")
@@ -306,6 +316,7 @@ func TestInvalidJSONIsRejectedAndNothingIsWritten(t *testing.T) {
 }
 
 func TestReopeningPreservesTheLogAndTheProjections(t *testing.T) {
+	t.Parallel()
 	path := tempDB(t)
 	s, err := store.Open(path)
 	if err != nil {

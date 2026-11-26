@@ -58,6 +58,7 @@ var roleRules = map[string]map[string][]string{
 }
 
 func TestTheBuiltInInstructionsCarryTheRulesOfTheSpec(t *testing.T) {
+	t.Parallel()
 	for role, rules := range roleRules {
 		text, err := skill.Instruction(role, nil)
 		if err != nil {
@@ -74,6 +75,7 @@ func TestTheBuiltInInstructionsCarryTheRulesOfTheSpec(t *testing.T) {
 }
 
 func TestARoleFileInTheRepositoryReplacesTheBuiltInOne(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".istari", "roles"), 0o755); err != nil {
 		t.Fatal(err)

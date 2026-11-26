@@ -43,6 +43,7 @@ var every = []journal.Entry{
 }
 
 func TestEveryEntryRendersToACommentAndParsesBackWithoutLoss(t *testing.T) {
+	t.Parallel()
 	for _, e := range every {
 		e.At = at
 		body, err := journal.Render(e)
@@ -63,6 +64,7 @@ func TestEveryEntryRendersToACommentAndParsesBackWithoutLoss(t *testing.T) {
 }
 
 func TestAnIncompleteEntryIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, e := range []journal.Entry{
 		{Kind: journal.Question, Actor: "agent:a"},   // no text
 		{Kind: journal.Checkpoint, Actor: "agent:a"}, // no checkpoint
@@ -76,6 +78,7 @@ func TestAnIncompleteEntryIsRefused(t *testing.T) {
 }
 
 func TestTheWorkStateIsBuiltFromTheEntries(t *testing.T) {
+	t.Parallel()
 	w := journal.Summarize(every)
 	want := journal.WorkState{
 		Stage: "planning", Branch: "istari/123/add-cache", PR: "https://github.com/acme/web/pull/7",
@@ -91,6 +94,7 @@ func TestTheWorkStateIsBuiltFromTheEntries(t *testing.T) {
 }
 
 func TestTheWorkStateBlockChangesNothingOutsideItsMarkers(t *testing.T) {
+	t.Parallel()
 	human := "## Context\n\nSome text.\n\n## Acceptance criteria\n\n- [ ] works\n"
 	first := journal.WithWorkState(human, journal.WorkState{Stage: "planning"})
 	if !strings.HasPrefix(first, human) || !strings.Contains(first, "planning") {
@@ -110,6 +114,7 @@ func TestTheWorkStateBlockChangesNothingOutsideItsMarkers(t *testing.T) {
 }
 
 func TestAJournalRebuiltFromTheTrackerEqualsTheStoredOne(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add a cache", "## Context\n\nWe need a cache.\n", "bob")
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
@@ -144,6 +149,7 @@ func TestAJournalRebuiltFromTheTrackerEqualsTheStoredOne(t *testing.T) {
 }
 
 func TestTheJournalMakesNoModelCall(t *testing.T) {
+	t.Parallel()
 	out, err := exec.Command("go", "list", "-deps", "github.com/sbraznikov/istari/internal/tickets/journal").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +162,7 @@ func TestTheJournalMakesNoModelCall(t *testing.T) {
 }
 
 func TestABrokenBlockNeverCostsAHumanTheirText(t *testing.T) {
+	t.Parallel()
 	human := "## Context\n\nKeep me.\n"
 	body := journal.WithWorkState(human, journal.WorkState{Stage: "planning"})
 	// A human deletes the end marker and writes below.
@@ -174,6 +181,7 @@ func TestABrokenBlockNeverCostsAHumanTheirText(t *testing.T) {
 }
 
 func TestReplacingTheBlockKeepsTheBlankLinesAroundIt(t *testing.T) {
+	t.Parallel()
 	first := journal.WithWorkState("Text.\n", journal.WorkState{Stage: "planning"})
 	spaced := strings.Replace(first, "<!-- istari:work-state:start -->", "\n\n\n<!-- istari:work-state:start -->", 1) + "\n\n\nAfter.\n"
 	again := journal.WithWorkState(spaced, journal.WorkState{Stage: "in_progress"})
@@ -186,6 +194,7 @@ func TestReplacingTheBlockKeepsTheBlankLinesAroundIt(t *testing.T) {
 }
 
 func TestADecisionCardIsCheckedAgainstItsSchema(t *testing.T) {
+	t.Parallel()
 	card := func(change func(*journal.DecisionEntry)) journal.Entry {
 		d := &journal.DecisionEntry{Problem: "p", State: "s", Recommendation: "A, because", Recommended: "A", Status: "proposed",
 			Options: []journal.Option{
@@ -220,6 +229,7 @@ func TestADecisionCardIsCheckedAgainstItsSchema(t *testing.T) {
 }
 
 func TestAnEntryTooLongForAComment(t *testing.T) {
+	t.Parallel()
 	long := journal.Entry{Kind: journal.Assumption, Actor: "agent:a", At: at, Text: strings.Repeat("<", 30000)}
 	if _, err := journal.Render(long); err == nil {
 		t.Fatal("an entry past the tracker's comment size was rendered")
@@ -227,6 +237,7 @@ func TestAnEntryTooLongForAComment(t *testing.T) {
 }
 
 func TestAStrayMarkerAboveTheBlockDoesNotSwallowTheTextBetween(t *testing.T) {
+	t.Parallel()
 	body := journal.WithWorkState("## Context\n\nKeep me.\n", journal.WorkState{Stage: "planning"})
 	body = "<!-- istari:work-state:start -->\n## Copied by a human\n\nAnd keep me.\n" + body
 	body = journal.WithWorkState(body, journal.WorkState{Stage: "in_progress"})
@@ -241,6 +252,7 @@ func TestAStrayMarkerAboveTheBlockDoesNotSwallowTheTextBetween(t *testing.T) {
 }
 
 func TestAPlanMakesItsFirstSliceTheNextStep(t *testing.T) {
+	t.Parallel()
 	plan := journal.Entry{Kind: journal.Plan, Actor: "agent:planner-1", Plan: &journal.PlanEntry{Summary: "Two slices", Slices: []string{"the cache layer", "the race test"}}}
 	if w := journal.Summarize([]journal.Entry{plan}); w.Next != "the cache layer" {
 		t.Fatalf("next = %q, want the first slice", w.Next)
@@ -252,6 +264,7 @@ func TestAPlanMakesItsFirstSliceTheNextStep(t *testing.T) {
 }
 
 func TestALostLogIsRestoredFromTheTickets(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	n := gh.Seed("Add a cache", "## Context\n\nWe need a cache.\n", "bob")
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
