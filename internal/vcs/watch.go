@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/store"
@@ -50,6 +51,12 @@ type Tracked struct {
 	Mergeable string `json:"mergeable,omitempty"`
 	MergeHead string `json:"merge_head,omitempty"`
 	MergeBase string `json:"merge_base,omitempty"`
+	// Unrelated is the red head an implementer answered as not caused by the
+	// change, with its Reason; Rerun is the head whose failed jobs istari
+	// reran, at most once per head (spec 4.3).
+	Unrelated string `json:"unrelated,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Rerun     string `json:"rerun,omitempty"`
 
 	version int64
 }
@@ -180,6 +187,86 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 			return err
 		}
 	}
+}
+
+// Unrelated records an implementer's answer that the red CI of the pull
+// request's head is not caused by the change (spec 4.3). It is refused while
+// the head istari knows is not red.
+func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
+	for {
+		t, err := w.PullRequestOf(ctx, ticket)
+		if err != nil {
+			return err
+		}
+		if t.Checks != "failure" || t.SHA == "" {
+			return fmt.Errorf("vcs: the CI of %s's pull request is not red, there is nothing to rerun", ticket)
+		}
+		t.Unrelated, t.Reason = t.SHA, reason
+		data, _ := json.Marshal(t)
+		raw, _ := json.Marshal(map[string]any{"number": t.Number, "sha": t.SHA, "reason": reason})
+		_, err = w.store.Append(ctx, store.Event{Type: "vcs.ci_unrelated", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
+}
+
+// Rerun reruns the failed jobs of the pull request's red head once, when an
+// implementer answered it as unrelated (spec 4.3); started is false when
+// there is no such answer or the head was rerun already. The checks istari
+// knew are forgotten, so the next poll reads the rerun's result, and a note
+// in the journal says what was rerun and why.
+func (w *Watcher) Rerun(ctx context.Context, ticket string) (started bool, err error) {
+	t, err := w.PullRequestOf(ctx, ticket)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || t.Checks != "failure" || t.Unrelated != t.SHA || t.Rerun == t.SHA {
+		return false, err
+	}
+	head := t.SHA
+	jobs, rerr := w.client.RerunFailed(ctx, t.Repo, head)
+	started = len(jobs) > 0
+	raw, _ := json.Marshal(map[string]any{"number": t.Number, "sha": head, "jobs": jobs, "started": started})
+	for {
+		t.Rerun = head // GitHub has the rerun: it is recorded even when a poll came between
+		if started && t.SHA == head {
+			t.Checks = ""
+		}
+		data, _ := json.Marshal(t)
+		_, err = w.store.Append(ctx, store.Event{Type: "vcs.rerun", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			break
+		}
+		if t, err = w.PullRequestOf(ctx, ticket); err != nil {
+			return false, err
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+	return started, w.noteRerun(ctx, t, head, jobs, rerr)
+}
+
+// noteRerun records in the journal which jobs of the head were rerun and
+// why, or why none could be.
+func (w *Watcher) noteRerun(ctx context.Context, t Tracked, head string, jobs []string, rerr error) error {
+	if w.journal == nil {
+		return nil
+	}
+	ref, err := tickets.ParseRef(t.Ticket)
+	if err != nil {
+		return err
+	}
+	text := fmt.Sprintf("CI on `%s` is rerun, once: %s. The implementer says it is not this change: %s", head, strings.Join(jobs, ", "), t.Reason)
+	if len(jobs) == 0 {
+		text = fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, t.Reason)
+	} else if rerr != nil {
+		text += fmt.Sprintf(". Not rerun: %v", rerr)
+	}
+	return w.journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
 }
 
 // Poll reads every open tracked pull request once.
