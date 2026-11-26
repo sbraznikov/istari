@@ -7,6 +7,7 @@ import (
 )
 
 func TestRefsParseAndFormatLosslessly(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{
 		"gh:acme/web#123",
 		"gh:Acme-Corp/billing.core#1",

@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -101,6 +100,10 @@ func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Wo
 		return journal.Entry{}, &core.Error{Code: core.CodeInvalidState, Message: "nothing changed since the last checkpoint"}
 	}
 	entry.Commit = shortCommit(head)
+	checks, err := c.ws.checks(ctx, ws.Repo)
+	if err != nil {
+		return journal.Entry{}, err
+	}
 	var tests, gone []string // the slice's tests, as they are now; the test files it removed
 	if out, err := gitOut(ctx, run.Dir, "diff", "--name-status", "-M", prev, head); err == nil && out != "" {
 		for _, line := range strings.Split(out, "\n") {
@@ -109,13 +112,13 @@ func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Wo
 			entry.Files = append(entry.Files, paths[len(paths)-1])
 			switch {
 			case status == "D":
-				if isTestFile(paths[0]) {
+				if checks.IsTest(paths[0]) {
 					gone = append(gone, paths[0])
 				}
-			case strings.HasPrefix(status, "R") && isTestFile(paths[0]):
+			case strings.HasPrefix(status, "R") && checks.IsTest(paths[0]):
 				gone = append(gone, paths[0])
 			}
-			if status != "D" && isTestFile(paths[len(paths)-1]) {
+			if status != "D" && checks.IsTest(paths[len(paths)-1]) {
 				tests = append(tests, paths[len(paths)-1])
 			}
 		}
@@ -130,28 +133,24 @@ func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Wo
 		entry.Notes = append(entry.Notes, "no test change in this slice")
 	}
 
-	checks, verifyRed, err := c.ws.checks(ctx, ws.Repo)
-	if err != nil {
-		return journal.Entry{}, err
-	}
 	for _, name := range []string{"typecheck", "test"} {
-		cmd, ok := checks[name]
-		if !ok {
+		if _, ok := checks.Get(name); !ok {
 			entry.Notes = append(entry.Notes, name+": no command in the main branch's "+pipeline.Path)
+		}
+	}
+	for _, check := range checks.List {
+		if !check.RunsAt(pipeline.AtCheckpoint) {
 			continue
 		}
-		if passed, output := runCheck(ctx, run.Dir, cmd); passed {
-			entry.Checks[name] = "green"
-		} else {
-			entry.Checks[name], entry.Red = "red", true
-			if entry.Failures == nil {
-				entry.Failures = map[string]string{}
-			}
-			entry.Failures[name] = output
+		command, ok := check.CommandFor(tests)
+		if !ok {
+			entry.Notes = append(entry.Notes, check.Name+": not run, the slice has no test change to fill {files} or {dirs}")
+			continue
 		}
+		recordCheck(ctx, entry, run.Dir, check.Name, command)
 	}
-	if cmd, ok := checks["test"]; ok && verifyRed && len(tests) > 0 {
-		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, cmd)
+	if test, ok := checks.Get("test"); ok && checks.VerifyRed && len(tests) > 0 {
+		judged, passed, err := c.onPrevious(ctx, ws, run.Dir, prev, prevTest, tests, gone, test)
 		switch {
 		case err != nil:
 			return journal.Entry{}, err
@@ -163,7 +162,7 @@ func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Wo
 		default:
 			entry.Checks["verify_red"] = "green"
 		}
-		if judged {
+		if judged && !test.TakesTests() {
 			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
 		}
 	}
@@ -302,48 +301,38 @@ func (c *Checkpoints) previous(ctx context.Context, run Run, ref tickets.Ref, ws
 
 // checks reads the check commands from the main branch: the ticket's branch
 // must not choose the checks that judge it, nor what its agent may run.
-func (w *Workspaces) checks(ctx context.Context, repo string) (map[string]string, bool, error) {
+func (w *Workspaces) checks(ctx context.Context, repo string) (pipeline.Checks, error) {
 	data, err := w.MainFile(ctx, repo, pipeline.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]string{}, false, nil
+		return pipeline.Checks{}, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return pipeline.Checks{}, err
 	}
 	p, err := pipeline.Parse(data)
 	if err != nil {
-		return nil, false, err
+		return pipeline.Checks{}, err
 	}
-	out := map[string]string{}
-	verifyRed := true
-	for k, v := range p.Checks {
-		switch val := v.(type) {
-		case string:
-			out[k] = val
-		case bool:
-			if k == "verify_red" {
-				verifyRed = val
-			}
-		}
-	}
-	return out, verifyRed, nil
+	return p.Checks, nil
 }
 
-// onPrevious runs the test command on the previous checkpoint's code in a
+// onPrevious runs the test check on the previous checkpoint's code in a
 // ticket's verify_red worktree with the slice's tests in place, which must
-// fail. The previous code must pass on its own for red first to be judged:
-// prevTest is its recorded test result; without one it runs there as it is
+// fail; a command with {files} or {dirs} runs them alone. The previous code
+// must pass on its own for red first to be judged: prevTest is its recorded
+// test result; without one a command of the whole suite runs there as it is
 // first. It reports whether it could judge, and whether the slice's tests
 // passed there.
-func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, cmd string) (judged, passed bool, err error) {
+func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, prevTest string, tests, gone []string, test pipeline.Check) (judged, passed bool, err error) {
 	if prevTest == "red" {
 		return false, false, nil
 	}
+	cmd, _ := test.CommandFor(tests)
 	scratch, err := c.ws.redCheckout(ctx, ws, prev)
 	if err != nil {
 		return false, false, err
 	}
-	if prevTest == "" {
+	if prevTest == "" && !test.TakesTests() {
 		if ok, _ := runCheck(ctx, scratch, cmd); !ok {
 			return false, false, nil
 		}
@@ -410,6 +399,23 @@ func runCheck(ctx context.Context, dir, command string) (bool, string) {
 	return err == nil, strings.TrimSpace(tail)
 }
 
+// recordCheck runs the command of a check in dir and records it in entry by
+// name: green, or red with its output kept. It tells whether the check
+// passed, with that output.
+func recordCheck(ctx context.Context, entry *journal.CheckpointEntry, dir, name, command string) (bool, string) {
+	passed, output := runCheck(ctx, dir, command)
+	if passed {
+		entry.Checks[name] = "green"
+		return true, output
+	}
+	entry.Checks[name], entry.Red = "red", true
+	if entry.Failures == nil {
+		entry.Failures = map[string]string{}
+	}
+	entry.Failures[name] = output
+	return false, output
+}
+
 // checkEnv is the daemon's environment without its secrets: tokens, keys,
 // passwords and istari's own variables.
 func checkEnv() []string {
@@ -427,16 +433,4 @@ func checkEnv() []string {
 		}
 	}
 	return env
-}
-
-// isTestFile tells whether a path is a test by the usual conventions.
-func isTestFile(p string) bool {
-	base := path.Base(p)
-	for _, part := range strings.Split(path.Dir(p), "/") {
-		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" {
-			return true
-		}
-	}
-	return strings.Contains(base, "_test.") || strings.HasPrefix(base, "test_") || strings.Contains(base, ".test.") ||
-		strings.Contains(base, ".spec.") || strings.Contains(base, "_spec.")
 }

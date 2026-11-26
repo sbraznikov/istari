@@ -30,6 +30,12 @@ type PlanTicket struct {
 	Labels []string `yaml:"labels" json:"labels,omitempty"`
 	Needs  []string `yaml:"needs" json:"needs,omitempty"`
 	Parent string   `yaml:"parent" json:"parent,omitempty"`
+	// Type and Size are a split child's (spec 7.6): code writes them into the
+	// table of its body.
+	Type string `yaml:"type" json:"type,omitempty"`
+	Size string `yaml:"size" json:"size,omitempty"`
+	// Repo is the ticket's repository when it is not the plan's (spec 4.4).
+	Repo string `yaml:"repo" json:"repo,omitempty"`
 }
 
 // ParsePlan reads a plan file.
@@ -81,18 +87,22 @@ func CreatePlan(ctx context.Context, t Creator, p Plan, defaultRepo string) (map
 		}
 		return fmt.Errorf("plan: %w; the %d tickets created before were canceled", errors.Join(errs...), len(created))
 	}
-	written := func(name string) string { // a key or a ref, as this repository writes it
-		r, ok := refs[name]
-		if !ok {
-			r, _ = ParseRef(name)
-		}
-		if r.Provider == "gh" && r.Repo == repo {
-			return "#" + strconv.Itoa(r.Number)
-		}
-		return r.String()
-	}
 	for _, i := range order {
 		pt := p.Tickets[i]
+		in := repo // the ticket's repository
+		if pt.Repo != "" {
+			in = pt.Repo
+		}
+		written := func(name string) string { // a key or a ref, as the ticket's repository writes it
+			r, ok := refs[name]
+			if !ok {
+				r, _ = ParseRef(name)
+			}
+			if r.Provider == "gh" && r.Repo == in {
+				return "#" + strconv.Itoa(r.Number)
+			}
+			return r.String()
+		}
 		body := replaceKeys(pt.Body, func(key string) (string, bool) {
 			if _, ok := refs[key]; ok {
 				return written(key), true
@@ -113,7 +123,7 @@ func CreatePlan(ctx context.Context, t Creator, p Plan, defaultRepo string) (map
 		if len(deps) > 0 {
 			body = withDependencies(body, deps)
 		}
-		tk, err := t.Create(ctx, Draft{Repo: repo, Title: pt.Title, Body: body, Labels: pt.Labels})
+		tk, err := t.Create(ctx, Draft{Repo: in, Title: pt.Title, Body: body, Labels: pt.Labels})
 		if err != nil {
 			return nil, undo(err)
 		}

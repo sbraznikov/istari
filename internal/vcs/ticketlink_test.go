@@ -12,6 +12,7 @@ import (
 )
 
 func TestTheTicketLinkCheckPassesOnlyForOpenTickets(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	open := gh.Seed("open", "", "bob", "istari:in_progress")
 	closed := gh.Seed("closed", "", "bob", "istari:done")
@@ -48,6 +49,7 @@ func TestTheTicketLinkCheckPassesOnlyForOpenTickets(t *testing.T) {
 }
 
 func TestTheBranchOfAForkReferencesNoTicket(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	open := gh.Seed("open", "", "bob", "istari:in_progress")
 	tracker := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
