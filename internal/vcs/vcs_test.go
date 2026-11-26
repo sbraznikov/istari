@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/exectest"
@@ -214,6 +215,40 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote work istari had not seen")
 	if got := git(t, remote, "rev-parse", own); got != theirs {
 		t.Fatalf("remote %s, want their %s kept", got, theirs)
+	}
+}
+
+func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
+	t.Parallel()
+	_, remote, work, spec := pushFixture(t)
+	spec.Force = true
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	// The remote takes the next push at once and answers late: the push is
+	// cut short after the remote updated the branch.
+	hook := filepath.Join(remote, "hooks", "post-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "cut short")
+	short, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := vcs.Push(short, spec); err == nil {
+		t.Fatal("the push was not cut short")
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want the cut-short push's %s taken", got, want)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "cut short, rewritten")
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("the next forced push: %v", err)
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want %s", got, want)
 	}
 }
 
