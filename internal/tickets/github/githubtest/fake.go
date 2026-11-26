@@ -9,8 +9,11 @@ package githubtest
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -51,6 +54,7 @@ type Server struct {
 	failReviews      int // reviews of a pull request that fail
 	failReviewsWith  int
 	files            map[string]string // repository files on the default branch
+	commits          int               // commits on the default branch: its head
 
 	appID           int64
 	appKey          *rsa.PublicKey
@@ -59,6 +63,9 @@ type Server struct {
 	checks          map[string][]Check   // commit → check runs
 	statuses        map[string]string    // commit → combined status
 	deletedBranches []string
+	counted         []string  // "METHOD path" of the requests that count against the quota
+	remaining       int       // the quota the answers report, with reset
+	reset           time.Time // zero: no X-RateLimit-* headers
 }
 
 // Label is a repository label.
@@ -140,6 +147,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		s.write(w, http.StatusOK, map[string]string{"login": s.TokenUser})
 	})
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
+	mux.HandleFunc("GET "+repo+"/commits/{ref}", s.commit)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
 	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
 	mux.HandleFunc("PATCH "+repo+"/pulls/{n}", s.updatePull)
@@ -175,11 +183,62 @@ func New(t testing.TB, opts ...Option) *Server {
 			return
 		}
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, s.prefix)
-		mux.ServeHTTP(w, r)
+		s.serveConditional(w, r, mux)
 	}))
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + s.prefix
 	return s
+}
+
+// serveConditional answers as GitHub does with ETags: a GET's 200 carries the
+// ETag of its body, and a GET whose If-None-Match names the ETag of the
+// answer it would get is answered 304 and does not count against the quota.
+// Every other answer is counted.
+func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	if !s.reset.IsZero() {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(s.remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(s.reset.Unix(), 10))
+		if s.remaining == 0 {
+			s.write(w, http.StatusForbidden, map[string]string{"message": "API rate limit exceeded for user ID 1."})
+			return
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	res := rec.Result()
+	body := rec.Body.Bytes()
+	if r.Method == http.MethodGet && res.StatusCode == http.StatusOK {
+		sum := sha256.Sum256(body)
+		etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+		res.Header.Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			maps.Copy(w.Header(), res.Header)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	s.counted = append(s.counted, r.Method+" "+r.URL.Path)
+	maps.Copy(w.Header(), res.Header)
+	w.WriteHeader(res.StatusCode)
+	w.Write(body)
+}
+
+// SetRateLimit makes every answer carry X-RateLimit-Remaining and
+// X-RateLimit-Reset; with remaining 0 every request is refused with 403, as
+// GitHub refuses once the quota is spent. The fake does not count down.
+func (s *Server) SetRateLimit(remaining int, reset time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remaining, s.reset = remaining, reset
+}
+
+// Counted returns the requests that counted against the quota, as "METHOD
+// path", oldest first: all but the ones answered 304.
+func (s *Server) Counted() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.counted)
 }
 
 func (s *Server) tick() time.Time {
@@ -506,11 +565,23 @@ func (s *Server) contents(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(body))
 }
 
-// SetFile puts a file on the repository's default branch.
+// SetFile puts a file on the repository's default branch, in a new commit.
 func (s *Server) SetFile(path, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.files[path] = body
+	s.commits++
+}
+
+// commit answers the SHA of the default branch's head for the ref HEAD, with
+// the media type that asks for the bare SHA.
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("ref") != "HEAD" || r.Header.Get("Accept") != "application/vnd.github.sha" {
+		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "the fake answers only HEAD as a bare SHA"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "%040x", s.commits)
 }
 
 // HumanEditBody replaces an issue's body as login would.

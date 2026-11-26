@@ -178,6 +178,10 @@ func (r *TimerScheduleRequest) validate() error {
 // CodeSyncDisabled refuses istari sync when no tracker is configured.
 const CodeSyncDisabled = "sync_disabled"
 
+// CodeRateLimited refuses a submit that GitHub refused for the rate limit:
+// the result is not wrong, it is to be submitted again later (#192, #208).
+const CodeRateLimited = "rate_limited"
+
 // OK is the response of operations that return nothing else.
 type OK struct {
 	OK bool `json:"ok"`
@@ -318,6 +322,13 @@ func (s *Server) operations() map[string]operation {
 				return nil, nil
 			}
 			return s.runner.Paused(), nil
+		}),
+		// The GitHub requests of the last hour by kind and the quota left (#208).
+		"github.requests": read(func(context.Context, Empty) (any, error) {
+			if s.github == nil {
+				return nil, nil
+			}
+			return s.github.Stats(), nil
 		}),
 		"run.show": read(func(ctx context.Context, r RunRequest) (any, error) { return s.runs.Get(ctx, r.ID) }),
 		"run.logs": read(func(ctx context.Context, r RunLogsRequest) (any, error) { return s.runLogs(ctx, r) }),

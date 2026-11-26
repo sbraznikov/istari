@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -198,6 +199,7 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 
 // Poll reads every open tracked pull request once.
 func (w *Watcher) Poll(ctx context.Context) error {
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindPRWatch)
 	recs, err := w.store.List(ctx, prKind)
 	if err != nil {
 		return err
