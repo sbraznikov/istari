@@ -127,6 +127,11 @@ type (
 		Actor string `json:"actor"`
 		Ref   string `json:"ref"`
 	}
+	TicketUnholdBudgetRequest struct {
+		Actor  string `json:"actor"`
+		Ref    string `json:"ref"`
+		Anyway bool   `json:"anyway,omitempty"` // lift the hold with the budget still spent
+	}
 	TicketPriorityRequest struct {
 		Actor    string `json:"actor"`
 		Ref      string `json:"ref"`
@@ -258,6 +263,9 @@ func (s *Server) operations() map[string]operation {
 		}),
 		"ticket.resume": write(ticketAgain, func(ctx context.Context, r TicketResumeRequest) (any, error) {
 			return s.resume(ctx, r.Actor, r.Ref)
+		}),
+		"ticket.unhold_budget": write(ticketAgain, func(ctx context.Context, r TicketUnholdBudgetRequest) (any, error) {
+			return s.unholdBudget(ctx, r.Actor, r.Ref, r.Anyway)
 		}),
 		"recover": write(okAgain, func(ctx context.Context, r ActorRequest) (any, error) {
 			return s.recoverTickets(ctx, r.Actor)

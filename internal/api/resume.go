@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
@@ -49,6 +50,20 @@ func (s *Server) resume(ctx context.Context, actor, ref string) (core.Ticket, er
 		return s.tickets.ClearHold(ctx, actor, ref, "paused")
 	}
 	return tk, nil
+}
+
+// unholdBudget is a human's decision on an exceeded budget (spec section 7.5,
+// istari ticket unhold). With the runner off no budget is configured here, so
+// nothing counts as spent.
+func (s *Server) unholdBudget(ctx context.Context, actor, ref string, anyway bool) (core.Ticket, error) {
+	if err := requireHuman(actor, "a budget hold is lifted"); err != nil {
+		return core.Ticket{}, err
+	}
+	r := s.runner
+	if r == nil {
+		r = runner.New(s.store, s.tasks, s.tickets, s.spaces, runner.RunnerOptions{})
+	}
+	return r.LiftBudgetHold(ctx, actor, ref, anyway)
 }
 
 // recoverTickets rebuilds what istari lost with its database from the

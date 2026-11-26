@@ -22,7 +22,7 @@ func ticketRows(tickets ...core.Ticket) [][]string {
 }
 
 func newTicketCommand(opts *Options) *cobra.Command {
-	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry", Args: Args(cobra.NoArgs)}
+	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry, unhold", Args: Args(cobra.NoArgs)}
 	cmd.AddCommand(newTicketCheckCommand(opts), newTicketCreateCommand(opts), newTicketDepsCommand(opts))
 	cmd.AddCommand(writeCommand(opts, &cobra.Command{
 		Use:   "ready <ref>",
@@ -136,6 +136,20 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		}
 		req := api.TicketHoldRequest{Actor: opts.Actor, Ref: ref, Reason: "attempts_exhausted"}
 		if err := opts.call(cmd, "ticket.unhold", subKey(key, "hold"), req, &ticket); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+	}))
+	unhold := &cobra.Command{
+		Use:   "unhold <ref>",
+		Short: "Lift the ticket's budget_exceeded hold after raising its size (--anyway: without raising it)",
+		Args:  Args(cobra.ExactArgs(1)),
+	}
+	anyway := unhold.Flags().Bool("anyway", false, "lift the hold with the budget still spent")
+	cmd.AddCommand(writeCommand(opts, unhold, func(cmd *cobra.Command, args []string, key string) error {
+		var ticket core.Ticket
+		req := api.TicketUnholdBudgetRequest{Actor: opts.Actor, Ref: args[0], Anyway: *anyway}
+		if err := opts.call(cmd, "ticket.unhold_budget", key, req, &ticket); err != nil {
 			return err
 		}
 		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
