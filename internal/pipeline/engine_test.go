@@ -1007,7 +1007,10 @@ func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
 		t.Fatal(err)
 	}
-	all, _ := twin.tasks.List(ctx)
+	all, err := twin.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, task := range all {
 		if pipeline.StageOf(task) == pipeline.StageMerge {
 			continue
