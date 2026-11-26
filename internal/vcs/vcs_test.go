@@ -228,14 +228,25 @@ func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The remote takes the next push at once and answers late: the push is
-	// cut short after the remote updated the branch.
+	// cut short after the remote updated the branch. post-receive runs once
+	// the branch is updated; the push is cut short when its marker appears,
+	// not after a fixed time a slow machine may not reach the update in.
 	hook := filepath.Join(remote, "hooks", "post-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 3\n"), 0o755); err != nil {
+	taken := filepath.Join(t.TempDir(), "taken")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch '"+taken+"'\nsleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	git(t, work, "commit", "-q", "--allow-empty", "-m", "cut short")
-	short, cancel := context.WithTimeout(ctx, time.Second)
+	short, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go func() {
+		defer cancel()
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline) && short.Err() == nil; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(taken); err == nil {
+				return
+			}
+		}
+	}()
 	if err := vcs.Push(short, spec); err == nil {
 		t.Fatal("the push was not cut short")
 	}
