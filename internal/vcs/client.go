@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
@@ -28,12 +29,23 @@ type Client struct {
 	backoff []time.Duration
 }
 
-// NewClient returns a client; baseURL "" means api.github.com.
+// NewClient returns a client with its own ratelimit.Transport; baseURL ""
+// means api.github.com.
 func NewClient(baseURL string, tokens Tokens) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}, backoff: tickets.DefaultBackoff}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens,
+		http: &http.Client{Timeout: 30 * time.Second, Transport: ratelimit.New(ratelimit.Options{})}, backoff: tickets.DefaultBackoff}
+}
+
+// WithTransport returns a copy of the client that sends its requests through
+// rt: the daemon shares one ratelimit.Transport among its GitHub clients
+// (#208).
+func (c *Client) WithTransport(rt http.RoundTripper) *Client {
+	out := *c
+	out.http = &http.Client{Timeout: c.http.Timeout, Transport: rt}
+	return &out
 }
 
 // WithBackoff sets the waits before each retry of a write that met a server
@@ -432,7 +444,11 @@ func (c *Client) send(ctx context.Context, repo, method, url string, payload []b
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
 		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
-		if tickets.TransientStatus(res.StatusCode, res.Header) {
+		limited := ratelimit.RateLimited(res)
+		if limited {
+			err = fmt.Errorf("%w: %w", err, ratelimit.ErrRateLimited)
+		}
+		if limited || tickets.TransientStatus(res.StatusCode, res.Header) {
 			return nil, transientError{err}
 		}
 		return nil, err

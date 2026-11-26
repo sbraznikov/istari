@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 )
 
@@ -93,6 +94,10 @@ type SyncOptions struct {
 	// the PR watch has not seen the pull request closed yet; otherwise only
 	// what the watch recorded counts. nil: no pull request is ever merged.
 	Merged func(ctx context.Context, ref string, fresh bool) (bool, error)
+	// Hold waits before each sync of Run while the tracker's request quota
+	// is low, until it is reset (ratelimit.Transport.Hold, #208); loop names
+	// the sync in its log. nil: Run never waits.
+	Hold func(ctx context.Context, loop string) error
 }
 
 // CodeNotTrusted refuses an admission by someone who is not trusted.
@@ -144,8 +149,8 @@ func NewSyncer(p SyncProvider, t *core.Tickets, s store.Store, repos []SyncRepo,
 	return &Syncer{provider: p, tickets: t, store: s, repos: repos, opts: opts, updated: map[string]time.Time{}}
 }
 
-// Run syncs at once and then every interval until ctx ends. istari sync calls
-// Sync directly.
+// Run syncs at once and then every interval until ctx ends, each sync after
+// SyncOptions.Hold. istari sync calls Sync directly.
 func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		every = DefaultSyncInterval
@@ -153,7 +158,12 @@ func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
-		if _, err := s.Sync(ctx); err != nil && ctx.Err() == nil {
+		if s.opts.Hold != nil && s.opts.Hold(ctx, "the ticket sync") != nil {
+			return // ctx ended
+		}
+		// A refusal for the rate limit is "later" (#208): the next Hold waits
+		// for the reset and says so.
+		if _, err := s.Sync(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ratelimit.ErrRateLimited) {
 			log.Printf("istari: ticket sync: %v", err)
 		}
 		select {
@@ -169,6 +179,7 @@ func (s *Syncer) Run(ctx context.Context, every time.Duration) {
 func (s *Syncer) Sync(ctx context.Context) (SyncReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindSync)
 	var report SyncReport
 	var errs []error
 	for _, repo := range s.repos {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/exectest"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -369,6 +370,58 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	w.Poll(ctx)
 	if tr, err := w.PullRequestOf(ctx, ticket); err != nil || !tr.Done {
 		t.Fatalf("after the merge: %+v, %v; want done", tr, err)
+	}
+}
+
+func TestAPollOfAnUnchangedOrMergedPullRequestMakesNoRequestThatCounts(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	poll := func(what string) {
+		t.Helper()
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+		before := len(gh.Counted())
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+		if got := gh.Counted()[before:]; len(got) != 0 {
+			t.Errorf("counted requests of a second poll of %s = %v, want none", what, got)
+		}
+	}
+	poll("an unchanged pull request")
+	gh.HumanMerge(pr.Number, "alex")
+	poll("a merged pull request")
+}
+
+func TestAPollRefusedForTheRateLimitSaysLater(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	if _, err := c.Status(ctx, githubtest.Repo, pr.Number); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Errorf("Status while the quota is spent: %v, want ErrRateLimited", err)
 	}
 }
 
