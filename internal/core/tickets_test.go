@@ -529,3 +529,22 @@ func TestATicketThatIsMergedCancelsItsOpenTasks(t *testing.T) {
 	}
 	f.assertEnded(t)
 }
+
+func TestAHeldTicketThatIsMergedCancelsItsOpenTasks(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tickets := core.NewTickets(f.store, core.TicketOptions{Clock: f.clock.Now})
+	f.endingTicket(t, tickets)
+	for _, trigger := range []string{"accept", "start", "plan_accepted", "pr_ready"} {
+		if _, err := tickets.Fire(ctx, "system", "gh:acme/web#1", trigger); err != nil {
+			t.Fatalf("%s: %v", trigger, err)
+		}
+	}
+	if _, err := tickets.SetHold(ctx, "system", "gh:acme/web#1", "attempts_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.Fire(ctx, "system", "gh:acme/web#1", "merged"); err != nil {
+		t.Fatal(err)
+	}
+	f.assertEnded(t)
+}
