@@ -262,11 +262,12 @@ Rules:
 
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
+- When verify sees a failed check on the pull request's head, istari reads the failed jobs' logs through its own GitHub access (the gh CLI's token or the GitHub App; agents have none, section 7.3) and records a CI failure entry in the journal (section 4.6), once per head commit. The entry holds the end of each failed job's log, cut to a fixed size from its start, so the failing tests and their messages stay. When the log cannot be read, the entry says so and why; the rework round starts either way.
 - A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first. A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
-If a ticket is too large, planner splits it into child tickets (sub-issues). Each of them goes through the check against the standard and its own pipeline. The parent stays in `in_progress` and moves to `done` when all child tickets are completed (T5, T12).
+If a ticket is too large, planner splits it into child tickets (sub-issues). Each of them goes through the check against the standard and its own pipeline. A child carries a key, a title, a body, its type and size, its needs and, if it belongs to another repository, that repository (section 7.6). The planner writes the body; code writes the table at its end: the child's type and size, the parent's priority, and the parent's repository unless the child names another. Before any child is created, code checks every child's body against the structural standard, with the same check as `istari ticket check` (section 4.5); a child that fails refuses the whole plan, naming the child's key and its deviations, and the planner fixes it in the same run. The parent stays in `in_progress` and moves to `done` when all child tickets are completed (T5, T12).
 
 ### 4.4 Working across several repositories
 
@@ -378,6 +379,8 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Review result | the review stage is complete | reviewer; details stay in the PR |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
+| CI failure | verify saw a failed check on the pull request's head (section 4.3) | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read |
+| Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`); the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
 
@@ -723,7 +726,7 @@ This is the same "claim, not get assigned" model as in Board: nobody decides tha
 |---|---|---|
 | Identity | environment variables `ISTARI_PROFILE`, `ISTARI_ROLE`, `ISTARI_TICKET`, `ISTARI_TASK`, `ISTARI_TOKEN` | profile name (`implementer-2`), role, ticket, task and a token with this role's permissions on this ticket |
 | Role instruction | the file `.istari/roles/<role>.md` in the repository; if it is absent, the built-in one | who you are, what the stage includes, what counts as a finished result, what is forbidden |
-| Task brief | the first message to the harness | the ticket text, the "Work state" summary, the journal, the last checkpoint, the PR state and the next step |
+| Task brief | the first message to the harness | the ticket text, the "Work state" summary, the journal, the last checkpoint, the PR state and the next step. An implementer's brief shows a CI failure entry newer than the last checkpoint first, before the next step; comment entries newer than the last checkpoint are always kept |
 
 The harness starts in the ticket's workspace with the brief as the first message. The `istari whoami` command returns to the agent, at any moment, its role, ticket, task, permissions and the remaining lease and budget.
 
@@ -825,6 +828,20 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 
 The working rules of these two roles are written in istari's built-in instructions (`.istari/roles/implementer.md`, `.istari/roles/reviewer.md`). The reference for them is Matt Pocock's skills `implement`, `tdd`, `pr` and `code-review` (`github.com/mattpocock/skills`): the skills themselves are not installed into istari and are not a dependency, but the agents' behavior follows them as closely as possible.
 
+**Planner: the split.** A ticket larger than `max_size` gets a `split:` in its plan (`istari plan submit`): a list of child tickets with these fields.
+
+| Field | Content |
+|---|---|
+| `key` | lower-case letters, digits and dashes; `needs` and `#key` in a body refer to it |
+| `title` | the child's title |
+| `body` | the ticket text after the standard (section 4.5), without the table |
+| `type` | one of the standard's types |
+| `size` | one of the standard's sizes |
+| `needs` | keys of other children or existing tickets |
+| `repo` | `owner/repo`, only if the child belongs to another repository than the parent |
+
+Code writes the table at the end of each body (type, size, the parent's priority, the repository) and checks every child against the standard before it creates any (section 4.3).
+
 **Implementer: order of work** (after `implement`).
 
 1. Read the ticket, the plan and the journal; name the ticket and what will be done.
@@ -863,7 +880,7 @@ Review rules:
 - The axes are checked in two independent passes with a clean context, so that one does not influence the other.
 - The reports are published separately, under the headings Standards and Spec. Findings are not merged or ranked across axes: the code can pass one axis and fail the other.
 - A documented repository standard is stronger than the baseline set: if the repository allows something, the code smell is not flagged.
-- A code smell is worded as a judgment call ("possibly feature envy"), because it depends on context. What tools already check is not flagged.
+- A code smell is worded as a judgment call ("possibly feature envy"), because it depends on context. What tools already check is not flagged: the reviewer's brief lists the checks of the main branch's `.istari/pipeline.toml` by name and command (section 12).
 - The comparison is made against the base of the ticket branch relative to the main branch.
 - The result is one line per axis: the number of findings and the most serious one on that axis.
 - The report is submitted in structured form (`istari review submit`): each finding has an axis, a file and line, a kind, and a quote from the ticket or the standard.
@@ -920,12 +937,12 @@ The principle: less model, more deterministic code. The model is non-determinist
 | An agent prepares a decision card | — | schema; at least two options; the recommendation refers to an existing option; sizes are from the scale |
 | An agent makes an assumption | — | the assumption counter and the `max_assumptions` limit; assumptions block auto-merge |
 
-**Checks that are run by code, not by the model.** `.istari/pipeline.toml` defines the commands: type check, fast tests, full suite. The agent can run them itself as often as it likes, but only the result of a run performed by code goes into the journal:
+**Checks that are run by code, not by the model.** `.istari/pipeline.toml` defines the commands as named checks (section 12): type check, fast tests, full suite, and any check of the project's own, such as format, lint or dependencies, each with `at` saying when it runs. The agent can run them itself as often as it likes, but only the result of a run performed by code goes into the journal, which lists every check by its name, green or red, and keeps a red one's output:
 
 | Moment | What is run | Consequence of failure |
 |---|---|---|
-| `istari checkpoint` | type check and fast tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
-| `istari pr open` | full suite | the PR is not opened; see below for whose failure it is |
+| `istari checkpoint` | every check at `checkpoint`: type check, fast tests and the project's own checks, with `{files}` and `{dirs}` filled with the slice's tests; the slice's new tests are run on the code of the previous checkpoint | the checkpoint is saved with a "red" mark; only code calls it green |
+| `istari pr open` | every check at `pr`: the full suite and the project's own checks | the PR is not opened; for a red full suite, see below for whose failure it is |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
 
 **A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command once on the tip of the main branch, as last fetched, in a scratch worktree, and records that result in the journal entry together with the main commit. The result is kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
@@ -1224,7 +1241,14 @@ slack = { work = "#billing-agents", decisions = "#billing-decisions", owner = "@
   link      = "package"               # how it is linked (section 4.4): package | submodule | path | none; none — soft unavailable
 ```
 
-`.istari/pipeline.toml` — in the repository, versioned together with the code:
+`.istari/pipeline.toml` — in the repository, versioned together with the code. Its `[checks]` (section 7.7) are read from the main branch:
+
+- **Named checks.** Each key of `[checks]` other than `test_files` and `verify_red` is a check: a name and a command, run through `sh -c`, so any language and tool works. `typecheck` and `test` run at every checkpoint, `full` before `istari pr open`; a project without `full` gets `test` there. A check of any other name, such as a format, lint or dependency check, runs at every checkpoint and before `istari pr open`, and a red one fails both the same way a red `test` does.
+- **When a check runs.** A check given as a table, `{ run = "…", at = [...] }`, says when it runs: `at` lists `"checkpoint"`, `"pr"` or both. A string is the same as a table without `at`, which keeps the defaults above.
+- **Test files.** `test_files` lists glob patterns of the project's test files, matched against the whole path from the repository root; `**` matches any number of directories, so `"**/*.check.ts"` is every `.check.ts` file. Without `test_files` the usual conventions apply: a name with `_test.`, `test_`, `.test.`, `.spec.` or `_spec.`, or a directory named `test`, `tests`, `__tests__` or `spec`. It decides everything that asks "is this a test?": the slice's change to tests, `verify_red` and the note "no test change in this slice".
+- **The slice's tests.** A command may carry `{files}`, the test files the slice changed, and `{dirs}`, their directories, each as `./<dir>`; both are shell-quoted. At a checkpoint and in `verify_red` they are filled in, so a checkpoint runs the slice's tests, not the whole suite: `go test -short {dirs}`, `pytest -q {files}`. At a checkpoint whose slice has no test change, such a check does not run and the entry says why. Before `istari pr open` such a check does not run either: the whole suite there is `full`. A command without them runs as it is.
+- **Refusal.** A check table with a key other than `run` and `at`, or without `run`, an `at` value other than `checkpoint` and `pr`, a check that is neither a string nor a table, a `verify_red` that is not true or false, or a `test_files` that is not a list of patterns, is refused when the pipeline loads, with the file and the line.
+
 
 ```toml
 [limits]
@@ -1235,10 +1259,13 @@ questions = "decide"                  # or "hold"
 max_assumptions = 3                   # assumptions per ticket; beyond that — a hold
 self_review = true                    # implementer reviews its own work before opening the PR
 
-[checks]                              # run by code, not by an agent
-typecheck = "go vet ./..."
-test      = "go test ./... -short"
-full      = "go test ./..."
+[checks]                              # run by code, not by an agent; each command through sh -c
+typecheck = "go vet ./..."            # at every checkpoint
+test      = "go test -short {dirs}"   # at every checkpoint; {dirs}, {files}: the slice's tests
+full      = "go test ./..."           # before istari pr open: the whole suite
+format    = "test -z \"$(gofmt -l .)\""                   # any other name: at every checkpoint and before istari pr open
+tidy      = { run = "go mod tidy -diff", at = ["pr"] }   # at: "checkpoint", "pr"
+test_files = ["**/*_test.go"]         # which files are tests; absent — the usual conventions
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
 
 [merge]

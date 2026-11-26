@@ -9,6 +9,7 @@ import (
 )
 
 func TestDuplicateCandidatesShareThePathsIdentifiersOrKeywordsOfATicket(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	me := gh.Seed("Rate limits for the export API", "Change `internal/export/limit.go` and `Limiter.Allow`.", "bob")
 	samePath := gh.Seed("Faster exports", "Touches `internal/export/limit.go`.", "bob")

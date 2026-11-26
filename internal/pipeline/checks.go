@@ -1,0 +1,261 @@
+package pipeline
+
+import (
+	"fmt"
+	"maps"
+	"path"
+	"slices"
+	"strings"
+)
+
+// When a check runs (spec section 12, at).
+const (
+	AtCheckpoint = "checkpoint" // at every istari checkpoint
+	AtPR         = "pr"         // before istari pr open
+)
+
+// Check is one named check of [checks]: a command code runs through sh -c,
+// and when.
+type Check struct {
+	Name string
+	Run  string
+	At   []string // AtCheckpoint, AtPR
+}
+
+// RunsAt tells whether the check runs at a moment.
+func (c Check) RunsAt(moment string) bool { return slices.Contains(c.At, moment) }
+
+// The placeholders a check command may carry for the slice's tests.
+const (
+	FilesPlaceholder = "{files}" // the test files the slice changed
+	DirsPlaceholder  = "{dirs}"  // their directories, each as ./<dir>
+)
+
+// TakesTests tells whether the command carries {files} or {dirs}: it runs
+// the slice's tests, not the whole suite.
+func (c Check) TakesTests() bool {
+	return strings.Contains(c.Run, FilesPlaceholder) || strings.Contains(c.Run, DirsPlaceholder)
+}
+
+// CommandFor returns the command for a slice whose test files are tests,
+// with {files} and {dirs} filled in and shell-quoted. A command that takes
+// tests has none to run without them: ok is false.
+func (c Check) CommandFor(tests []string) (command string, ok bool) {
+	if !c.TakesTests() {
+		return c.Run, true
+	}
+	if len(tests) == 0 {
+		return "", false
+	}
+	var files, dirs []string
+	for _, t := range tests {
+		files = append(files, shellQuote(t))
+		dir := "."
+		if d := path.Dir(t); d != "." {
+			dir = "./" + d
+		}
+		dirs = append(dirs, shellQuote(dir))
+	}
+	slices.Sort(files)
+	slices.Sort(dirs)
+	return strings.NewReplacer(FilesPlaceholder, strings.Join(files, " "), DirsPlaceholder, strings.Join(slices.Compact(dirs), " ")).Replace(c.Run), true
+}
+
+// shellQuote quotes a word for sh unless it is plain.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-+@:") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// Checks are the [checks] of a pipeline (spec sections 7.7 and 12).
+type Checks struct {
+	List      []Check  // typecheck, test and full first, then the rest by name
+	TestFiles []string // glob patterns of test files; empty: the usual conventions
+	VerifyRed bool     // a new test must fail on the previous checkpoint's code; true by default
+}
+
+// Get returns the check of a name.
+func (c Checks) Get(name string) (Check, bool) {
+	i := slices.IndexFunc(c.List, func(x Check) bool { return x.Name == name })
+	if i < 0 {
+		return Check{}, false
+	}
+	return c.List[i], true
+}
+
+// IsTest tells whether a path from the repository root is a test file: one
+// that matches a pattern of test_files, or without them one by the usual
+// conventions (spec section 12).
+func (c Checks) IsTest(p string) bool {
+	if len(c.TestFiles) == 0 {
+		return conventionalTest(p)
+	}
+	for _, pattern := range c.TestFiles {
+		if globMatch(strings.Split(pattern, "/"), strings.Split(p, "/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// conventionalTest tells whether a path is a test by the usual conventions.
+func conventionalTest(p string) bool {
+	base := path.Base(p)
+	for _, part := range strings.Split(path.Dir(p), "/") {
+		if part == "test" || part == "tests" || part == "__tests__" || part == "spec" {
+			return true
+		}
+	}
+	return strings.Contains(base, "_test.") || strings.HasPrefix(base, "test_") || strings.Contains(base, ".test.") ||
+		strings.Contains(base, ".spec.") || strings.Contains(base, "_spec.")
+}
+
+// globMatch matches path segments against pattern segments: "**" matches any
+// number of segments, any other segment as path.Match does.
+func globMatch(pattern, segments []string) bool {
+	if len(pattern) == 0 {
+		return len(segments) == 0
+	}
+	if pattern[0] == "**" {
+		for i := 0; i <= len(segments); i++ {
+			if globMatch(pattern[1:], segments[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(segments) == 0 {
+		return false
+	}
+	ok, err := path.Match(pattern[0], segments[0])
+	return ok && err == nil && globMatch(pattern[1:], segments[1:])
+}
+
+// builtin are the checks code knows by name, in order, with when they run
+// when the file does not say.
+var builtin = []Check{
+	{Name: "typecheck", At: []string{AtCheckpoint}},
+	{Name: "test", At: []string{AtCheckpoint}},
+	{Name: "full", At: []string{AtPR}},
+}
+
+// builtinRank is the place of a check code knows by name in builtin, or
+// len(builtin) for any other check.
+func builtinRank(name string) int {
+	if i := slices.IndexFunc(builtin, func(b Check) bool { return b.Name == name }); i >= 0 {
+		return i
+	}
+	return len(builtin)
+}
+
+// parseChecks reads the [checks] table raw of a pipeline file, data. What it
+// cannot read is refused with its line (CODING_STANDARDS S1.3).
+func parseChecks(data []byte, raw map[string]any) (Checks, error) {
+	out := Checks{VerifyRed: true}
+	var named []Check
+	for _, name := range slices.Sorted(maps.Keys(raw)) {
+		v := raw[name]
+		refuse := func(key, format string, args ...any) error {
+			return fmt.Errorf("%s line %d: check %q: %s", Path, checkLine(data, name, key), name, fmt.Sprintf(format, args...))
+		}
+		setting := func(says string) error {
+			return fmt.Errorf("%s line %d: %s %s", Path, checkLine(data, name, ""), name, says)
+		}
+		switch name {
+		case "verify_red":
+			b, ok := v.(bool)
+			if !ok {
+				return Checks{}, setting("is true or false")
+			}
+			out.VerifyRed = b
+			continue
+		case "test_files":
+			list, ok := v.([]any)
+			if !ok {
+				return Checks{}, setting("is a list of glob patterns")
+			}
+			for _, p := range list {
+				s, ok := p.(string)
+				if !ok {
+					return Checks{}, setting("is a list of glob patterns")
+				}
+				out.TestFiles = append(out.TestFiles, s)
+			}
+			continue
+		}
+		c := Check{Name: name, At: []string{AtCheckpoint, AtPR}}
+		if i := builtinRank(name); i < len(builtin) {
+			c.At = builtin[i].At
+		}
+		switch val := v.(type) {
+		case string:
+			c.Run = val
+		case map[string]any:
+			for _, key := range slices.Sorted(maps.Keys(val)) {
+				if key != "run" && key != "at" {
+					return Checks{}, refuse(key, "unknown key %q; a check table takes run and at", key)
+				}
+			}
+			var ok bool
+			if c.Run, ok = val["run"].(string); !ok {
+				return Checks{}, refuse("", "a check table needs run, a command")
+			}
+			if at, ok := val["at"]; ok {
+				list, ok := at.([]any)
+				if !ok {
+					return Checks{}, refuse("at", "at is a list of checkpoint and pr")
+				}
+				c.At = nil
+				for _, a := range list {
+					if s, _ := a.(string); s != AtCheckpoint && s != AtPR {
+						return Checks{}, refuse("at", "at %q is not checkpoint or pr", fmt.Sprint(a))
+					}
+					c.At = append(c.At, a.(string))
+				}
+			}
+		default:
+			return Checks{}, refuse("", "a check is a command or a table { run = \"…\", at = [...] }")
+		}
+		named = append(named, c)
+	}
+	slices.SortFunc(named, func(a, b Check) int {
+		if ra, rb := builtinRank(a.Name), builtinRank(b.Name); ra != rb {
+			return ra - rb
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	out.List = named
+	return out, nil
+}
+
+// checkLine finds where a check is written in a pipeline file: the line of
+// its key in a check table [checks.<name>], else the line that starts the
+// check, `<name> = …` in [checks] or the header [checks.<name>]; 0 when it
+// is not found.
+func checkLine(data []byte, name, key string) int {
+	table, start := "", 0
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			table = strings.Trim(strings.ReplaceAll(strings.SplitN(line, "#", 2)[0], " ", ""), "[]")
+			if table == "checks."+name && start == 0 {
+				start = i + 1
+			}
+			continue
+		}
+		k, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.Trim(strings.TrimSpace(k), `"'`)
+		switch {
+		case table == "checks" && k == name && start == 0:
+			start = i + 1
+		case table == "checks."+name && key != "" && k == key:
+			return i + 1
+		}
+	}
+	return start
+}

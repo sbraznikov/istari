@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -43,6 +46,7 @@ func appFixture(t *testing.T) (*githubtest.Server, *vcs.AppTokens) {
 }
 
 func TestTheAppGetsAnInstallationTokenAndKeepsItUntilItExpires(t *testing.T) {
+	t.Parallel()
 	gh, tokens := appFixture(t)
 	first, err := tokens.Token(ctx, githubtest.Repo)
 	if err != nil {
@@ -62,6 +66,7 @@ func TestTheAppGetsAnInstallationTokenAndKeepsItUntilItExpires(t *testing.T) {
 }
 
 func TestAnOpenedPullRequestLinksToItsTicket(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/add-limits", Base: "main", Title: "Add limits", Body: "## Summary\n\nLimits."})
@@ -75,6 +80,7 @@ func TestAnOpenedPullRequestLinksToItsTicket(t *testing.T) {
 }
 
 func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -82,7 +88,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -127,6 +133,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 }
 
 func TestMergingUsesTheMethodAndDeletesTheBranch(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
@@ -172,6 +179,7 @@ func pushFixture(t *testing.T) (root, remote, work string, spec vcs.PushSpec) {
 }
 
 func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	own := spec.Own
 	if err := vcs.Push(ctx, spec); err != nil {
@@ -204,15 +212,73 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	theirs := git(t, other, "rev-parse", "HEAD")
 	git(t, work, "fetch", "-q", "origin")
 	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "mine again")
-	if err := vcs.Push(ctx, forced); err == nil {
-		t.Fatal("a forced push overwrote work istari had not seen")
-	}
+	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote work istari had not seen")
 	if got := git(t, remote, "rev-parse", own); got != theirs {
 		t.Fatalf("remote %s, want their %s kept", got, theirs)
 	}
 }
 
+func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
+	t.Parallel()
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	old := git(t, work, "rev-parse", "HEAD")
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "work, rebased")
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("forced push of the rebased work: %v", err)
+	}
+	// Someone else puts the branch back on the commit istari pushed first:
+	// a commit istari knows, which the worktree's HEAD does not contain.
+	git(t, other, "push", "-q", "--force", "origin", old+":refs/heads/"+own)
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "more")
+	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote a commit its own did not contain")
+	if got := git(t, remote, "rev-parse", own); got != old {
+		t.Fatalf("remote %s, want their %s kept", got, old)
+	}
+}
+
+func assertRefused(t *testing.T, err error, msg string) {
+	t.Helper()
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != vcs.CodePushRefused {
+		t.Fatalf("%s: err = %v, want %s", msg, err, vcs.CodePushRefused)
+	}
+}
+
+func TestAForcedPushAcceptsARemoteBranchItsCommitContains(t *testing.T) {
+	t.Parallel()
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	// Someone else moves the branch forward; the agent merges it in.
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
+	git(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	git(t, other, "push", "-q", "origin", own)
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "mine")
+	git(t, work, "fetch", "-q", "origin")
+	git(t, work, "merge", "-q", "--no-edit", "origin/"+own)
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("a forced push of a commit that contains the remote branch: %v", err)
+	}
+	if head, remoteHead := git(t, work, "rev-parse", "HEAD"), git(t, remote, "rev-parse", own); head != remoteHead {
+		t.Fatalf("remote %s, want %s", remoteHead, head)
+	}
+}
+
 func TestAnAgentCannotRedirectThePush(t *testing.T) {
+	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
 	elsewhere := filepath.Join(root, "elsewhere.git")
 	git(t, root, "init", "-q", "--bare", elsewhere)
@@ -239,6 +305,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 }
 
 func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -246,7 +313,7 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -268,7 +335,7 @@ func TestAPollOfAnUnchangedOrMergedPullRequestMakesNoRequestThatCounts(t *testin
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -312,6 +379,7 @@ func TestAPollRefusedForTheRateLimitSaysLater(t *testing.T) {
 }
 
 func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -319,7 +387,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -342,6 +410,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 }
 
 func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	ticket := "gh:" + githubtest.Repo + "#3"
@@ -356,6 +425,7 @@ func TestAPullRequestCanBeUpdatedAndKeepsItsTicketLink(t *testing.T) {
 }
 
 func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
 	if err != nil {
@@ -363,7 +433,7 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -397,6 +467,7 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 }
 
 func TestAPullRequestIsFoundByItsURL(t *testing.T) {
+	t.Parallel()
 	if pr, ok := vcs.PullRequestAt("https://github.com/acme/web/pull/42"); !ok || pr.Number != 42 {
 		t.Fatalf("PullRequestAt = %+v, %v", pr, ok)
 	}
@@ -408,6 +479,7 @@ func TestAPullRequestIsFoundByItsURL(t *testing.T) {
 }
 
 func TestADraftPullRequestIsReadyForReviewAfterMarkReady(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
@@ -432,6 +504,7 @@ func TestADraftPullRequestIsReadyForReviewAfterMarkReady(t *testing.T) {
 }
 
 func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t, githubtest.Prefix("/api/v3"))
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Draft: true})
@@ -447,6 +520,7 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 }
 
 func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
@@ -474,6 +548,150 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	}
 }
 
+func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success", Log: "all fine"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "=== RUN   TestX\n--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"},
+	)
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if f.Check != "test" || f.Commit != "abc123" || f.URL == "" || f.Cut {
+		t.Fatalf("failure = %+v", f)
+	}
+	if !strings.Contains(f.Output, "--- FAIL: TestX") || !strings.Contains(f.Output, "got 1, want 2") || strings.Contains(f.Output, "all fine") {
+		t.Fatalf("output = %q", f.Output)
+	}
+}
+
+func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	log := "first line of setup\n" + strings.Repeat("ok  \tsome/package\t0.1s\n", vcs.MaxFailureLog/20) + "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: log})
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if !f.Cut || len(f.Output) > vcs.MaxFailureLog {
+		t.Fatalf("cut = %v, %d bytes; want the end, at most %d bytes", f.Cut, len(f.Output), vcs.MaxFailureLog)
+	}
+	if !strings.HasSuffix(f.Output, "got 1, want 2\nFAIL\n") || strings.Contains(f.Output, "first line of setup") || !strings.HasPrefix(f.Output, "ok  \t") {
+		t.Fatalf("output is not the end of the log cut at a line: %q…%q", f.Output[:40], f.Output[len(f.Output)-40:])
+	}
+}
+
+// redHead tracks a pull request whose head has the checks given, with a
+// journal on the watcher.
+func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
+	t.Helper()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	j := journal.New(nil, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{Journal: j})
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", checks...)
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, w, j, ref
+}
+
+// checkEvents are the vcs.checks events of the ticket, as "checks@sha".
+func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
+	t.Helper()
+	events, err := s.Read(ctx, "", store.Filter{Ticket: ref.String(), TypePrefix: vcs.EventChecks}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		var p struct{ Checks, SHA string }
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, p.Checks+"@"+p.SHA)
+	}
+	return got
+}
+
+// storedEntries are the journal entries of the ticket in istari's log.
+func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.Entry {
+	t.Helper()
+	entries, err := j.Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
+	t.Parallel()
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
+	for range 2 { // the second poll sees the same red head
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 1 || entries[0].Kind != journal.CI {
+		t.Fatalf("journal = %+v, want one ci entry", entries)
+	}
+	if ci := entries[0].CI; ci.Check != "test" || ci.Commit != "abc123" || !strings.Contains(ci.Output, "--- FAIL: TestX") {
+		t.Fatalf("ci entry = %+v", ci)
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure once", got)
+	}
+}
+
+func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
+	t.Parallel()
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 1 || entries[0].CI == nil || !strings.Contains(entries[0].CI.Error, "404") || entries[0].CI.Commit != "abc123" {
+		t.Fatalf("journal = %+v, want a ci entry that says the log could not be read and why", entries)
+	}
+	if !strings.Contains(journal.Text(entries[0]), "could not be read") {
+		t.Fatalf("entry text = %s", journal.Text(entries[0]))
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure, so rework starts", got)
+	}
+}
+
+func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetStatus("def456", "failure")
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "def456"); err == nil || !strings.Contains(err.Error(), "commit status") {
+		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
+	}
+}
+
 // watchFixture is a tracked pull request of ticket #3 that istari pushed h1
 // to, on main at m1.
 func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, string, int) {
@@ -485,7 +703,7 @@ func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, 
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {

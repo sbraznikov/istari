@@ -9,9 +9,33 @@ questions = "decide"                  # or "hold"
 max_assumptions = 3
 self_review = true
 
-[checks]                              # run by istari, not by an agent
+[checks]                              # run by istari, not by an agent; each command through sh -c
 {{checks}}
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
+
+# Checks of your own (spec section 12). typecheck and test run at every
+# checkpoint, full before istari pr open; any other name runs at both, and a
+# table says when: at = ["checkpoint"], ["pr"] or both. {files} and {dirs}
+# are the test files a slice changed and their directories, so a checkpoint
+# runs the slice's tests; test_files says which files are tests.
+# Go:
+#   test       = "go test -short {dirs}"
+#   format     = "test -z \"$(gofmt -l .)\""
+#   tidy       = { run = "go mod tidy -diff", at = ["pr"] }
+#   test_files = ["**/*_test.go"]
+# TypeScript:
+#   test       = "npx vitest run {files}"
+#   lint       = "npx eslint ."
+#   format     = { run = "npx prettier --check .", at = ["pr"] }
+#   test_files = ["**/*.test.ts", "**/*.check.ts"]
+# Python:
+#   test       = "pytest -q {files}"
+#   lint       = "ruff check ."
+#   format     = { run = "ruff format --check .", at = ["checkpoint", "pr"] }
+#   test_files = ["tests/**/test_*.py"]
+# Rust:
+#   test       = "cargo test"
+#   lint       = { run = "cargo clippy -- -D warnings", at = ["pr"] }
 
 [merge]
 irreversible_paths = ["migrations/**", "api/**", "deploy/**"{{irreversible}}]
