@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,9 +208,13 @@ func TestAReviewTheCodeHostCannotTakeCostsNoAttemptAndIsRedone(t *testing.T) {
 func TestARefusalOfTheTrackerStillRefusesTheRefineResult(t *testing.T) {
 	t.Parallel()
 	d, _, _, log := refineDuringOutage(t, 1, http.StatusUnprocessableEntity)
+	// The task is handed out again after the rejection and the retry is
+	// taken, and run list orders runs by their random ids: the rejected run
+	// need not come first.
 	runs := endedRuns(t, d, log, "refiner", 1)
 	out, _ := os.ReadFile(log)
-	if !strings.HasPrefix(runs[0].Reason, "rejected: ") || !strings.Contains(string(out), "422") {
-		t.Fatalf("the refiner run ended %q, want it rejected with the 422\nagent log:\n%s", runs[0].Reason, out)
+	rejected := slices.ContainsFunc(runs, func(r agentRun) bool { return strings.HasPrefix(r.Reason, "rejected: ") })
+	if !rejected || !strings.Contains(string(out), "422") {
+		t.Fatalf("the refiner runs ended %+v, want one rejected with the 422\nagent log:\n%s", runs, out)
 	}
 }
