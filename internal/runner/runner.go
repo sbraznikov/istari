@@ -106,6 +106,7 @@ type Runner struct {
 	mu     sync.Mutex
 	active map[string]chan string // run id → who asks it to stop
 	paused map[string]PausedSlot  // slot profile → its pause
+	limits map[string]harnessLimit // harness name → its usage-limit pause
 }
 
 // New returns a runner.
@@ -140,7 +141,7 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	if opts.Journal == nil {
 		opts.Journal = journal.New(nil, s, opts.Clock)
 	}
-	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}, paused: map[string]PausedSlot{}}
+	return &Runner{store: s, tasks: tasks, tickets: tickets, ws: ws, runs: NewRuns(s, tasks, opts.Clock), opts: opts, active: map[string]chan string{}, paused: map[string]PausedSlot{}, limits: map[string]harnessLimit{}}
 }
 
 // mainNotMerged records in the ticket's journal that the run starts without
@@ -438,6 +439,12 @@ func (r *Runner) Run(ctx context.Context) {
 func (r *Runner) slot(ctx context.Context, slot Slot) {
 	failures := 0 // start failures in a row
 	for ctx.Err() == nil {
+		// While its harness's account is at its usage limit, the slot claims
+		// nothing (spec section 7.3).
+		if l, ok := r.limited(slot.Harness.Harness); ok {
+			sleep(ctx, l.until.Sub(r.opts.Clock()))
+			continue
+		}
 		lease, err := r.tasks.ClaimReadyIn(ctx, "agent:"+slot.Profile, slot.Role, r.opts.Projects)
 		if err == nil {
 			startErr := r.execute(ctx, slot, lease)
@@ -468,20 +475,29 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 // PausedSlot is a slot that claims nothing for a while because its harness
-// did not start three times in a row (spec section 7.3).
+// did not start three times in a row, or its harness's account is at its
+// usage limit (spec section 7.3).
 type PausedSlot struct {
 	Slot  string    `json:"slot"`
-	Error string    `json:"error"` // why the harness did not start, the last time
+	Error string    `json:"error"` // why the slot is paused
 	Until time.Time `json:"until"` // when the slot claims again
 }
 
 // Paused returns the slots that are paused now, by profile.
 func (r *Runner) Paused() []PausedSlot {
+	now := r.opts.Clock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []PausedSlot
 	for _, p := range r.paused {
 		out = append(out, p)
+	}
+	for _, slot := range r.opts.Slots {
+		l, ok := r.limits[slot.Harness.Harness]
+		if _, started := r.paused[slot.Profile]; !ok || started || !l.until.After(now) {
+			continue
+		}
+		out = append(out, PausedSlot{Slot: slot.Profile, Error: "the usage limit of harness " + slot.Harness.Harness + ": " + l.message, Until: l.until})
 	}
 	slices.SortFunc(out, func(a, b PausedSlot) int { return strings.Compare(a.Slot, b.Slot) })
 	return out
@@ -796,7 +812,11 @@ loop:
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}
-	reason, outcome, completed := r.outcome(bg, run.ID, res, seen.limit)
+	var idleLimit *harness.Event
+	if seen.idle {
+		idleLimit = seen.limit
+	}
+	reason, outcome, completed := r.outcome(bg, run.ID, res, idleLimit)
 	if end != nil && !(end.released && completed) {
 		// A runner that stops while the agent finishes its work keeps the
 		// work: a completed run completes its task even then.
@@ -806,6 +826,13 @@ loop:
 	if held, err := ended(); err == nil {
 		lease = held
 	}
+	// The harness pauses before the task goes back, so that no slot of the
+	// same harness takes it at once.
+	if seen.limit != nil {
+		r.limit(bg, run, *seen.limit)
+	} else {
+		r.unlimit(run.Harness)
+	}
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
@@ -814,7 +841,7 @@ loop:
 
 // outcome decides by the exit and istari complete (spec section 7.3): the
 // task completes only when the agent said so and the process exited cleanly.
-// limit is the usage limit the harness hit before the agent worked, if any.
+// limit is the usage limit the harness hit before the agent worked; nil: none.
 func (r *Runner) outcome(ctx context.Context, id string, res harness.Result, limit *harness.Event) (reason string, outcome func(context.Context, core.Lease) error, completed bool) {
 	run, err := r.runs.Get(ctx, id)
 	switch {
@@ -863,9 +890,10 @@ func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease)
 // streamed is what the runner saw of a run's events.
 type streamed struct {
 	usage harness.Usage
-	// limit is the usage limit the harness hit before the agent called any
-	// tool; nil: none, or the agent had worked by then.
-	limit *harness.Event
+	limit *harness.Event // the first usage limit the harness hit; nil: none
+	// idle reports whether the agent had called no tool when the harness hit
+	// the limit: the run did no work.
+	idle bool
 }
 
 // stream writes the harness's events to the transcript and the log, and
@@ -874,7 +902,7 @@ func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Even
 	t := &transcript{path: run.Transcript, max: r.opts.TranscriptMax}
 	defer t.close()
 	var total harness.Usage
-	var limit *harness.Event
+	var seen streamed
 	worked := false
 	for e := range events {
 		if err := t.write(e); err != nil {
@@ -882,8 +910,8 @@ func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Even
 		}
 		switch e.Kind {
 		case harness.EventUsageLimit:
-			if !worked && limit == nil {
-				limit = &e
+			if seen.limit == nil {
+				seen.limit, seen.idle = &e, !worked
 			}
 		case harness.EventToolCall:
 			worked = true
@@ -899,7 +927,8 @@ func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Even
 			}
 		}
 	}
-	return streamed{usage: total, limit: limit}
+	seen.usage = total
+	return seen
 }
 
 func (r *Runner) event(ctx context.Context, run Run, typ string, payload map[string]any) {
