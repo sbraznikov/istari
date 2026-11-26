@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,18 +57,48 @@ orphan)
 esac
 `
 
+// fakeBin and fakeEnvBin are the fake claude binaries, written once by
+// TestMain before any test runs. Writing an executable while parallel tests
+// fork lets a child inherit the open write fd, and exec then fails with
+// ETXTBSY (golang/go#22315). fakeEnvBin names env by absolute path, for the
+// test that runs without PATH.
+var fakeBin, fakeEnvBin string
+
+func TestMain(m *testing.M) {
+	os.Exit(runWithFakes(m))
+}
+
+// TestMain has no *testing.T to fail, so a setup error is reported on stderr
+// and ends the run with exit code 1.
+func runWithFakes(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "claudecode-fake-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "write the fake claude:", err)
+		return 1
+	}
+	defer os.RemoveAll(dir)
+	fakeBin = filepath.Join(dir, "claude")
+	fakeEnvBin = filepath.Join(dir, "claude-env")
+	envScript := strings.Replace(fakeClaude, "env > ", "/usr/bin/env > ", 1)
+	if err := errors.Join(
+		os.WriteFile(fakeBin, []byte(fakeClaude), 0o755),
+		os.WriteFile(fakeEnvBin, []byte(envScript), 0o755),
+	); err != nil {
+		fmt.Fprintln(os.Stderr, "write the fake claude:", err)
+		return 1
+	}
+	return m.Run()
+}
+
 type fake struct {
 	bin, dir string
 }
 
+// newFake gives a test the shared fake binary and its own directory, where
+// the fake records what it saw (FAKE_DIR).
 func newFake(t *testing.T) fake {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
-	if err := os.WriteFile(bin, []byte(fakeClaude), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return fake{bin: bin, dir: dir}
+	return fake{bin: fakeBin, dir: t.TempDir()}
 }
 
 func (f fake) read(t *testing.T, name string) string {
@@ -329,10 +360,7 @@ func TestWithoutADaemonPathTheAgentStillFindsTheDaemonsOwnBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newFake(t)
-	script := strings.Replace(fakeClaude, "env > ", "/usr/bin/env > ", 1)
-	if err := os.WriteFile(f.bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	f.bin = fakeEnvBin
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "exit", nil))
 	if err != nil {
 		t.Fatal(err)
