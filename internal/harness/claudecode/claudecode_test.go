@@ -568,3 +568,86 @@ func TestTheGuardRunsAsAHookBeforeEveryShellCommandAndCannotBeSwitchedOff(t *tes
 		t.Fatal("the settings leave a repository free to switch the hooks off")
 	}
 }
+
+// limitStream is what Claude Code prints when the account's usage limit is
+// reached: one assistant text, no tool call, no tokens.
+func limitStream(t *testing.T, text string) string {
+	t.Helper()
+	line, _ := json.Marshal(map[string]any{"type": "assistant", "session_id": "s", "message": map[string]any{
+		"id": "m1", "content": []map[string]string{{"type": "text", "text": text}}}})
+	stream := filepath.Join(t.TempDir(), "stream.jsonl")
+	os.WriteFile(stream, append(line, '\n'), 0o644)
+	return stream
+}
+
+func runLimit(t *testing.T, now time.Time, text string) []harness.Event {
+	t.Helper()
+	f := newFake(t)
+	h := claudecode.New(claudecode.Options{Binary: f.bin, Clock: func() time.Time { return now }})
+	s, err := h.Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": limitStream(t, text), "FAKE_EXIT": "1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collect(t, s)
+	if res, _ := s.Wait(); res.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.ExitCode)
+	}
+	return events
+}
+
+func TestTheUsageLimitMessageYieldsAUsageLimitEventWithTheResetTime(t *testing.T) {
+	t.Parallel()
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("no time zone data:", err)
+	}
+	text := "You've hit your 5-hour limit · resets 10pm (Europe/Berlin)"
+	for _, c := range []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{"before the reset today", time.Date(2026, 11, 26, 19, 32, 0, 0, berlin), time.Date(2026, 11, 26, 22, 0, 0, 0, berlin)},
+		{"after the reset time of today", time.Date(2026, 11, 26, 23, 5, 0, 0, berlin), time.Date(2026, 11, 27, 22, 0, 0, 0, berlin)},
+		{"a clock in another zone", time.Date(2026, 11, 26, 18, 32, 0, 0, time.UTC), time.Date(2026, 11, 26, 22, 0, 0, 0, berlin)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			events := runLimit(t, c.now, text)
+			var kinds []harness.EventKind
+			for _, e := range events {
+				kinds = append(kinds, e.Kind)
+			}
+			// The message stays in the transcript.
+			if want := []harness.EventKind{harness.EventMessage, harness.EventUsageLimit}; !slices.Equal(kinds, want) {
+				t.Fatalf("event kinds = %v, want %v", kinds, want)
+			}
+			limit := events[1]
+			if limit.Text != text {
+				t.Errorf("limit text = %q, want %q", limit.Text, text)
+			}
+			if !limit.Reset.Equal(c.want) {
+				t.Errorf("reset = %v, want %v", limit.Reset, c.want)
+			}
+		})
+	}
+}
+
+func TestAUsageLimitWithoutAResetTimeHasNoReset(t *testing.T) {
+	t.Parallel()
+	events := runLimit(t, time.Date(2026, 11, 26, 19, 32, 0, 0, time.UTC), "You've hit your 5-hour limit")
+	if len(events) != 2 || events[1].Kind != harness.EventUsageLimit {
+		t.Fatalf("events = %+v, want a message and a usage limit", events)
+	}
+	if !events[1].Reset.IsZero() {
+		t.Errorf("reset = %v, want none", events[1].Reset)
+	}
+}
+
+func TestATextThatOnlyTalksAboutLimitsIsAnOrdinaryMessage(t *testing.T) {
+	t.Parallel()
+	events := runLimit(t, time.Now(), "The function has hit its recursion limit; I will fix it.")
+	if len(events) != 1 || events[0].Kind != harness.EventMessage {
+		t.Fatalf("events = %+v, want one message", events)
+	}
+}

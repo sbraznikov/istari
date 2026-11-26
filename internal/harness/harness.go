@@ -40,6 +40,10 @@ const (
 	EventMessage  EventKind = "message"   // text the agent wrote
 	EventToolCall EventKind = "tool_call" // a tool the agent called
 	EventUsage    EventKind = "usage"     // tokens of one model call
+	// EventUsageLimit means the harness's account hit its usage limit: the
+	// run cannot work until Reset (spec section 4.2). Text is the harness's
+	// message.
+	EventUsageLimit EventKind = "usage_limit"
 )
 
 // Event is one thing that happened in a run.
@@ -49,6 +53,9 @@ type Event struct {
 	Tool      string          `json:"tool,omitempty"`
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	Usage     Usage           `json:"usage,omitzero"`
+	// Reset is when a usage limit ends, as the harness named it; zero: it
+	// named no time.
+	Reset time.Time `json:"reset,omitzero"`
 }
 
 // Usage counts tokens and cost.
