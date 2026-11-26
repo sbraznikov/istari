@@ -265,6 +265,7 @@ Rules:
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
 - When verify sees a failed check on the pull request's head, istari reads the failed jobs' logs through its own GitHub access (the gh CLI's token or the GitHub App; agents have none, section 7.3) and records a CI failure entry in the journal (section 4.6), once per head commit. The entry holds the end of each failed job's log, cut to a fixed size from its start, so the failing tests and their messages stay. When the log cannot be read, the entry says so and why; the rework round starts either way.
+- An implementer whose run finds that a red CI is not caused by the change (a flaky test the ticket does not touch) answers so without a new commit: `istari complete --ci-unrelated "<reason>"`. The answer is accepted only from an implementer and only while the pull request's head is red. On it, verify reruns the head's failed jobs once through istari's own GitHub access, records a note in the journal with the reason and the rerun jobs, and waits for the new result; it starts no round. A green rerun goes on as any green CI (T6). A red rerun on the same head records a second CI failure entry that says the rerun failed too, and the next rework round starts as today. Each head is rerun at most once, also across a restart of the daemon. A rerun is not a round and does not count against `max_review_rounds`.
 - A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first. A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
@@ -381,7 +382,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Review result | the review stage is complete | reviewer; details stay in the PR |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
-| CI failure | verify saw a failed check on the pull request's head (section 4.3) | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read |
+| CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
 | Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`); the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
@@ -814,6 +815,7 @@ istari checkpoint "Cache layer rewritten; next is the race test"   # commit, pus
 istari pr open --title "..."            # creates a PR with a link to the ticket
 istari schedule --in 5m "check CI"
 istari complete "PR #482 is ready for review"
+istari complete --ci-unrelated "red only in the known flaky TestX, not this change"   # implementer: rerun the failed jobs once (section 4.3)
 ```
 
 The usage instructions are installed into the workspace as a skill (`.istari/skill.md`). The agent's access to GitHub goes through `istari`, not directly: the installation token stays in the daemon and is not present in the agent's environment.
