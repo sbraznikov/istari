@@ -62,6 +62,9 @@ func (r *flakyRepo) flaky(t *testing.T, files ...string) (string, int) {
 	}
 	cmd := exec.Command("sh", append([]string{script}, files...)...)
 	cmd.Dir = r.dir
+	// A BASE of the environment (CI sets the pull request's merge-base) names
+	// a commit this repository does not have: the tests diff against HEAD~1.
+	cmd.Env = append(os.Environ(), "BASE=HEAD~1")
 	out, err := cmd.CombinedOutput()
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
 		return string(out), exit.ExitCode()
