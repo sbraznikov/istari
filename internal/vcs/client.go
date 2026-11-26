@@ -113,6 +113,45 @@ type Status struct {
 // ReviewNone is the review state of a pull request without a deciding review.
 const ReviewNone = "none"
 
+// checkRun is one check run of a commit; an Actions job's id is its check
+// run's id.
+type checkRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	URL        string `json:"html_url"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// state is the run's part in a commit's checks: pending, success or failure.
+func (r checkRun) state() string {
+	switch {
+	case r.Status != "completed":
+		return "pending"
+	case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
+		return "success"
+	default: // failure, cancelled, timed_out, action_required, stale
+		return "failure"
+	}
+}
+
+// checkRuns lists every check run of a commit.
+func (c *Client) checkRuns(ctx context.Context, repo, sha string) ([]checkRun, error) {
+	var all []checkRun
+	for page := 1; ; page++ {
+		var runs struct {
+			CheckRuns []checkRun `json:"check_runs"`
+		}
+		if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page), nil, &runs); err != nil {
+			return nil, err
+		}
+		all = append(all, runs.CheckRuns...)
+		if len(runs.CheckRuns) < 100 {
+			return all, nil
+		}
+	}
+}
+
 // checks sums up a commit's check runs and its combined status: failure if
 // any failed, pending if any still runs, success if all passed, "" if there
 // are none.
@@ -128,29 +167,12 @@ func (c *Client) checks(ctx context.Context, repo, sha string) (string, error) {
 			state = "success"
 		}
 	}
-	for page := 1; ; page++ {
-		var runs struct {
-			CheckRuns []struct {
-				Status     string `json:"status"`
-				Conclusion string `json:"conclusion"`
-			} `json:"check_runs"`
-		}
-		if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page), nil, &runs); err != nil {
-			return "", err
-		}
-		for _, r := range runs.CheckRuns {
-			switch {
-			case r.Status != "completed":
-				add("pending")
-			case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
-				add("success")
-			default: // failure, cancelled, timed_out, action_required, stale
-				add("failure")
-			}
-		}
-		if len(runs.CheckRuns) < 100 {
-			break
-		}
+	runs, err := c.checkRuns(ctx, repo, sha)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range runs {
+		add(r.state())
 	}
 	var combined struct {
 		State      string `json:"state"`
@@ -328,9 +350,22 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 }
 
 func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
-	token, err := c.tokens.Token(ctx, repo)
+	data, err := c.send(ctx, repo, method, url, body)
 	if err != nil {
 		return err
+	}
+	if out != nil && len(data) > 0 {
+		return json.Unmarshal(data, out)
+	}
+	return nil
+}
+
+// send makes a request and returns the body of its answer; an answer other
+// than 2xx is an error that names GitHub's message.
+func (c *Client) send(ctx context.Context, repo, method, url string, body any) ([]byte, error) {
+	token, err := c.tokens.Token(ctx, repo)
+	if err != nil {
+		return nil, err
 	}
 	var reader io.Reader
 	if body != nil {
@@ -339,26 +374,23 @@ func (c *Client) request(ctx context.Context, repo, method, url string, body, ou
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	res, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	data, _ := io.ReadAll(res.Body)
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
-		return fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
+		return nil, fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
 	}
-	if out != nil && len(data) > 0 {
-		return json.Unmarshal(data, out)
-	}
-	return nil
+	return data, nil
 }
 
 // CodePushRefused refuses a push outside the agent's own ticket branch.

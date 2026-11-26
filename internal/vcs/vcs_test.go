@@ -16,7 +16,9 @@ import (
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -84,7 +86,7 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -309,7 +311,7 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -331,7 +333,7 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	w.Track(ctx, ticket, githubtest.Repo, pr)
@@ -377,7 +379,7 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {
@@ -492,6 +494,150 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	}
 }
 
+func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success", Log: "all fine"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "=== RUN   TestX\n--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"},
+	)
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if f.Check != "test" || f.Commit != "abc123" || f.URL == "" || f.Cut {
+		t.Fatalf("failure = %+v", f)
+	}
+	if !strings.Contains(f.Output, "--- FAIL: TestX") || !strings.Contains(f.Output, "got 1, want 2") || strings.Contains(f.Output, "all fine") {
+		t.Fatalf("output = %q", f.Output)
+	}
+}
+
+func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	log := "first line of setup\n" + strings.Repeat("ok  \tsome/package\t0.1s\n", vcs.MaxFailureLog/20) + "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\nFAIL\n"
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: log})
+	f, err := c.FailureLog(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("FailureLog: %v", err)
+	}
+	if !f.Cut || len(f.Output) > vcs.MaxFailureLog {
+		t.Fatalf("cut = %v, %d bytes; want the end, at most %d bytes", f.Cut, len(f.Output), vcs.MaxFailureLog)
+	}
+	if !strings.HasSuffix(f.Output, "got 1, want 2\nFAIL\n") || strings.Contains(f.Output, "first line of setup") || !strings.HasPrefix(f.Output, "ok  \t") {
+		t.Fatalf("output is not the end of the log cut at a line: %q…%q", f.Output[:40], f.Output[len(f.Output)-40:])
+	}
+}
+
+// redHead tracks a pull request whose head has the checks given, with a
+// journal on the watcher.
+func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
+	t.Helper()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	j := journal.New(nil, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{Journal: j})
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", checks...)
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, w, j, ref
+}
+
+// checkEvents are the vcs.checks events of the ticket, as "checks@sha".
+func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
+	t.Helper()
+	events, err := s.Read(ctx, "", store.Filter{Ticket: ref.String(), TypePrefix: vcs.EventChecks}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		var p struct{ Checks, SHA string }
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, p.Checks+"@"+p.SHA)
+	}
+	return got
+}
+
+// storedEntries are the journal entries of the ticket in istari's log.
+func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.Entry {
+	t.Helper()
+	entries, err := j.Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
+	t.Parallel()
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
+	for range 2 { // the second poll sees the same red head
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 1 || entries[0].Kind != journal.CI {
+		t.Fatalf("journal = %+v, want one ci entry", entries)
+	}
+	if ci := entries[0].CI; ci.Check != "test" || ci.Commit != "abc123" || !strings.Contains(ci.Output, "--- FAIL: TestX") {
+		t.Fatalf("ci entry = %+v", ci)
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure once", got)
+	}
+}
+
+func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
+	t.Parallel()
+	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 1 || entries[0].CI == nil || !strings.Contains(entries[0].CI.Error, "404") || entries[0].CI.Commit != "abc123" {
+		t.Fatalf("journal = %+v, want a ci entry that says the log could not be read and why", entries)
+	}
+	if !strings.Contains(journal.Text(entries[0]), "could not be read") {
+		t.Fatalf("entry text = %s", journal.Text(entries[0]))
+	}
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure, so rework starts", got)
+	}
+}
+
+func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetStatus("def456", "failure")
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "def456"); err == nil || !strings.Contains(err.Error(), "commit status") {
+		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
+	}
+}
+
 // watchFixture is a tracked pull request of ticket #3 that istari pushed h1
 // to, on main at m1.
 func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, string, int) {
@@ -503,7 +649,7 @@ func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, 
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	w := vcs.NewWatcher(c, s, nil)
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
 	if err != nil {

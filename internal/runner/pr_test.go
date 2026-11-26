@@ -44,7 +44,7 @@ func prFixture(t *testing.T, pipelineToml string) (*cpFixture, *githubtest.Serve
 	}
 	t.Cleanup(func() { s.Close() })
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
-	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, nil), f.tickets)
+	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, vcs.WatcherOptions{}), f.tickets)
 }
 
 func TestPrOpenIsRefusedWhenTheFullChecksFail(t *testing.T) {
