@@ -76,6 +76,37 @@ func TestASteppedDaemonSyncsOnlyWhenAStepAsks(t *testing.T) {
 	}
 }
 
+func TestASteppedDaemonFiresADueTimerOnlyOnASchedulerStep(t *testing.T) {
+	t.Parallel()
+	dataDir := newDataDir(t)
+	d := startSteppedDaemon(t, dataDir, writeDaemonConfig(t, dataDir))
+	ref := "gh:acme/web#1"
+	createTicket(t, d, ref)
+	var timer struct{ ID string }
+	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
+	// The timer is due after a second on the real clock; an unstepped
+	// scheduler would fire it within a tick of that.
+	fired := func() int {
+		var events []struct{ Type string }
+		d.mustCLI(t, &events, "tail", "--type", "timer.fired")
+		return len(events)
+	}
+	for until := time.Now().Add(2 * time.Second); time.Now().Before(until); time.Sleep(100 * time.Millisecond) {
+		if n := fired(); n != 0 {
+			t.Fatalf("a stepped daemon fired %d timers on its own", n)
+		}
+	}
+	d.step(t, "scheduler")
+	if n := fired(); n != 1 {
+		t.Fatalf("after the scheduler step %d timers fired, want 1", n)
+	}
+	var tk struct{ State string }
+	d.mustCLI(t, &tk, "ticket", "show", ref)
+	if tk.State != "canceled" {
+		t.Fatalf("after the scheduler step the ticket is %s, want canceled", tk.State)
+	}
+}
+
 func TestAStepOfAnUnknownLoopIsABadRequest(t *testing.T) {
 	t.Parallel()
 	dataDir := newDataDir(t)

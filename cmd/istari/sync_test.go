@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -216,7 +215,7 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 
 // humanMerge is a ticket, in awaiting_approval unless made otherwise, whose
 // pull request istari watches, as istari recover leaves it, served by a fake
-// GitHub.
+// GitHub. Its daemon is stepped: each test names the passes it needs.
 type humanMerge struct {
 	gh        *githubtest.Server
 	d         *daemon
@@ -255,8 +254,9 @@ func recoveredWithPullRequest(t *testing.T, state string) *humanMerge {
 		t.Fatal(err)
 	}
 	h.env = []string{"PATH=" + fakeGH(t, h.gh.Token), "GITHUB_API_URL=" + h.gh.URL}
-	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
+	h.d = startSteppedDaemon(t, h.dataDir, h.config, h.env...)
 	h.d.mustCLI(t, nil, "recover")
+	h.d.step(t, "pipeline") // the tasks of the recovered state
 	if st := h.state(t); st != state {
 		t.Fatalf("the recovered ticket is %s, want %s", st, state)
 	}
@@ -268,16 +268,6 @@ func (h *humanMerge) state(t *testing.T) string {
 	var tk struct{ State string }
 	h.d.mustCLI(t, &tk, "ticket", "show", h.ref)
 	return tk.State
-}
-
-// restart stops the daemon and starts it again: its PR watch polls at once.
-func (h *humanMerge) restart(t *testing.T) {
-	t.Helper()
-	if err := h.d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	h.d.cmd.Wait()
-	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
 }
 
 // finished asserts the ticket ended in done the way istari's own merge ends
@@ -300,11 +290,10 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst(t *tes
 	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanMerge(h.pr, "alex") // GitHub closes the issue after the watch looked
-	h.restart(t)
-	for deadline := time.Now().Add(10 * time.Second); h.state(t) != "done"; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the ticket of a merged pull request is %s, want done\n%s", h.state(t), h.d.stderr)
-		}
+	h.d.step(t, "watch")
+	h.d.step(t, "pipeline")
+	if st := h.state(t); st != "done" {
+		t.Fatalf("after a watch and a pipeline pass the ticket of a merged pull request is %s, want done\n%s", st, h.d.stderr)
 	}
 	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n
 	h.d.mustCLI(t, nil, "sync")
@@ -325,13 +314,13 @@ func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
 	t.Parallel()
 	h := newHumanMerge(t)
 	h.gh.HumanClose(h.pr, "alex", "")
-	h.restart(t)
-	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not record the close\n%s", h.d.stderr)
-		}
+	h.d.step(t, "watch")
+	if closed := h.d.eventTypes(t, h.ref, "vcs.closed"); len(closed) != 1 {
+		t.Fatalf("the watch pass recorded %v, want one vcs.closed\n%s", closed, h.d.stderr)
 	}
-	h.d.mustCLI(t, nil, "sync")
+	h.d.step(t, "pipeline")
+	h.d.step(t, "sync")
+	h.d.step(t, "pipeline")
 	if st := h.state(t); st != "awaiting_approval" {
 		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
 	}
@@ -347,11 +336,9 @@ func TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync(t *testing.T) 
 	}
 	before := len(h.d.eventTypes(t, h.ref, "ticket.transitioned"))
 	h.gh.HumanMerge(h.pr, "alex")
-	h.restart(t) // the watch records the merge
-	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not record the merge\n%s", h.d.stderr)
-		}
+	h.d.step(t, "watch")
+	if closed := h.d.eventTypes(t, h.ref, "vcs.closed"); len(closed) != 1 {
+		t.Fatalf("the watch pass recorded %v, want one vcs.closed for the merge\n%s", closed, h.d.stderr)
 	}
 	h.d.mustCLI(t, nil, "sync")
 	h.finished(t)
