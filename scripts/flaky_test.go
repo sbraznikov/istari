@@ -104,6 +104,31 @@ func TestFlakyShNamesATestOfANewFileThatFailsOnItsFifthRun(t *testing.T) {
 	}
 }
 
+// The checkpoint keeps only the tail of a red check's output, so the names of
+// all failing tests come last, after every package's go test output.
+func TestFlakyShNamesTheFailingTestsOfAllPackagesAtTheEnd(t *testing.T) {
+	t.Parallel()
+	r := newFlakyRepo(t)
+	r.write("p/flaky_test.go", flakyTest)
+	r.write("q/q.go", "package q\n")
+	r.write("q/flaky_test.go", strings.Replace(flakyTest, "package p", "package q", 1))
+	r.commit("two flaky tests")
+
+	out, code := r.flaky(t, "p/flaky_test.go", "q/flaky_test.go")
+
+	if code == 0 {
+		t.Fatalf("flaky.sh exited 0 on two flaky tests:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	want := []string{
+		"flaky: TestFlaky failed on run 5 of 20 in ./p (4 of 20 runs failed)",
+		"flaky: TestFlaky failed on run 5 of 20 in ./q (4 of 20 runs failed)",
+	}
+	if len(lines) < 2 || lines[len(lines)-2] != want[0] || lines[len(lines)-1] != want[1] {
+		t.Errorf("the output does not end with the failing tests of both packages %q:\n%s", want, out)
+	}
+}
+
 func TestFlakyShRunsOnlyTheTestsAChangedFileChanges(t *testing.T) {
 	t.Parallel()
 	r := newFlakyRepo(t)

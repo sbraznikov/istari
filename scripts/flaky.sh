@@ -8,25 +8,28 @@ set -u
 base=${BASE:-HEAD~1}
 count=20
 list=$(mktemp)
-trap 'rm -f "$list"' EXIT
-
-# tests prints the names of the Test functions of a Go test file.
-tests() {
-	sed -n 's/^func \(Test[A-Za-z0-9_]*\)([A-Za-z0-9_]* \*testing\.T).*/\1/p' "$1"
-}
+summary=$(mktemp)
+trap 'rm -f "$list" "$summary"' EXIT
 
 # changed prints the names of the Test functions of a Go test file that hold
 # a line changed since base: a line the diff adds, or the line a removal
 # follows. A change outside a Test function, in a helper, counts for none.
+# Every line of a file that is new since base counts as changed.
 changed() {
-	lines=$(git diff -U0 --no-color "$base" -- "$1" | awk '
-		/^@@ / {
-			split(substr($3, 2), a, ",")
-			n = (a[2] == "") ? 1 : a[2]
-			if (n == 0) printf "%d ", a[1]
-			for (i = 0; i < n; i++) printf "%d ", a[1] + i
-		}')
-	awk -v lines="$lines" '
+	if git cat-file -e "$base:./$1" 2>/dev/null; then
+		all=0
+		lines=$(git diff -U0 --no-color "$base" -- "$1" | awk '
+			/^@@ / {
+				split(substr($3, 2), a, ",")
+				n = (a[2] == "") ? 1 : a[2]
+				if (n == 0) printf "%d ", a[1]
+				for (i = 0; i < n; i++) printf "%d ", a[1] + i
+			}')
+	else
+		all=1
+		lines=
+	fi
+	awk -v all="$all" -v lines="$lines" '
 		BEGIN { n = split(lines, l, " "); for (i = 1; i <= n; i++) hit[l[i]] = 1 }
 		/^func / {
 			cur = ""
@@ -35,7 +38,7 @@ changed() {
 				sub(/\(.*/, "", cur)
 			}
 		}
-		(NR in hit) && cur != "" { found[cur] = 1 }
+		(all || NR in hit) && cur != "" { found[cur] = 1 }
 		/^}/ { cur = "" }
 		END { for (name in found) print name }' "$1"
 }
@@ -45,12 +48,7 @@ for file in "$@"; do
 	[ -f "$file" ] || continue
 	file=${file#./}
 	dir=$(dirname "$file")
-	if git cat-file -e "$base:./$file" 2>/dev/null; then
-		names=$(changed "$file")
-	else
-		names=$(tests "$file")
-	fi
-	for name in $names; do
+	for name in $(changed "$file"); do
 		printf '%s %s\n' "./${dir#./}" "$name" >>"$list"
 	done
 done
@@ -69,8 +67,9 @@ for pkg in $(cut -d' ' -f1 "$list" | sort -u); do
 	[ "$rc" -eq 0 ] && continue
 	status=1
 	# Counts the runs of each top-level test and names its first failing run;
-	# the lines of passing runs are left out.
-	printf '%s\n' "$out" | awk -v pkg="$pkg" -v count="$count" '
+	# the lines of passing runs are left out. The names go to the summary,
+	# printed after the last package, since a checkpoint keeps only the tail.
+	printf '%s\n' "$out" | awk -v pkg="$pkg" -v count="$count" -v summary="$summary" '
 		/^=== RUN / && $3 !~ /\// { runs[$3]++; next }
 		/^=== (RUN|PAUSE|CONT|NAME) / || /^ *--- PASS: / || /^PASS$/ { next }
 		/^--- FAIL: / {
@@ -80,8 +79,9 @@ for pkg in $(cut -d' ' -f1 "$list" | sort -u); do
 		{ print }
 		END {
 			for (i = 1; i <= n; i++)
-				printf "flaky: %s failed on run %d of %d in %s (%d of %d runs failed)\n", order[i], first[order[i]], count, pkg, failed[order[i]], count
-			if (n == 0) printf "flaky: go test failed in %s\n", pkg
+				printf "flaky: %s failed on run %d of %d in %s (%d of %d runs failed)\n", order[i], first[order[i]], count, pkg, failed[order[i]], count >>summary
+			if (n == 0) printf "flaky: go test failed in %s\n", pkg >>summary
 		}'
 done
+cat "$summary"
 exit "$status"
