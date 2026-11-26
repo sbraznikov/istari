@@ -366,7 +366,10 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
 	var payload []byte
 	if body != nil {
-		payload, _ = json.Marshal(body)
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
+			return fmt.Errorf("vcs: %s %s: encoding the body: %w", method, url, err)
+		}
 	}
 	var data []byte
 	send := func() error {
