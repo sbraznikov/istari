@@ -32,33 +32,36 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","n
 
 func TestAnImplementersCIUnrelatedAnswerRerunsTheRedHeadOnce(t *testing.T) {
 	t.Parallel()
-	r := newRecovered(t, unrelatedAgent, "in_progress", func(gh *githubtest.Server, pr int) {
+	r := newSteppedRecovered(t, unrelatedAgent, "in_progress", func(gh *githubtest.Server, pr int) {
 		gh.SetHeadSHA(pr, "h1")
 		gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
 	})
-	r.restart(t) // the watch polls at once: it reads the red head
-	for deadline := time.Now().Add(60 * time.Second); len(r.d.eventTypes(t, r.ref.String(), "vcs.rerun")) == 0; time.Sleep(200 * time.Millisecond) {
+	r.d.step(t, "watch")    // the watch reads the red head
+	r.d.step(t, "pipeline") // and the pipeline opens the implement task
+	ended := endedRuns(t, r.d, r.log, "implementer", 1)
+	// The run ends before its task does: the pipeline steps on the task's end.
+	for deadline := time.Now().Add(30 * time.Second); len(r.d.eventTypes(t, r.ref.String(), "task.completed")) == 0; time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			out, _ := os.ReadFile(r.log)
-			t.Fatalf("no rerun after a minute\nagent log:\n%s\ndaemon:\n%s", out, r.d.stderr)
+			t.Fatalf("the implement task did not complete\ndaemon:\n%s", r.d.stderr)
 		}
 	}
-	r.restart(t) // and now the rerun's result
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var tk struct{ State string }
-		r.d.mustCLI(t, &tk, "ticket", "show", r.ref.String())
-		if tk.State == "in_review" {
-			break
-		}
-		if time.Now().After(deadline) {
-			out, _ := os.ReadFile(r.log)
-			t.Fatalf("the ticket is %s after a minute, want in_review after a green rerun\nagent log:\n%s\ndaemon:\n%s", tk.State, out, r.d.stderr)
-		}
+	r.d.step(t, "pipeline") // the completed task reruns the red head
+	if events := r.d.eventTypes(t, r.ref.String(), "vcs.rerun"); len(events) != 1 {
+		out, _ := os.ReadFile(r.log)
+		t.Fatalf("%d reruns after the implementer's answer, want 1\nagent log:\n%s\ndaemon:\n%s", len(events), out, r.d.stderr)
+	}
+	r.d.step(t, "watch")    // the watch reads the green rerun
+	r.d.step(t, "pipeline") // and the pipeline sends the ticket to review
+	var tk struct{ State string }
+	r.d.mustCLI(t, &tk, "ticket", "show", r.ref.String())
+	if tk.State != "in_review" {
+		out, _ := os.ReadFile(r.log)
+		t.Fatalf("the ticket is %s, want in_review after a green rerun\nagent log:\n%s\ndaemon:\n%s", tk.State, out, r.d.stderr)
 	}
 	if n := r.gh.Reruns(); n != 1 {
 		t.Fatalf("the fake saw %d reruns, want 1", n)
 	}
-	if ended := endedRuns(t, r.d, r.log, "implementer", 1); ended[0].Reason != "completed: the known ETXTBSY flake" {
+	if ended[0].Reason != "completed: the known ETXTBSY flake" {
 		t.Fatalf("the implementer run ended %q, want completed with its reason", ended[0].Reason)
 	}
 }

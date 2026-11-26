@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -46,9 +45,6 @@ type reviewed struct {
 	ref tickets.Ref
 	pr  int
 	log string
-
-	dataDir, config string
-	env             []string
 }
 
 func newReviewed(t *testing.T, agent string) reviewed {
@@ -60,6 +56,20 @@ func newReviewed(t *testing.T, agent string) reviewed {
 // request, the fake GitHub set up by before ahead of the recover, and a
 // daemon whose claude is agent.
 func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
+	return recoverWith(t, startDaemonWithConfig, agent, state, before)
+}
+
+// newSteppedRecovered is newRecovered on a stepped daemon: its PR watch and
+// pipeline run one pass per step.
+func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
+	return recoverWith(t, startSteppedDaemon, agent, state, before)
+}
+
+// recoverWith seeds a ticket with an open pull request, starts a daemon
+// with start and recovers the ticket.
+func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
@@ -99,25 +109,9 @@ func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.
 		t.Fatal(err)
 	}
 	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	d := start(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "recover")
-	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log, dataDir: dataDir, config: config, env: env}
-}
-
-// restart stops the daemon and starts it again: its PR watch polls at once.
-func (r *reviewed) restart(t *testing.T) {
-	t.Helper()
-	r.d = restartDaemon(t, r.d, r.dataDir, r.config, r.env...)
-}
-
-// restartDaemon stops d and starts a daemon on the same data and config.
-func restartDaemon(t *testing.T, d *daemon, dataDir, config string, env ...string) *daemon {
-	t.Helper()
-	if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	d.cmd.Wait()
-	return startDaemonWithConfig(t, dataDir, config, env...)
+	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log}
 }
 
 func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) {

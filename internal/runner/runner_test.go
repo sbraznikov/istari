@@ -823,20 +823,44 @@ func TestARunStartsWithAWholeLeaseHoweverLongItsPreparationTook(t *testing.T) {
 func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
 	t.Parallel()
 	// The lease is long enough for its renewals (every third of it) to
-	// survive a busy scheduler; the preparation outlasts it by design, not
-	// by load: assembling the brief alone takes three leases.
-	const lease = 300 * time.Millisecond
-	f := newRunner(t, runner.RunnerOptions{Lease: lease, SelfReview: func(context.Context, string) bool {
-		time.Sleep(3 * lease)
+	// survive a stall of a loaded CI box; the preparation outlasts it by
+	// design, not by load: assembling the brief lasts until a renewal is
+	// dated after the lease of the claim ran out.
+	const lease = 1500 * time.Millisecond
+	var f *runFixture
+	f = newRunner(t, runner.RunnerOptions{Lease: lease, SelfReview: func(ctx context.Context, _ string) bool {
+		for deadline := time.Now().Add(waitFor); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if renewedPastTheClaim(ctx, f, lease) {
+				break
+			}
+		}
 		return true
 	}})
 	_, task := f.readyTask(t, 12)
 	f.start(t)
 	s := f.session(t)
 	defer s.Stop(0)
+	if !renewedPastTheClaim(ctx, f, lease) {
+		t.Fatal("the preparation did not outlast the lease of the claim")
+	}
 	if s.spec.Env["ISTARI_TASK"] != task.ID || len(f.events(t, "task.expired")) != 0 {
 		t.Fatalf("the run of %s lost its lease while it was prepared: %d expirations", task.ID, len(f.events(t, "task.expired")))
 	}
+}
+
+// renewedPastTheClaim tells whether a task.renewed event is dated after the
+// lease of the first task.claimed event ran out.
+func renewedPastTheClaim(ctx context.Context, f *runFixture, lease time.Duration) bool {
+	claims, err := f.store.Read(ctx, "", store.Filter{TypePrefix: "task.claimed"}, 0)
+	if err != nil || len(claims) == 0 {
+		return false
+	}
+	renewals, err := f.store.Read(ctx, "", store.Filter{TypePrefix: "task.renewed"}, 0)
+	if err != nil {
+		return false
+	}
+	until := claims[0].At.Add(lease)
+	return slices.ContainsFunc(renewals, func(e store.Event) bool { return e.At.After(until) })
 }
 
 // seedMain commits a file to the main branch of the fixture's repository.
