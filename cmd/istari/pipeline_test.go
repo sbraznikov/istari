@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,42 @@ func TestDoctorWarnsOfAReviewThatDoesNotWaitForVerify(t *testing.T) {
 	if !strings.Contains(row, "warn") || !strings.Contains(row, "line 5") || !strings.Contains(row, `"verify"`) {
 		t.Fatalf("the pipeline row = %q, want a warning naming line 5 and the fix\n%s", row, out)
 	}
+}
+
+func TestDoctorJSONShowsTheEarlyReviewAsAWarningThatIsNotOK(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	// The standards files are there, so the pipeline row is the only warning.
+	writeFiles(t, repo, "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md", "adr/")
+	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
+	if err := os.MkdirAll(filepath.Join(repo, ".istari"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".istari", "pipeline.toml"), []byte(early), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := doctorInRepo(t, repo, "--json")
+	if code != 0 {
+		t.Fatalf("doctor with only a warning: exit %d, want 0\n%s", code, out)
+	}
+	var rows []struct {
+		Name string `json:"name"`
+		OK   bool   `json:"ok"`
+		Warn bool   `json:"warn"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("doctor --json: %v\n%s", err, out)
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.Name, "pipeline ") {
+			if r.OK || !r.Warn {
+				t.Fatalf("the pipeline row has ok %v, warn %v; want ok false, warn true, as the standards row\n%s", r.OK, r.Warn, out)
+			}
+			return
+		}
+	}
+	t.Fatalf("doctor --json shows no pipeline row\n%s", out)
 }
 
 func TestAHumanApprovesThePlanGate(t *testing.T) {
