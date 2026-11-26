@@ -3,6 +3,7 @@ package main_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -287,8 +288,7 @@ func (h *humanMerge) trace(t *testing.T) string {
 			At          time.Time
 			Payload     json.RawMessage
 		}
-		err = json.NewDecoder(r.Body).Decode(&events)
-		r.Body.Close()
+		err = errors.Join(json.NewDecoder(r.Body).Decode(&events), r.Body.Close())
 		if err != nil {
 			t.Fatal(err)
 		}
