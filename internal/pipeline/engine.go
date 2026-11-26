@@ -325,9 +325,12 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
+	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && !r.conflict) && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
 		// tracker (istari recover): it gets the stages of its state on.
+		// Its first round is expanded again, as expand skips the tasks that
+		// exist: a daemon stopped while it made them left out the rest, and
+		// round.done reads a stage without a task as completed.
 		if err := e.expand(ctx, tk, 1, false, from); err != nil {
 			return err
 		}

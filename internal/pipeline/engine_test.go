@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1017,6 +1018,38 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 				t.Errorf("%s: it got a %s task", state, c.none)
 			}
 		}
+	}
+}
+
+func TestARecoveredTicketWhoseStagesADaemonStoppedMakingGetsTheRest(t *testing.T) {
+	t.Parallel()
+	awaitingApproval := func() *engineFixture {
+		f := newEngine(t, config.Defaults{}, nil)
+		if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+	whole := awaitingApproval()
+	whole.reconcile(t)
+	approve := whole.stage(t, ref, "approve")
+
+	// The daemon stopped after it made the approve task, before the merge task.
+	f := awaitingApproval()
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: approve.Ticket, Project: approve.Project, Role: approve.Role, MaxAttempts: approve.MaxAttempts}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("the ticket is %s, want awaiting_approval: nothing merged it", st)
+	}
+	if merge := f.stage(t, ref, pipeline.StageMerge); merge.State != core.TaskWaiting || !slices.Equal(merge.Needs, []string{approve.ID}) {
+		t.Fatalf("merge is %s needing %v, want waiting on %s", merge.State, merge.Needs, approve.ID)
 	}
 }
 
