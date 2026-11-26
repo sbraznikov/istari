@@ -317,3 +317,20 @@ func TestABudgetHoldIsLiftedAnywayWithoutRaisingTheSize(t *testing.T) {
 		t.Fatalf("task.unblocked = %s, want the budget_exceeded block of %s lifted", unblocked.Payload, task.ID)
 	}
 }
+
+func TestLiftingABudgetHoldAnywayLetsTheNextRunStart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 73)
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	s := f.session(t)
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 2 {
+		t.Fatalf("the run let start anyway is capped at $%v, want the XS budget of $2", s.spec.MaxBudgetUSD)
+	}
+	if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != "" {
+		t.Fatalf("hold = %q while the run let start anyway runs, want none", held.Hold)
+	}
+}
