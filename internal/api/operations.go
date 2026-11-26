@@ -364,6 +364,11 @@ func (s *Server) operations() map[string]operation {
 					return nil, &core.Error{Code: core.CodeInvalidState, Message: "submit the review with istari review submit before istari complete"}
 				}
 			}
+			if run.Role == "implementer" {
+				if err := s.requirePullRequest(ctx, run); err != nil {
+					return nil, err
+				}
+			}
 			_, err := s.runs.Complete(ctx, run.ID, r.Message)
 			return ok(err)
 		}),
@@ -384,6 +389,13 @@ func (s *Server) operations() map[string]operation {
 				return nil, &core.Error{Code: core.CodeInvalidState, Message: "pull requests are off: istari has no GitHub access"}
 			}
 			pr, err := s.prs.Open(ctx, run, r.Title, r.Body)
+			if errors.Is(err, runner.ErrMainRed) {
+				// Not the agent's failure: its task waits for the hold to
+				// be lifted, without spending an attempt (spec 7.7).
+				if _, yerr := s.runs.Yield(ctx, run.ID, err.Error()); yerr != nil {
+					return nil, yerr
+				}
+			}
 			if err != nil {
 				return nil, &core.Error{Code: core.CodeInvalidState, Message: err.Error()}
 			}
