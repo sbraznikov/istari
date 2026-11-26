@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -20,7 +21,9 @@ const CodeTrackerUnavailable = "tracker_unavailable"
 // rejectOrYield ends a submit that code could not take. A tracker outage is
 // not the agent's fault: the run yields and its task is handed out again
 // without spending an attempt; nothing of the result is kept, the next run
-// does the work again. Any other refusal rejects the run (spec section 4.2).
+// does the work again. A read that GitHub refused for the rate limit is
+// "later": it marks nothing, and the agent submits the same result again
+// (#208). Any other refusal rejects the run (spec section 4.2).
 func (s *Server) rejectOrYield(ctx context.Context, run runner.Run, err error) error {
 	if errors.Is(err, tickets.ErrUnavailable) {
 		if _, yerr := s.runs.Yield(ctx, run.ID, err.Error()); yerr != nil {
@@ -29,6 +32,9 @@ func (s *Server) rejectOrYield(ctx context.Context, run runner.Run, err error) e
 		log.Printf("istari: %s: %v; tried again when task %s is handed out next", run.Ticket, err, run.Task)
 		return &core.Error{Code: CodeTrackerUnavailable, Message: err.Error() +
 			". This costs no attempt, and nothing of your result is kept: the next run does the work again. Stop and end your run without istari complete"}
+	}
+	if errors.Is(err, ratelimit.ErrRateLimited) {
+		return &core.Error{Code: CodeRateLimited, Message: err.Error() + "; GitHub refuses for the rate limit: submit the same result again later"}
 	}
 	if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
 		return rerr

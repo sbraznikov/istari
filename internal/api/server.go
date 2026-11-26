@@ -17,6 +17,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/scheduler"
@@ -55,8 +56,9 @@ type Server struct {
 	reviews   *runner.Reviews
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
-	firstRepo string          // the first configured repository: where a plan goes without its own
-	repos     map[string]bool // the configured repositories: only their tickets get worktrees
+	github    *ratelimit.Transport // nil: no counts, no hold
+	firstRepo string               // the first configured repository: where a plan goes without its own
+	repos     map[string]bool      // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
 	changed   *notifier
 	clock     func() time.Time
@@ -87,6 +89,10 @@ type ServerOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side: pushes, pull requests, checks and reviews.
 	VCS *vcs.Client
+	// GitHub is the transport under Tracker and VCS: the sync and the PR
+	// watch wait while its quota is low, and istari doctor reads its counts
+	// (#208). nil: neither waits, and there are no counts.
+	GitHub *ratelimit.Transport
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -122,8 +128,13 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
 		}
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged})
+		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged}
+		if opts.GitHub != nil {
+			syncOpts.Hold = opts.GitHub.Hold
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, syncOpts)
 	}
+	srv.github = opts.GitHub
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
 		srv.firstRepo = opts.Repos[0].Repo
@@ -343,7 +354,11 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
-		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
+		if s.github != nil && s.github.Hold(ctx, "the PR watch") != nil {
+			return // ctx ended
+		}
+		// A refusal for the rate limit is "later" (#208): the next Hold waits.
+		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ratelimit.ErrRateLimited) {
 			log.Printf("istari: pull requests: %v", err)
 		}
 		select {
