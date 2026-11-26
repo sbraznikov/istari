@@ -283,6 +283,7 @@ func TestLiftingABudgetHoldRefusesAnotherHoldAndNamesItsCommand(t *testing.T) {
 		{"attempts_exhausted", "istari ticket retry"},
 	} {
 		t.Run(c.hold, func(t *testing.T) {
+			t.Parallel()
 			f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
 			tk, _ := f.readyTask(t, 80+n)
 			if _, err := f.tickets.SetHold(ctx, "system", tk.Ref, c.hold); err != nil {
