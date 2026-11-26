@@ -50,7 +50,7 @@ type Server struct {
 	failCommentsWith int
 	failReviews      int // reviews of a pull request that fail
 	failReviewsWith  int
-	files      map[string]string // repository files on the default branch
+	files            map[string]string // repository files on the default branch
 
 	appID           int64
 	appKey          *rsa.PublicKey
