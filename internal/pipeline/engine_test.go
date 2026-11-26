@@ -937,6 +937,34 @@ func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
 	}
 }
 
+func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("a refused rerun left implement in round %d, want its one rework round 2", pipeline.RoundOf(impl))
+	}
+	// Round 2 has nothing to change on the same head and answers unrelated again.
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("second Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("the second answer started round %d, want no round after 2", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
+		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
+	}
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns, want none", p.gh.Reruns())
+	}
+}
+
 func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
 	t.Parallel()
 	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})

@@ -66,8 +66,9 @@ type Tracked struct {
 	MergeHead string `json:"merge_head,omitempty"`
 	MergeBase string `json:"merge_base,omitempty"`
 	// Unrelated is the red head an implementer answered as not caused by the
-	// change, with its Reason; Rerun is the head whose failed jobs istari
-	// reran, at most once per head (spec 4.3).
+	// change, with its Reason, until Rerun uses the answer up; Rerun is the
+	// head whose failed jobs istari reran or tried to, at most once per head
+	// (spec 4.3).
 	Unrelated string `json:"unrelated,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	Rerun     string `json:"rerun,omitempty"`
