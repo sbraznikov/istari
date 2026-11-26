@@ -270,6 +270,56 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	return left, true, nil
 }
 
+// holdLiftedBy says what lifts each hold but budget_exceeded (spec section
+// 4.1), for a refusal that names the way out.
+var holdLiftedBy = map[string]string{
+	"needs_input":        "a reply in the ticket thread lifts it",
+	"attempts_exhausted": "istari ticket retry lifts it",
+	"paused":             "istari ticket resume lifts it",
+	"waiting_dependency": "istari lifts it when every need is done",
+	"waiting_zone":       "istari lifts it when the overlapping ticket is merged or canceled",
+}
+
+// LiftBudgetHold is a human's decision on an exceeded budget (spec section
+// 7.5, istari ticket unhold): it unblocks the ticket's tasks blocked
+// budget_exceeded and then clears the hold, so an interrupted call leaves the
+// ticket held and a repeat finishes it.
+func (r *Runner) LiftBudgetHold(ctx context.Context, actor, ref string, anyway bool) (core.Ticket, error) {
+	tk, err := r.tickets.Get(ctx, ref)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	if tk.Hold != blockBudget {
+		msg := fmt.Sprintf("ticket %s is not on hold for %s", ref, blockBudget)
+		if tk.Hold != "" {
+			msg = fmt.Sprintf("ticket %s is on hold for %s, not %s: %s", ref, tk.Hold, blockBudget, holdLiftedBy[tk.Hold])
+		}
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: msg}
+	}
+	if !anyway {
+		left, capped, err := r.budgetLeft(ctx, tk)
+		if err != nil {
+			return core.Ticket{}, err
+		}
+		if capped && left <= 0 {
+			return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("the budget of %s is still spent ($%.2f left): raise its size label first, or pass --anyway", ref, left)}
+		}
+	}
+	all, err := r.tasks.List(ctx)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	for _, task := range all {
+		if task.Ticket != ref || task.State != core.TaskBlocked || task.BlockKind != blockBudget {
+			continue
+		}
+		if err := r.tasks.Unblock(ctx, actor, task.ID); err != nil {
+			return core.Ticket{}, err
+		}
+	}
+	return r.tickets.ClearHold(ctx, actor, ref, blockBudget)
+}
+
 // Working tells which of this runner's live runs works on a task, if any.
 func (r *Runner) Working(ctx context.Context, task string) (run string, ok bool) {
 	runs, err := r.runs.List(ctx)
