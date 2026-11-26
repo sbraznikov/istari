@@ -61,6 +61,20 @@ func newReviewed(t *testing.T, agent string) reviewed {
 // daemon whose claude is agent.
 func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
+	return recoverWith(t, startDaemonWithConfig, agent, state, before)
+}
+
+// newSteppedRecovered is newRecovered on a stepped daemon: its PR watch and
+// pipeline run one pass per step.
+func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
+	return recoverWith(t, startSteppedDaemon, agent, state, before)
+}
+
+// recoverWith seeds a ticket with an open pull request, starts a daemon
+// with start and recovers the ticket.
+func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
@@ -99,7 +113,7 @@ func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.
 		t.Fatal(err)
 	}
 	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	d := start(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "recover")
 	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log, dataDir: dataDir, config: config, env: env}
 }
