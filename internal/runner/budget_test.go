@@ -1,7 +1,9 @@
 package runner_test
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -217,5 +219,101 @@ func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T
 	defer g.Stop(0)
 	if g.spec.MaxBudgetUSD != 1 {
 		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
+	}
+}
+
+// spendTheBudget lets an XS ticket's only run spend all of its $2, so its
+// task is blocked budget_exceeded and the ticket is held.
+func spendTheBudget(t *testing.T, f *runFixture, n int) (core.Ticket, core.Task) {
+	t.Helper()
+	tk, task := f.readyTask(t, n)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	return tk, task
+}
+
+func TestLiftingABudgetHoldAfterRaisingTheSizeRunsTheTaskAgain(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 70)
+	sized(t, f, tk.Ref, "S")
+	lifted, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifted.Hold != "" {
+		t.Fatalf("hold = %q after lifting, want none", lifted.Hold)
+	}
+	s := f.session(t) // the task is ready again and handed out
+	defer s.Stop(0)
+	if s.spec.MaxBudgetUSD != 3 {
+		t.Fatalf("the next run is capped at $%v, want the S budget of $5 less the $2 spent", s.spec.MaxBudgetUSD)
+	}
+}
+
+func TestABudgetHoldIsNotLiftedWhileTheBudgetIsStillSpent(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 71)
+	_, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, false)
+	var refused *core.Error
+	if !errors.As(err, &refused) || refused.Code != core.CodeInvalidState {
+		t.Fatalf("LiftBudgetHold with the size unchanged = %v, want invalid_state", err)
+	}
+	for _, want := range []string{"size label", "--anyway"} {
+		if !strings.Contains(refused.Message, want) {
+			t.Errorf("refusal %q does not name %q", refused.Message, want)
+		}
+	}
+	if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != "budget_exceeded" {
+		t.Fatalf("hold = %q after the refusal, want budget_exceeded", held.Hold)
+	}
+	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskBlocked {
+		t.Fatalf("task is %s after the refusal, want blocked", got.State)
+	}
+}
+
+func TestLiftingABudgetHoldRefusesAnotherHoldAndNamesItsCommand(t *testing.T) {
+	t.Parallel()
+	for n, c := range []struct{ hold, command string }{
+		{"paused", "istari ticket resume"},
+		{"attempts_exhausted", "istari ticket retry"},
+	} {
+		t.Run(c.hold, func(t *testing.T) {
+			t.Parallel()
+			f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
+			tk, _ := f.readyTask(t, 80+n)
+			if _, err := f.tickets.SetHold(ctx, "system", tk.Ref, c.hold); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true)
+			var refused *core.Error
+			if !errors.As(err, &refused) || refused.Code != core.CodeInvalidState || !strings.Contains(refused.Message, c.command) {
+				t.Fatalf("LiftBudgetHold on a %s hold = %v, want invalid_state naming %s", c.hold, err, c.command)
+			}
+			if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != c.hold {
+				t.Fatalf("hold = %q after the refusal, want %s", held.Hold, c.hold)
+			}
+		})
+	}
+}
+
+func TestABudgetHoldIsLiftedAnywayWithoutRaisingTheSize(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 72)
+	lifted, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifted.Hold != "" {
+		t.Fatalf("hold = %q after lifting anyway, want none", lifted.Hold)
+	}
+	unblocked := f.waitEvent(t, "task.unblocked")
+	if !strings.Contains(string(unblocked.Payload), "budget_exceeded") {
+		t.Fatalf("task.unblocked = %s, want the budget_exceeded block of %s lifted", unblocked.Payload, task.ID)
 	}
 }
