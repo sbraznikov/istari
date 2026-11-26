@@ -203,6 +203,10 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 	}
 }
 
+// ErrNotRed refuses an unrelated answer on a head whose CI istari last read
+// is not red: there is nothing to rerun.
+var ErrNotRed = errors.New("the CI istari last read is not red, there is nothing to rerun")
+
 // Unrelated records an implementer's answer that the red CI of the pull
 // request's head is not caused by the change (spec 4.3). It is refused while
 // the head istari knows is not red.
@@ -213,12 +217,12 @@ func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
 			return err
 		}
 		if t.Checks != "failure" || t.SHA == "" {
-			return fmt.Errorf("vcs: the CI of %s's pull request is not red, there is nothing to rerun", ticket)
+			return fmt.Errorf("vcs: the CI of %s's pull request: %w", ticket, ErrNotRed)
 		}
 		t.Unrelated, t.Reason = t.SHA, reason
 		data, _ := json.Marshal(t)
 		raw, _ := json.Marshal(map[string]any{"number": t.Number, "sha": t.SHA, "reason": reason})
-		_, err = w.store.Append(ctx, store.Event{Type: "vcs.ci_unrelated", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+		_, err = w.store.Append(ctx, store.Event{Type: "vcs.answered_unrelated", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
 			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
 		if !errors.Is(err, store.ErrConflict) {
 			return err

@@ -933,8 +933,8 @@ func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.
 	t.Parallel()
 	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
 	mustPoll(t, w)
-	if err := w.Unrelated(ctx, ref.String(), "flaky"); err == nil || !strings.Contains(err.Error(), "not red") {
-		t.Fatalf("Unrelated on a green head = %v, want a refusal that says it is not red", err)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); !errors.Is(err, vcs.ErrNotRed) {
+		t.Fatalf("Unrelated on a green head = %v, want %v", err, vcs.ErrNotRed)
 	}
 	_, _, w, _, ref = redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
 	mustPoll(t, w)

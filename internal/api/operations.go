@@ -12,6 +12,7 @@ import (
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // Requests of the operations. Actor names who acts: on the local socket the
@@ -496,17 +497,19 @@ func (s *Server) operations() map[string]operation {
 // request is not caused by the change; verify then reruns the failed jobs
 // once instead of starting a round (spec 4.3).
 func (s *Server) ciUnrelated(ctx context.Context, run runner.Run, reason string) error {
+	const next = "; complete without --ci-unrelated"
 	if run.Role != "implementer" {
-		return &core.Error{Code: CodeTokenForbidden, Message: "only the implementer answers a red CI as not caused by the change, not the " + run.Role}
+		return &core.Error{Code: CodeTokenForbidden, Message: "only the implementer answers a red CI as not caused by the change, not the " + run.Role + next}
 	}
 	if s.watch == nil {
-		return &core.Error{Code: core.CodeInvalidState, Message: "CI is not watched: istari has no GitHub access"}
+		return &core.Error{Code: core.CodeInvalidState, Message: "CI is not watched: istari has no GitHub access" + next}
 	}
-	if err := s.watch.Unrelated(ctx, run.Ticket, reason); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no pull request istari watches"}
-		}
-		return &core.Error{Code: core.CodeInvalidState, Message: err.Error()}
+	err := s.watch.Unrelated(ctx, run.Ticket, reason)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no pull request istari watches: open it with istari pr open" + next}
+	case errors.Is(err, vcs.ErrNotRed):
+		return &core.Error{Code: core.CodeInvalidState, Message: err.Error() + ": wait until CI is red" + next}
 	}
-	return nil
+	return err
 }
