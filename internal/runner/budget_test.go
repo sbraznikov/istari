@@ -378,7 +378,7 @@ func TestAnUnholdAnywayIsUsedUpByTheNextRunEvenWithBudgetLeft(t *testing.T) {
 	sized(t, f, tk.Ref, "S") // before the next claim: $3 left
 	f.start(t)
 	spendAndFinish(t, f, task.ID) // a run with budget left, $4 spent in all
-	sized(t, f, tk.Ref, "XS")    // spent again
+	sized(t, f, tk.Ref, "XS")     // spent again
 	next := implement(t, f, tk.Ref)
 	if blocked := f.waitTask(t, next.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
 		t.Fatalf("block kind = %q, want budget_exceeded", blocked.BlockKind)
