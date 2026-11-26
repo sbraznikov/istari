@@ -232,12 +232,12 @@ func newHumanMerge(t *testing.T) *humanMerge {
 	return recoveredWithPullRequest(t, "awaiting_approval")
 }
 
-// recoveredWithPullRequest is a ticket in state whose pull request istari
-// watches, as istari recover leaves it.
-func recoveredWithPullRequest(t *testing.T, state string) *humanMerge {
+// recoveredWithPullRequest is a ticket in state, with the issue's other
+// labels, whose pull request istari watches, as istari recover leaves it.
+func recoveredWithPullRequest(t *testing.T, state string, labels ...string) *humanMerge {
 	t.Helper()
 	h := &humanMerge{gh: githubtest.New(t), dataDir: newDataDir(t)}
-	h.issue = h.gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", "istari:"+state)
+	h.issue = h.gh.Seed("Add limits", "## Context\n\nLimits.\n", "alex", append([]string{"istari:" + state}, labels...)...)
 	h.pr = h.gh.SeedPull(fmt.Sprintf("istari/%d/limits", h.issue))
 	h.ref = fmt.Sprintf("gh:%s#%d", githubtest.Repo, h.issue)
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: h.issue}
@@ -367,4 +367,21 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirs
 	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n, before the watch polls again
 	h.d.mustCLI(t, nil, "sync")
 	h.finished(t)
+}
+
+func TestAPullRequestAHumanMergesFinishesItsHeldTicket(t *testing.T) {
+	t.Parallel()
+	h := recoveredWithPullRequest(t, "in_review", "istari:hold:attempts_exhausted")
+	h.gh.HumanMerge(h.pr, "alex")
+	h.gh.HumanClose(h.issue, "alex", "completed") // Closes #n
+	_, stderr, _ := h.d.cli(t, "sync")
+	h.finished(t)
+	var tk struct{ Hold string }
+	h.d.mustCLI(t, &tk, "ticket", "show", h.ref)
+	if tk.Hold != "" {
+		t.Fatalf("the merged ticket is still on hold (%s)", tk.Hold)
+	}
+	if out := stderr + h.d.stderr.String(); strings.Contains(out, "ticket_held") {
+		t.Fatalf("sync logged ticket_held for a merged ticket:\n%s", out)
+	}
 }
