@@ -596,14 +596,23 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	t.Parallel()
 	f, s, task := pausedWithSlowChecks(t, 17, "sleep 1", nil, runner.RunnerOptions{Lease: 300 * time.Millisecond})
 	// The scheduler expires leases on its ticks; here the test does.
-	for deadline := time.Now().Add(10 * time.Second); len(f.events(t, "task.released")) == 0; {
+	// The state is read before the events: a task that leaves claimed
+	// between the two reads is then seen with its task.released event.
+	for deadline := time.Now().Add(10 * time.Second); ; {
 		if time.Now().After(deadline) {
 			t.Fatal("the paused run did not release its task")
 		}
 		if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) > 0 {
 			t.Fatalf("leases expired while the run stopped: %v, %v", expired, err)
 		}
-		if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskClaimed {
+		got, err := f.tasks.Get(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.events(t, "task.released")) > 0 {
+			break
+		}
+		if got.State != core.TaskClaimed {
 			t.Fatalf("the stopping run's task is %s, want claimed until the run ended", got.State)
 		}
 		time.Sleep(50 * time.Millisecond)
