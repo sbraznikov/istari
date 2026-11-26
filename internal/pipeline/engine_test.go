@@ -661,6 +661,34 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 	}
 }
 
+func TestAPullRequestWithoutCIHoldsTheTicketUntilChecksAreGreen(t *testing.T) {
+	t.Parallel()
+	ci := "none"
+	checks := func(context.Context, string) (string, bool) { return ci, true }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "needs_input" {
+		t.Fatalf("a pull request without CI: %s, hold %q; want in_progress on needs_input", tk.State, tk.Hold)
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready", v.State)
+	}
+	ci = "success" // a human added CI
+	if _, err := f.tickets.ClearHold(ctx, "human:alex", ref, "needs_input"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("with CI green and the hold cleared the ticket is %s, want in_review (T6)", st)
+	}
+}
+
 func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
 	t.Parallel()
 	ci := "pending"

@@ -557,6 +557,42 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	}
 }
 
+// noCIFixture is a tracked pull request in a repository without CI, watched
+// with a clock the test moves.
+func noCIFixture(t *testing.T) (gh *githubtest.Server, s store.Store, w *vcs.Watcher, ticket string, pr vcs.Opened, now *time.Time) {
+	t.Helper()
+	gh = githubtest.New(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	clock := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	now = &clock
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w = vcs.NewWatcher(c, db, vcs.WatcherOptions{Clock: func() time.Time { return *now }})
+	ticket = "gh:" + githubtest.Repo + "#3"
+	pr, err = c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	return gh, db, w, ticket, pr, now
+}
+
+// checksEvents lists the ticket's vcs.checks events as checks@sha, joined
+// by spaces.
+func checksEvents(t *testing.T, s store.Store, ticket string) string {
+	t.Helper()
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(checkEvents(t, s, ref), " ")
+}
+
 func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)
@@ -671,6 +707,109 @@ func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
 		got = append(got, p.Checks+"@"+p.SHA)
 	}
 	return got
+}
+
+func TestAPullRequestWithoutChecksTenMinutesAfterItsPushHasNoCI(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "abc123") // no check runs, no statuses
+	*now = now.Add(9*time.Minute + 59*time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("before 10 minutes: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "none" || tr.SHA != "abc123" {
+		t.Fatalf("after 10 minutes: %+v, want checks none of abc123", tr)
+	}
+	if err := w.Poll(ctx); err != nil { // nothing new
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@abc123"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPushRestartsTheNoCIWindowAndLaterChecksReplaceNone(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "old111")
+	*now = now.Add(10 * time.Minute)
+	if err := w.Poll(ctx); err != nil { // old111 has no CI
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Hour)
+	if err := w.Pushed(ctx, ticket, "new222"); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "new222")
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the push: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "in_progress"}) // CI was added
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@old111 none@new222 pending@new222 success@new222"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPullRequestTrackedBeforeTheNoCIWindowExistedStartsItsWindowAtTheFirstPoll(t *testing.T) {
+	t.Parallel()
+	gh, s, w, _, _, now := noCIFixture(t)
+	ticket := "gh:" + githubtest.Repo + "#4"
+	pr, err := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/4/y", Base: "main", Title: "Y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(map[string]any{"ticket": ticket, "repo": githubtest.Repo, "number": pr.Number}) // stored with no pushed key
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, store.Event{Type: "vcs.tracked", At: *now, Actor: "system", Ticket: ticket},
+		store.Change{Kind: "pull_request", ID: ticket, Data: legacy}); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "leg444") // no check runs, no statuses
+	*now = now.Add(time.Hour)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@leg444"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
 }
 
 // storedEntries are the journal entries of the ticket in istari's log.
