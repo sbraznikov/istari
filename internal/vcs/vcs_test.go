@@ -925,7 +925,7 @@ func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
 		t.Fatalf("ci entries = %+v, want the first failure and the rerun's", cis)
 	}
 	if text := journal.Text(cis[1]); !strings.Contains(text, "the rerun failed too") {
-		t.Fatalf("rerun entry text = %s", text)
+		t.Fatalf("rerun entry text = %q, want it to say the rerun failed too", text)
 	}
 }
 
