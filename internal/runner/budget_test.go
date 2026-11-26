@@ -276,6 +276,30 @@ func TestABudgetHoldIsNotLiftedWhileTheBudgetIsStillSpent(t *testing.T) {
 	}
 }
 
+func TestLiftingABudgetHoldRefusesAnotherHoldAndNamesItsCommand(t *testing.T) {
+	t.Parallel()
+	for n, c := range []struct{ hold, command string }{
+		{"paused", "istari ticket resume"},
+		{"attempts_exhausted", "istari ticket retry"},
+	} {
+		t.Run(c.hold, func(t *testing.T) {
+			f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
+			tk, _ := f.readyTask(t, 80+n)
+			if _, err := f.tickets.SetHold(ctx, "system", tk.Ref, c.hold); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true)
+			var refused *core.Error
+			if !errors.As(err, &refused) || refused.Code != core.CodeInvalidState || !strings.Contains(refused.Message, c.command) {
+				t.Fatalf("LiftBudgetHold on a %s hold = %v, want invalid_state naming %s", c.hold, err, c.command)
+			}
+			if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != c.hold {
+				t.Fatalf("hold = %q after the refusal, want %s", held.Hold, c.hold)
+			}
+		})
+	}
+}
+
 func TestABudgetHoldIsLiftedAnywayWithoutRaisingTheSize(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})

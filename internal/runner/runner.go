@@ -263,6 +263,16 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	return left, true, nil
 }
 
+// holdLiftedBy says what lifts each hold but budget_exceeded (spec section
+// 4.1), for a refusal that names the way out.
+var holdLiftedBy = map[string]string{
+	"needs_input":        "a reply in the ticket thread lifts it",
+	"attempts_exhausted": "istari ticket retry lifts it",
+	"paused":             "istari ticket resume lifts it",
+	"waiting_dependency": "istari lifts it when every need is done",
+	"waiting_zone":       "istari lifts it when the overlapping ticket is merged or canceled",
+}
+
 // LiftBudgetHold is a human's decision on an exceeded budget (spec section
 // 7.5, istari ticket unhold): it unblocks the ticket's tasks blocked
 // budget_exceeded and then clears the hold, so an interrupted call leaves the
@@ -271,6 +281,13 @@ func (r *Runner) LiftBudgetHold(ctx context.Context, actor, ref string, anyway b
 	tk, err := r.tickets.Get(ctx, ref)
 	if err != nil {
 		return core.Ticket{}, err
+	}
+	if tk.Hold != blockBudget {
+		msg := fmt.Sprintf("ticket %s is not on hold for %s", ref, blockBudget)
+		if tk.Hold != "" {
+			msg = fmt.Sprintf("ticket %s is on hold for %s, not %s: %s", ref, tk.Hold, blockBudget, holdLiftedBy[tk.Hold])
+		}
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: msg}
 	}
 	if !anyway {
 		left, capped, err := r.budgetLeft(ctx, tk)
