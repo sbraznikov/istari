@@ -2,7 +2,9 @@ package main_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,6 +271,33 @@ func (h *humanMerge) state(t *testing.T) string {
 	return tk.State
 }
 
+// trace is what a failure of a test on the ticket needs to say why: its
+// transitions (trigger, actor), its vcs.* events and the daemon's stderr.
+func (h *humanMerge) trace(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	for _, prefix := range []string{"ticket.transitioned", "vcs."} {
+		r, err := h.d.client.Get("http://istari/v1/events?ticket=" + url.QueryEscape(h.ref) + "&type=" + url.QueryEscape(prefix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var events []struct {
+			Type, Actor string
+			At          time.Time
+			Payload     json.RawMessage
+		}
+		err = json.NewDecoder(r.Body).Decode(&events)
+		r.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			fmt.Fprintf(&b, "%s %s by %s: %s\n", e.At.Format("15:04:05.000"), e.Type, e.Actor, e.Payload)
+		}
+	}
+	return b.String() + h.d.stderr.String()
+}
+
 // restart stops the daemon and starts it again: its PR watch polls at once.
 func (h *humanMerge) restart(t *testing.T) {
 	t.Helper()
@@ -323,12 +352,12 @@ func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
 	h.restart(t)
 	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not record the close\n%s", h.d.stderr)
+			t.Fatalf("the watch did not record the close\n%s", h.trace(t))
 		}
 	}
 	h.d.mustCLI(t, nil, "sync")
 	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval\n%s", st, h.trace(t))
 	}
 }
 
