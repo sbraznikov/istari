@@ -240,7 +240,7 @@ func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
 	defer cancel()
 	go func() {
 		defer cancel()
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline) && short.Err() == nil; time.Sleep(10 * time.Millisecond) {
 			if _, err := os.Stat(taken); err == nil {
 				return
 			}
