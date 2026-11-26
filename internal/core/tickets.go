@@ -287,7 +287,8 @@ const triggerRecover = "recover"
 // Fire applies the transition for trigger from the ticket's current state.
 // A pair (state, trigger) outside the table fails with invalid_transition and
 // a refused guard with guard_failed; neither appends anything. While a hold is
-// set the state does not change: only cancel is allowed.
+// set the state does not change: only cancel and merged are allowed, and they
+// clear it (spec section 4.1).
 func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket, error) {
 	return m.FireWith(ctx, actor, ref, trigger, nil)
 }
@@ -306,7 +307,7 @@ func (m *Tickets) FireWith(ctx context.Context, actor, ref, trigger string, more
 		if !ok {
 			return errorf(CodeInvalidTransition, "ticket %s is %s; %s is not allowed from there", ref, ticket.State, trigger)
 		}
-		if ticket.Hold != "" && trigger != "cancel" {
+		if ticket.Hold != "" && trigger != "cancel" && trigger != "merged" {
 			return errorf(CodeTicketHeld, "ticket %s is on hold (%s)", ref, ticket.Hold)
 		}
 		if guard := m.opts.Guards[row.id]; guard != nil {
@@ -321,8 +322,8 @@ func (m *Tickets) FireWith(ctx context.Context, actor, ref, trigger string, more
 			}
 		}
 		ticket.State = row.to
-		if row.to == TicketCanceled && ticket.Hold != "" {
-			// A finished ticket carries no hold; cancel ends it.
+		if row.to.Finished() && ticket.Hold != "" {
+			// A finished ticket carries no hold; cancel and merged end it.
 			payload["hold_cleared"] = ticket.Hold
 			ticket.Hold = ""
 		}
@@ -580,7 +581,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 				return Ticket{}, invalid(e, "%s → %s by %s is not a transition from %s", p.From, p.To, p.Trigger, ticket.State)
 			}
 			ticket.State = row.to
-			if row.to == TicketCanceled {
+			if row.to.Finished() {
 				ticket.Hold = ""
 			}
 		case EventTicketHoldSet:

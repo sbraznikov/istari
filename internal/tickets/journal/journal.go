@@ -65,6 +65,7 @@ type CIEntry struct {
 	Output string `json:"output,omitempty"`
 	Cut    bool   `json:"cut,omitempty"`   // Output is the end of a longer log
 	Error  string `json:"error,omitempty"` // why the log could not be read
+	Rerun  bool   `json:"rerun,omitempty"` // the failure is of istari's rerun of the commit: it failed too
 }
 
 // DecisionEntry is a decision card and, once made, the choice (spec 4.6).
@@ -278,7 +279,11 @@ func Text(e Entry) string {
 		return "**Comment**" + by + "\n\n" + e.Text + linkLine(e.Link)
 	case CI:
 		c := e.CI
-		s := "**CI failure**" + by + ": " + c.Check + " on `" + c.Commit + "`" + linkLine(c.URL)
+		s := "**CI failure**" + by + ": " + c.Check + " on `" + c.Commit + "`"
+		if c.Rerun {
+			s += "; the rerun failed too"
+		}
+		s += linkLine(c.URL)
 		if c.Error != "" {
 			s += "\n\nThe log could not be read: " + c.Error
 		}

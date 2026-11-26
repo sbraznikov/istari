@@ -695,9 +695,39 @@ func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
 	}
 }
 
+func TestARerunRerunsOnlyTheFailedJobsOfACommit(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+	)
+	jobs, err := c.RerunFailed(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("RerunFailed: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0] != "test" || gh.Reruns() != 1 {
+		t.Fatalf("rerun jobs = %v, the fake saw %d reruns; want only test, once", jobs, gh.Reruns())
+	}
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "abc123"); err == nil {
+		t.Fatal("FailureLog after a green rerun found a failed check; want none")
+	}
+}
+
+func TestARerunGitHubRefusesIsAnError(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	if _, err := c.RerunFailed(ctx, githubtest.Repo, "abc123"); err == nil || !strings.Contains(err.Error(), "test") {
+		t.Fatalf("RerunFailed error = %v, want one that names the job", err)
+	}
+}
+
 // redHead tracks a pull request whose head has the checks given, with a
 // journal on the watcher.
-func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
+func redHead(t *testing.T, checks ...githubtest.Check) (*githubtest.Server, store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
 	t.Helper()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
@@ -722,7 +752,7 @@ func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watche
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, w, j, ref
+	return gh, s, w, j, ref
 }
 
 // checkEvents are the vcs.checks events of the ticket, as "checks@sha".
@@ -858,7 +888,7 @@ func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.
 
 func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 	t.Parallel()
-	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
 	for range 2 { // the second poll sees the same red head
 		if err := w.Poll(ctx); err != nil {
 			t.Fatalf("Poll: %v", err)
@@ -878,7 +908,7 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 
 func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
 	t.Parallel()
-	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
 	if err := w.Poll(ctx); err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -901,6 +931,79 @@ func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
 	gh.SetStatus("def456", "failure")
 	if _, err := c.FailureLog(ctx, githubtest.Repo, "def456"); err == nil || !strings.Contains(err.Error(), "commit status") {
 		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
+	}
+}
+
+func TestARedHeadAnsweredUnrelatedIsRerunOnceAndItsNewResultRead(t *testing.T) {
+	t.Parallel()
+	gh, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "success"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	started, err := w.Rerun(ctx, ref.String())
+	if err != nil || !started {
+		t.Fatalf("Rerun = %v, %v; want started", started, err)
+	}
+	if again, err := w.Rerun(ctx, ref.String()); err != nil || again {
+		t.Fatalf("second Rerun = %v, %v; want none: one rerun per head", again, err)
+	}
+	if gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns, want 1", gh.Reruns())
+	}
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "success@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure, then the rerun's success on the same head", got)
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 2 || entries[1].Kind != journal.Note {
+		t.Fatalf("journal = %+v, want the ci entry and a note of the rerun", entries)
+	}
+	if note := entries[1].Text; !strings.Contains(note, "the known ETXTBSY flake") || !strings.Contains(note, "test") || !strings.Contains(note, "abc123") {
+		t.Fatalf("rerun note = %q, want the reason, the job and the commit", note)
+	}
+}
+
+func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
+	t.Parallel()
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "failure"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || !started {
+		t.Fatalf("Rerun = %v, %v; want started", started, err)
+	}
+	mustPoll(t, w)
+	mustPoll(t, w) // the same red rerun: no third entry
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure twice", got)
+	}
+	var cis []journal.Entry
+	for _, e := range storedEntries(t, j, ref) {
+		if e.Kind == journal.CI {
+			cis = append(cis, e)
+		}
+	}
+	if len(cis) != 2 || cis[0].CI.Rerun || !cis[1].CI.Rerun || cis[1].CI.Commit != "abc123" {
+		t.Fatalf("ci entries = %+v, want the first failure and the rerun's", cis)
+	}
+	if text := journal.Text(cis[1]); !strings.Contains(text, "the rerun failed too") {
+		t.Fatalf("rerun entry text = %q, want it to say the rerun failed too", text)
+	}
+}
+
+func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.T) {
+	t.Parallel()
+	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); !errors.Is(err, vcs.ErrNotRed) {
+		t.Fatalf("Unrelated on a green head = %v, want %v", err, vcs.ErrNotRed)
+	}
+	_, _, w, _, ref = redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
+	mustPoll(t, w)
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || started {
+		t.Fatalf("Rerun without an answer = %v, %v; want none", started, err)
 	}
 }
 
