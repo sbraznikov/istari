@@ -704,11 +704,11 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 	}
 
 	over := make(chan struct{}, 1) // the run budget is spent
-	var usage harness.Usage
-	streamed := make(chan struct{})
+	var seen streamed
+	streamDone := make(chan struct{})
 	go func() {
-		defer close(streamed)
-		usage = r.stream(bg, run, sess.Events(), over)
+		defer close(streamDone)
+		seen = r.stream(bg, run, sess.Events(), over)
 	}()
 	waited := make(chan harness.Result, 1)
 	go func() {
@@ -778,7 +778,7 @@ loop:
 			stopWith(ending{reason: "the runner stopped", outcome: r.tasks.Release, released: true})
 		}
 	}
-	<-streamed
+	<-streamDone
 
 	// A stopping run's task stays this run's until its checkpoint and its
 	// end are recorded: a stop checkpoint may outlast the lease (spec
@@ -796,13 +796,13 @@ loop:
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}
-	reason, outcome, completed := r.outcome(bg, run.ID, res)
+	reason, outcome, completed := r.outcome(bg, run.ID, res, seen.limit)
 	if end != nil && !(end.released && completed) {
 		// A runner that stops while the agent finishes its work keeps the
 		// work: a completed run completes its task even then.
 		reason, outcome = end.reason, end.outcome
 	}
-	r.end(bg, run, res, usage, reason)
+	r.end(bg, run, res, seen.usage, reason)
 	if held, err := ended(); err == nil {
 		lease = held
 	}
@@ -814,7 +814,8 @@ loop:
 
 // outcome decides by the exit and istari complete (spec section 7.3): the
 // task completes only when the agent said so and the process exited cleanly.
-func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (reason string, outcome func(context.Context, core.Lease) error, completed bool) {
+// limit is the usage limit the harness hit before the agent worked, if any.
+func (r *Runner) outcome(ctx context.Context, id string, res harness.Result, limit *harness.Event) (reason string, outcome func(context.Context, core.Lease) error, completed bool) {
 	run, err := r.runs.Get(ctx, id)
 	switch {
 	case err != nil:
@@ -825,6 +826,10 @@ func (r *Runner) outcome(ctx context.Context, id string, res harness.Result) (re
 		// Refused for the ticket's state, not the agent's work: no attempt
 		// is spent (spec section 4.2).
 		return "yielded: " + run.Yielded, r.tasks.Release, false
+	case limit != nil && run.Completed == "":
+		// The harness's account, not the agent, ended the run before any
+		// work: no attempt is spent (spec section 4.2).
+		return "the harness hit its usage limit: " + limit.Text, r.tasks.Release, false
 	case run.Completed != "" && res.ExitCode == 0 && !res.Failed:
 		return "completed: " + run.Completed, r.tasks.Complete, true
 	case run.Completed == "":
@@ -855,18 +860,33 @@ func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease)
 	}
 }
 
+// streamed is what the runner saw of a run's events.
+type streamed struct {
+	usage harness.Usage
+	// limit is the usage limit the harness hit before the agent called any
+	// tool; nil: none, or the agent had worked by then.
+	limit *harness.Event
+}
+
 // stream writes the harness's events to the transcript and the log, and
-// returns the run's usage. It signals over when the run budget is spent.
-func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Event, over chan<- struct{}) harness.Usage {
+// returns what it saw. It signals over when the run budget is spent.
+func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Event, over chan<- struct{}) streamed {
 	t := &transcript{path: run.Transcript, max: r.opts.TranscriptMax}
 	defer t.close()
 	var total harness.Usage
+	var limit *harness.Event
+	worked := false
 	for e := range events {
 		if err := t.write(e); err != nil {
 			log.Printf("istari: run %s: transcript: %v", run.ID, err)
 		}
 		switch e.Kind {
+		case harness.EventUsageLimit:
+			if !worked && limit == nil {
+				limit = &e
+			}
 		case harness.EventToolCall:
+			worked = true
 			r.event(ctx, run, EventRunTool, map[string]any{"run": run.ID, "tool": e.Tool})
 		case harness.EventUsage:
 			total = total.Add(e.Usage)
@@ -879,7 +899,7 @@ func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Even
 			}
 		}
 	}
-	return total
+	return streamed{usage: total, limit: limit}
 }
 
 func (r *Runner) event(ctx context.Context, run Run, typ string, payload map[string]any) {
