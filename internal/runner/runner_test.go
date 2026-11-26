@@ -19,6 +19,7 @@ import (
 	"github.com/sbraznikov/istari/internal/harness/claudecode"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
+	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
@@ -556,6 +557,165 @@ func TestCancelingTheTicketStopsItsRunWithACheckpointAndTheTaskStaysCanceled(t *
 	}
 	if failed := f.events(t, "task.failed"); len(failed) != 0 {
 		t.Fatalf("the canceled ticket's run failed its task: %v", failed)
+	}
+}
+
+// pausedWithSlowChecks starts a run of ticket #n whose main branch's
+// typecheck is check, writes a file in its worktree and pauses the ticket.
+// hooks are the remote's hooks by name: pre-receive runs before the remote
+// takes the push, post-receive after it took it and before the push returns.
+// It returns the session and the task.
+func pausedWithSlowChecks(t *testing.T, n int, check string, hooks map[string]string, opts runner.RunnerOptions) (*runFixture, fakeSession, core.Task) {
+	t.Helper()
+	f := newRunner(t, runner.RunnerOptions{Lease: opts.Lease})
+	seedMain(t, f, ".istari/pipeline.toml", "[checks]\ntypecheck = \""+check+"\"\ntest = \"true\"\nverify_red = false\n")
+	for name, script := range hooks {
+		hook := filepath.Join(f.root, "remotes", "acme", "web.git", "hooks", name)
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	opts.DataDir, opts.Projects = f.data, []string{"web"}
+	opts.Slots = []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}}
+	opts.Checkpoints = runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil)
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, opts)
+	tk, task := f.readyTask(t, n)
+	f.start(t)
+	s := f.session(t)
+	if err := os.WriteFile(filepath.Join(s.spec.Workdir, "paused-work.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetHold(ctx, "human:alex", tk.Ref, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	return f, s, task
+}
+
+func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
+	t.Parallel()
+	f, s, task := pausedWithSlowChecks(t, 17, "sleep 1", nil, runner.RunnerOptions{Lease: 300 * time.Millisecond})
+	// The scheduler expires leases on its ticks; here the test does.
+	// The state is read before the events: a task that leaves claimed
+	// between the two reads is then seen with its task.released event.
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if time.Now().After(deadline) {
+			t.Fatal("the paused run did not release its task")
+		}
+		if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) > 0 {
+			t.Fatalf("leases expired while the run stopped: %v, %v", expired, err)
+		}
+		got, err := f.tasks.Get(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.events(t, "task.released")) > 0 {
+			break
+		}
+		if got.State != core.TaskClaimed {
+			t.Fatalf("the stopping run's task is %s, want claimed until the run ended", got.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	f.waitTask(t, task.ID, core.TaskReady)
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
+		t.Fatalf("checkpoints = %d, want one on pausing", len(events))
+	}
+	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
+	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
+	if files := gitIn(t, remote, "ls-tree", "--name-only", branch); !strings.Contains(files, "paused-work.txt") {
+		t.Fatalf("the remote branch has %q, want the work of the paused run", files)
+	}
+}
+
+// limitLease is the lease of the tests of the stop checkpoint's limit: they
+// are about the limit, not the lease, and a lease this long does not lapse
+// when a loaded machine stalls the renewals for a moment.
+const limitLease = 1500 * time.Millisecond
+
+func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
+	t.Parallel()
+	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", nil, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: time.Second})
+	abandonedAtItsLimit(t, f, s, task, time.Second) // the check alone takes 5s
+}
+
+func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
+	t.Parallel()
+	// The remote holds the push past the limit and then refuses it.
+	pushing := filepath.Join(t.TempDir(), "pushing")
+	hooks := map[string]string{"pre-receive": "touch '" + pushing + "'; sleep 20; exit 1"}
+	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: 6 * time.Second})
+	abandonedAtItsLimit(t, f, s, task, 6*time.Second)
+	if _, err := os.Stat(pushing); err != nil {
+		t.Fatalf("the push never reached the remote (%v), want the limit reached while pushing", err)
+	}
+}
+
+// abandonedAtItsLimit checks that a paused run whose stop checkpoint
+// outlasts limit ends soon after it, its task released, with the work
+// uncommitted in the worktree, nothing pushed, no checkpoint and a journal
+// note naming the limit.
+func abandonedAtItsLimit(t *testing.T, f *runFixture, s fakeSession, task core.Task, limit time.Duration) {
+	t.Helper()
+	head := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"))
+	paused := time.Now()
+	f.waitTask(t, task.ID, core.TaskReady)
+	if took := time.Since(paused); took > limit+3*time.Second {
+		t.Fatalf("the paused run ended after %s, want the checkpoint abandoned at its limit of %s", took, limit)
+	}
+	f.waitEvent(t, "run.exited")
+	if got := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD")); got != head {
+		t.Errorf("HEAD = %s, want %s as before the checkpoint", got, head)
+	}
+	if status := gitIn(t, s.spec.Workdir, "status", "--porcelain"); !strings.Contains(status, "paused-work.txt") {
+		t.Errorf("git status = %q, want the work uncommitted in the worktree", status)
+	}
+	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
+	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
+	// for-each-ref lists nothing, and does not fail, when nothing ever
+	// pushed the branch.
+	if pushed := gitIn(t, remote, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch); pushed != "" {
+		if files := gitIn(t, remote, "ls-tree", "--name-only", "refs/heads/"+branch); strings.Contains(files, "paused-work.txt") {
+			t.Errorf("the remote branch has %q, want nothing pushed", files)
+		}
+	}
+	if events := f.events(t, "journal.checkpoint"); len(events) != 0 {
+		t.Errorf("checkpoints = %d, want none for an abandoned one", len(events))
+	}
+	ref, err := tickets.ParseRef(task.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := journal.New(nil, f.store, nil).Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noted := false
+	for _, e := range entries {
+		noted = noted || e.Kind == journal.Note && strings.Contains(e.Text, "limit of "+limit.String()) && strings.Contains(e.Text, "stop_checkpoint_timeout") && strings.Contains(e.Text, "uncommitted")
+	}
+	if !noted {
+		t.Fatalf("journal = %+v, want a note naming the limit and the uncommitted work", entries)
+	}
+}
+
+func TestAStopCheckpointWhosePushOutlastsItsLimitIsKept(t *testing.T) {
+	t.Parallel()
+	// The remote takes the push at once and answers after the limit: what
+	// it took is the checkpoint, not abandoned work.
+	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": "sleep 12"}, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: 6 * time.Second})
+	f.waitTask(t, task.ID, core.TaskReady)
+	f.waitEvent(t, "run.exited")
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
+		t.Fatalf("checkpoints = %d, want the pushed one", len(events))
+	}
+	if status := gitIn(t, s.spec.Workdir, "status", "--porcelain"); status != "" {
+		t.Errorf("git status = %q, want the work committed", status)
+	}
+	remote := filepath.Join(f.root, "remotes", "acme", "web.git")
+	branch := strings.TrimSpace(gitIn(t, s.spec.Workdir, "branch", "--show-current"))
+	if head, pushed := gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"), gitIn(t, remote, "rev-parse", "refs/heads/"+branch); head != pushed {
+		t.Errorf("remote branch = %s, want the worktree's HEAD %s", pushed, head)
 	}
 }
 

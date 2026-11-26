@@ -8,13 +8,16 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -216,6 +219,40 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	}
 }
 
+func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
+	t.Parallel()
+	_, remote, work, spec := pushFixture(t)
+	spec.Force = true
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	// The remote takes the next push at once and answers late: the push is
+	// cut short after the remote updated the branch.
+	hook := filepath.Join(remote, "hooks", "post-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "cut short")
+	short, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := vcs.Push(short, spec); err == nil {
+		t.Fatal("the push was not cut short")
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want the cut-short push's %s taken", got, want)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "cut short, rewritten")
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("the next forced push: %v", err)
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want %s", got, want)
+	}
+}
+
 func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
 	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
@@ -285,7 +322,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
 	hooks := filepath.Join(root, "evil-hooks")
 	os.MkdirAll(hooks, 0o755)
-	os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n"), 0o755)
+	exectest.Write(t, filepath.Join(hooks, "pre-push"), "#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n")
 	git(t, work, "config", "core.hooksPath", hooks)
 	spec.Token = "secret-installation-token"
 	if err := vcs.Push(ctx, spec); err != nil {
@@ -462,6 +499,32 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 	}
 	if gh.Issue(pr.Number).Draft {
 		t.Fatal("the pull request is still a draft")
+	}
+}
+
+func TestAReviewIsPublishedThroughAShortOutageAndUnavailableAfterALongOne(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).WithBackoff([]time.Duration{time.Millisecond, time.Millisecond, time.Millisecond})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := vcs.Review{Standards: vcs.Axis{Summary: "0 findings"}, Spec: vcs.Axis{Summary: "0 findings"}}
+	gh.FailNext(2)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err != nil {
+		t.Fatalf("PublishReview after two 500s: %v", err)
+	}
+	gh.FailNext(4)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview during an outage: %v, want ErrUnavailable", err)
+	}
+	gh.FailNextWith(1, http.StatusUnprocessableEntity)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err == nil || errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview answered 422: %v, want a plain error", err)
+	}
+	if got := len(gh.Issue(pr.Number).Reviews); got != 1 {
+		t.Fatalf("%d reviews, want the one published through the short outage", got)
 	}
 }
 

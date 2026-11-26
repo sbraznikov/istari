@@ -240,8 +240,10 @@ canceled — from any open state
 
 - The lease is 5 minutes by default; Runner renews it at every third of the term.
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
+- A run that stops (pause, timeout, a budget cap) keeps its lease until its stop checkpoint (section 4.6) and its end are recorded: Runner renews it as while the agent runs, so the task is not handed out while the checkpoint still commits, checks and pushes in the worktree. The stop checkpoint has a time limit of its own, `[daemon] stop_checkpoint_timeout` (15 minutes by default), on its commit, its checks and its push. When the limit is reached during the push, Runner asks the remote: a push the remote took makes the checkpoint, and its journal entry is recorded. Otherwise the checkpoint is abandoned: the commit it made is undone, the work stays uncommitted in the worktree, and the journal says so in a note naming the limit (and, when the remote did not answer, that whether it took the push is unknown). The next push leases on a push cut short that the remote took, so it is not refused. The run then ends as it would have (release on pause, fail on timeout, block on a budget cap), and the next run finds the work in the worktree.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A tracker or code host that is unavailable costs no attempt either. When code accepts what an agent submits and the tracker write in the same call (a journal entry, the issue's body, a label, a review) still fails after its retries with a server error (5xx), a rate limit or a network error (section 5), the submit is not refused as the agent's fault: the run ends without being rejected, and the task is released to `ready` with its attempts unchanged. Nothing of the result is written later; the next run does the work again. A result takes several writes (a refine's comment, its assumptions, questions and decision card; a review on the pull request and its journal entry), and only the write that met the outage is not made: what was written before it stays, so a rare outage in the middle of a result can leave a second journal entry or a second review on the pull request for one round. That duplicate is accepted (decision 2026-11-26): it is harmless, and making the writes of a result atomic is not worth its cost. The answer tells the agent to end its run without `istari complete`. A reviewer's report is published on the pull request before it is recorded, so a review the code host cannot take is redone as well. Any other 4xx answer is the submission's refusal, as before.
 - A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 - A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
@@ -558,6 +560,7 @@ type TicketProvider interface {
 - The mapping of istari states to tracker states is in the adapter config. For GitHub these are labels, for Linear and Jira they are native statuses.
 - Echo suppression: the adapter marks its own writes and ignores webhooks about them.
 - The ticket tracker and the code hosting are independent adapters: tickets can be in Linear while PRs are in GitHub.
+- Tracker and code host writes survive a short outage. The adapter retries a write that fails with a server error (5xx), a rate limit (429, or 403 with an exhausted rate limit) or a network error a few times with a backoff, inside the call. What still fails is reported as unavailable (`tickets.ErrUnavailable`); any other 4xx is an error at once, without a retry. A write that an agent's submit makes is not queued: the run yields and the next run does it again (section 4.2). The daemon log names the write that failed (what it is and on which ticket) and says that it is tried again when the task is handed out next.
 
 ---
 
@@ -690,7 +693,7 @@ For each task the Runner:
 3. issues a run token: it lives as long as the lease and is valid only for this ticket;
 4. assembles the brief only from durable sources: the ticket text, its journal, the branch, the PR (section 4.6). Slack history and past harness sessions are not part of the brief;
 5. starts the harness and reads its streaming output, turning it into `run.*` events;
-6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal;
+6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal. The lease is renewed until this checkpoint and the run's end are recorded; the checkpoint itself is limited by `stop_checkpoint_timeout` (section 4.2);
 7. on completion calls `complete` or `fail`. The worktree stays: it belongs to the ticket, not to the run.
 
 **Ticket worktree.** Work on each ticket happens in a separate `git worktree`. The main working copy of the repository, in which the human works, is not used or changed by agents.
@@ -1181,6 +1184,7 @@ The TUI supports themes. A theme changes only colors; the set of screens, the pa
 [daemon]
 data_dir = "~/.local/share/istari"
 max_concurrent_runs = 4               # claimed tasks at once in the whole installation
+stop_checkpoint_timeout = "15m"       # time limit of the checkpoint a stopping run makes (section 4.2)
 
 [defaults]                            # for all projects; overridden in .istari/pipeline.toml
 max_review_rounds = 3                 # review rounds before a hold
