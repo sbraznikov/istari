@@ -166,19 +166,34 @@ func TestLiftingTheMainRedHoldStartsAnImplementRunThatOpensThePullRequest(t *tes
 		return tk.Hold
 	}
 	waitFor(t, d, log, "needs_input hold", func() bool { return hold() == "needs_input" })
+	waitFor(t, d, log, "yielded run", func() bool { return len(d.eventTypes(t, ref, "run.yielded")) == 1 })
 	if pr := findPull(gh); pr > 0 {
 		t.Fatalf("pull request #%d opened while main is red", pr)
+	}
+	if impl, verify := taskState(t, d, ref, "implementer"), taskState(t, d, ref, "verify"); impl != "ready" || verify == "ready" {
+		t.Fatalf("while held: implement task %s, verify task %s; want implement ready and verify waiting", impl, verify)
 	}
 	if err := os.WriteFile(fixed, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	d.mustCLI(t, nil, "ticket", "unhold", ref)
+	d.call(t, "ticket.unhold", map[string]any{"actor": "human:alex", "ref": ref, "reason": "needs_input"}, nil) // as a reply in the thread does
 	waitFor(t, d, log, "pull request after the unhold", func() bool { return findPull(gh) > 0 })
 	if runs := implementerRuns(t, log); len(runs) < 2 || runs[0] != runs[1] {
 		t.Fatalf("implementer runs of tasks %v, want the held run's task run again", runs)
 	}
-	pr := findPull(gh)
-	gh.SetHeadSHA(pr, "h1")
-	gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
-	waitFor(t, d, log, "pull request marked ready by verify", func() bool { return !gh.Issue(pr).Draft })
+	waitFor(t, d, log, "verify task following the checks", func() bool { return taskState(t, d, ref, "verify") == "ready" })
+}
+
+// taskState returns the state of the ticket's last task of a role, or "".
+func taskState(t *testing.T, d *daemon, ref, role string) string {
+	t.Helper()
+	var all []task
+	d.mustCLI(t, &all, "task", "list")
+	state := ""
+	for _, tk := range all {
+		if tk.Ticket == ref && tk.Role == role {
+			state = tk.State
+		}
+	}
+	return state
 }

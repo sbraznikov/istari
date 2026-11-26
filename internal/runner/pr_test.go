@@ -74,7 +74,10 @@ func loggedPrFixture(t *testing.T, full string) (f *cpFixture, gh *githubtest.Se
 
 func TestASecondPrOpenOnTheSameHeadAfterARedFullIsRefusedWithoutRunningAnyCheck(t *testing.T) {
 	t.Parallel()
-	f, gh, prs, runs := loggedPrFixture(t, "echo FULL SUITE BROKE; exit 1")
+	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil {
 		t.Fatal("pr open with red full checks was accepted")
 	}
@@ -206,14 +209,13 @@ func TestARedFullThatFailsOnMainTooHoldsTheTicketWithAQuestion(t *testing.T) {
 	if gh.IssueCount() != 0 {
 		t.Fatal("a pull request was opened")
 	}
-	write(t, filepath.Join(f.ws.Dir, "again"), "x\n")
-	gitIn(t, f.ws.Dir, "add", ".")
-	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "try again")
+	// The red was not the branch's: a later pr open on the same head, as after
+	// the hold is lifted, runs the checks again and reuses main's result.
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "end your run") {
-		t.Fatalf("a later pr open on the same main tip: %v", err)
+		t.Fatalf("a later pr open on the same head and main tip: %v", err)
 	}
-	if got := f.elsewhere(t, runs()); len(got) != 0 {
-		t.Fatalf("a later pr open on the same main tip ran the full check on main again: %v", got)
+	if all := runs(); len(all) != 1 || len(f.elsewhere(t, all)) != 0 {
+		t.Fatalf("a later pr open on the same head and main tip ran the full check in %v, want once on the branch", all)
 	}
 }
 
