@@ -278,9 +278,21 @@ func (s *Server) reviews(w http.ResponseWriter, r *http.Request) {
 	s.page(w, r, all)
 }
 
+// FailReviews makes the next n reviews of a pull request answer status.
+func (s *Server) FailReviews(n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failReviews, s.failReviewsWith = n, status
+}
+
 func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
 	i := s.pull(w, r)
 	if i == nil {
+		return
+	}
+	if s.failReviews > 0 {
+		s.failReviews--
+		s.write(w, s.failReviewsWith, map[string]string{"message": http.StatusText(s.failReviewsWith)})
 		return
 	}
 	var req struct{ Body, Event string }

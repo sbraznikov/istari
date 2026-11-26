@@ -384,10 +384,7 @@ func (s *Server) operations() map[string]operation {
 				err = s.refines.Apply(ctx, run, res)
 			}
 			if err != nil {
-				if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-					return nil, rerr
-				}
-				return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+				return nil, s.rejectOrYield(ctx, run, err)
 			}
 			if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 				return nil, err
