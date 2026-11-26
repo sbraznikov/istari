@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sbraznikov/istari/internal/exectest"
 )
 
 // standardsRow returns the doctor output line of the standards check.
@@ -24,9 +26,7 @@ func standardsRow(t *testing.T, out string) string {
 func doctorInRepo(t *testing.T, repo string) (string, int) {
 	t.Helper()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\necho 1.0.0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 1.0.0\n")
 	config := writeDaemonConfig(t, newDataDir(t))
 	out, stderr, code := istariEnv(t, repo, config, []string{"PATH=" + bin + ":/usr/bin:/bin"}, "doctor")
 	return out + stderr, code
