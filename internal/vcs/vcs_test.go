@@ -595,6 +595,36 @@ func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
 	}
 }
 
+func TestARerunRerunsOnlyTheFailedJobsOfACommit(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+	)
+	jobs, err := c.RerunFailed(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("RerunFailed: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0] != "test" || gh.Reruns() != 1 {
+		t.Fatalf("rerun jobs = %v, the fake saw %d reruns; want only test, once", jobs, gh.Reruns())
+	}
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "abc123"); err == nil {
+		t.Fatal("FailureLog after a green rerun found a failed check; want none")
+	}
+}
+
+func TestARerunGitHubRefusesIsAnError(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	if _, err := c.RerunFailed(ctx, githubtest.Repo, "abc123"); err == nil || !strings.Contains(err.Error(), "test") {
+		t.Fatalf("RerunFailed error = %v, want one that names the job", err)
+	}
+}
+
 // redHead tracks a pull request whose head has the checks given, with a
 // journal on the watcher.
 func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
