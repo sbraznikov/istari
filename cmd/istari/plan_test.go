@@ -114,24 +114,43 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	for deadline := time.Now().Add(60 * time.Second); gh.IssueCount() < 2; time.Sleep(200 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			out, _ := os.ReadFile(log)
-			t.Fatalf("no child after a minute\nagent log:\n%s\ndaemon:\n%s", out, d.stderr)
-		}
+	d.step(t, "sync")     // the parent, admitted
+	d.step(t, "pipeline") // its plan task and worktree
+	type run struct {
+		Ticket   string `json:"ticket"`
+		State    string `json:"state"`
+		Reason   string `json:"reason"`
+		Rejected string `json:"rejected"`
 	}
-	out, _ := os.ReadFile(log)
+	parentRuns := func() []run {
+		var all, runs []run
+		d.mustCLI(t, &all, "run", "list")
+		for _, r := range all {
+			if r.Ticket == parentRef { // the child's runs are not this test's
+				runs = append(runs, r)
+			}
+		}
+		return runs
+	}
 	// ended is how each run ended and the daemon's log, for a failure.
 	ended := func() string {
-		var runs []struct {
-			State  string `json:"state"`
-			Reason string `json:"reason"`
-		}
+		var runs []run
 		d.mustCLI(t, &runs, "run", "list")
 		return fmt.Sprintf("runs: %+v\ndaemon:\n%s", runs, d.stderr)
 	}
+	// The harness runs outside the daemon: only its end is polled for.
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		if runs := parentRuns(); len(runs) == 1 && runs[0].State != "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			out, _ := os.ReadFile(log)
+			t.Fatalf("the planner's run did not end in a minute\nagent log:\n%s\n%s", out, ended())
+		}
+	}
+	out, _ := os.ReadFile(log)
 	submits := strings.Split(string(out), "--- submit")
 	if len(submits) != 3 || !strings.Contains(submits[1], "child half") || !strings.Contains(submits[1], "no size") {
 		t.Fatalf("the first submission's answer:\n%s\nwant the child's key and its missing size\n%s", out, ended())
@@ -139,31 +158,19 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	if gh.IssueCount() != 2 || !strings.HasSuffix(gh.Issue(2).Body, "| feature | S | P1 | `"+githubtest.Repo+"` |\n") {
 		t.Fatalf("issues %d, the child %+v; want one child with its table\n%s", gh.IssueCount(), gh.Issue(2), ended())
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var parent struct {
-			State string `json:"state"`
-		}
-		d.mustCLI(t, &parent, "ticket", "show", parentRef)
-		var all, runs []struct {
-			Ticket   string `json:"ticket"`
-			State    string `json:"state"`
-			Rejected string `json:"rejected"`
-		}
-		d.mustCLI(t, &all, "run", "list")
-		for _, r := range all {
-			if r.Ticket == parentRef { // the child's runs are not this test's
-				runs = append(runs, r)
-			}
-		}
-		if parent.State == "in_progress" && len(runs) == 1 && runs[0].State != "running" {
-			if runs[0].Rejected != "" {
-				t.Fatalf("the run = %+v, want it not rejected: the planner fixed the split in it", runs[0])
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
-		}
+	if runs := parentRuns(); runs[0].Rejected != "" {
+		t.Fatalf("the run = %+v, want it not rejected: the planner fixed the split in it", runs[0])
+	}
+	d.step(t, "pipeline") // the completed plan moves the parent on
+	var parent struct {
+		State string `json:"state"`
+	}
+	d.mustCLI(t, &parent, "ticket", "show", parentRef)
+	if parent.State != "in_progress" {
+		t.Fatalf("after the run and a pipeline pass the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
+	}
+	if runs := parentRuns(); len(runs) != 1 {
+		t.Fatalf("the parent has %d runs, want the planner's one\n%s", len(runs), ended())
 	}
 }
 
