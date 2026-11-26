@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -17,16 +18,17 @@ import (
 const CodeTrackerUnavailable = "tracker_unavailable"
 
 // rejectOrYield ends a submit that code could not take. A tracker outage is
-// not the agent's fault: the run yields, its task is handed out again without
-// spending an attempt, and what could not be written waits as a pending
-// write. Any other refusal rejects the run (spec section 4.2).
+// not the agent's fault: the run yields and its task is handed out again
+// without spending an attempt; nothing of the result is kept, the next run
+// does the work again. Any other refusal rejects the run (spec section 4.2).
 func (s *Server) rejectOrYield(ctx context.Context, run runner.Run, err error) error {
 	if errors.Is(err, tickets.ErrUnavailable) {
 		if _, yerr := s.runs.Yield(ctx, run.ID, err.Error()); yerr != nil {
 			return yerr
 		}
+		log.Printf("istari: %s: %v; tried again when task %s is handed out next", run.Ticket, err, run.Task)
 		return &core.Error{Code: CodeTrackerUnavailable, Message: err.Error() +
-			". Your result is not refused and costs no attempt: istari writes what is pending once the tracker answers and hands the task out again. Stop and end your run without istari complete"}
+			". This costs no attempt, and nothing of your result is kept: the next run does the work again. Stop and end your run without istari complete"}
 	}
 	if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
 		return rerr

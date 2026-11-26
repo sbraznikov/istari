@@ -465,12 +465,6 @@ func (s *Server) operations() map[string]operation {
 			if s.syncer == nil {
 				return nil, &core.Error{Code: CodeSyncDisabled, Message: "no project has a ticket tracker to sync"}
 			}
-			if s.pending != nil {
-				// What waits for the tracker goes first: it was written earlier.
-				if err := s.pending.Replay(ctx); err != nil {
-					return nil, err
-				}
-			}
 			return s.syncer.Sync(ctx)
 		}),
 		"timer.list": read(func(ctx context.Context, _ Empty) (any, error) { return s.sched.List(ctx) }),

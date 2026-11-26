@@ -55,7 +55,6 @@ type Server struct {
 	reviews   *runner.Reviews
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
-	pending   *runner.PendingWrites // nil without a tracker that takes comments and sizes
 	firstRepo string          // the first configured repository: where a plan goes without its own
 	repos     map[string]bool // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
@@ -160,13 +159,6 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		// A red head's CI failure entry reaches the rework brief (spec 4.3).
 		srv.watch = vcs.NewWatcher(opts.VCS, ns, vcs.WatcherOptions{Clock: opts.Clock, Journal: j})
 	}
-	if pt, ok := opts.Tracker.(runner.PendingTracker); ok {
-		po := runner.PendingOptions{Tracker: pt, Clock: opts.Clock}
-		if opts.VCS != nil {
-			po.Reviews = opts.VCS
-		}
-		srv.pending = runner.NewPendingWrites(ns, po)
-	}
 	var needsRefine func(ctx context.Context, tk core.Ticket) (bool, error)
 	if opts.Tracker != nil && opts.Standards != nil {
 		needsRefine = func(ctx context.Context, tk core.Ticket) (bool, error) {
@@ -189,12 +181,6 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			var jt journal.Tracker
 			if t, ok := opts.Tracker.(journal.Tracker); ok {
 				jt = t
-			}
-			// A write the tracker cannot take now is kept and written later
-			// (spec sections 4.2 and 5).
-			if qt, ok := opts.Tracker.(runner.QueueTracker); ok {
-				q := srv.pending.Queuing(qt)
-				rt, jt = q, q
 			}
 			srv.refines = runner.NewRefines(rt, journal.New(jt, ns, opts.Clock), srv.tickets, opts.Standards)
 		}
@@ -255,10 +241,6 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		var sizer runner.Sizer
 		if t, ok := opts.Tracker.(runner.RefineTracker); ok {
 			sizer = t
-		}
-		if qt, ok := opts.Tracker.(runner.QueueTracker); ok {
-			q := srv.pending.Queuing(qt)
-			jt, sizer = q, q
 		}
 		srv.plans = runner.NewPlans(srv.spaces, journal.New(jt, ns, opts.Clock), srv.tickets, sizer)
 		srv.reviews = runner.NewReviews(srv.spaces, journal.New(jt, ns, opts.Clock))
@@ -363,26 +345,6 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 	for {
 		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("istari: pull requests: %v", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-// RunPending delivers the pending tracker writes every interval until ctx
-// ends (spec section 5). Without a tracker it returns at once.
-func (s *Server) RunPending(ctx context.Context, every time.Duration) {
-	if s.pending == nil {
-		return
-	}
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-	for {
-		if err := s.pending.Replay(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("istari: pending writes: %v", err)
 		}
 		select {
 		case <-ctx.Done():

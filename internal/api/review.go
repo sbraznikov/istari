@@ -40,6 +40,15 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 	if err != nil {
 		return nil, s.rejectOrYield(ctx, run, err)
 	}
+	// Published before it is recorded: a review the code host cannot take
+	// leaves nothing behind, and the next run does it again (spec section 4.2).
+	err = s.publishReview(ctx, run.Ticket, checked)
+	if errors.Is(err, tickets.ErrUnavailable) {
+		return nil, s.rejectOrYield(ctx, run, err)
+	}
+	if err != nil {
+		log.Printf("istari: review of %s: publishing on the pull request: %v", run.Ticket, err)
+	}
 	err = s.reviews.Record(ctx, run, checked)
 	if errors.Is(err, tickets.ErrUnavailable) {
 		return nil, s.rejectOrYield(ctx, run, err)
@@ -49,9 +58,6 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 		return nil, err
-	}
-	if err := s.publishReview(ctx, run.Ticket, checked); err != nil {
-		log.Printf("istari: review of %s: publishing on the pull request: %v", run.Ticket, err)
 	}
 	return ReviewAnswer{Accepted: len(checked.Accepted), Dropped: len(checked.Dropped)}, nil
 }
@@ -131,8 +137,7 @@ func (s *Server) noteEarlyReview(ctx context.Context, run runner.Run, state core
 }
 
 // publishReview posts the checked report on the ticket's pull request, the
-// two axes apart; findings code dropped are not published. While the code
-// host is unavailable the review waits as a pending write (spec section 5).
+// two axes apart; findings code dropped are not published.
 func (s *Server) publishReview(ctx context.Context, ticket string, c runner.ReviewCheck) error {
 	if s.vcs == nil || s.watch == nil {
 		return nil
@@ -141,16 +146,7 @@ func (s *Server) publishReview(ctx context.Context, ticket string, c runner.Revi
 	if err != nil {
 		return err
 	}
-	review := c.Published()
-	err = s.vcs.PublishReview(ctx, pr.Repo, pr.Number, review)
-	if errors.Is(err, tickets.ErrUnavailable) && s.pending != nil {
-		w := runner.PendingWrite{Kind: runner.PendingReview, Ticket: ticket, Repo: pr.Repo, Number: pr.Number, Review: &review}
-		if aerr := s.pending.Add(ctx, w); aerr != nil {
-			return errors.Join(err, aerr)
-		}
-		return fmt.Errorf("kept as a pending write: %w", err)
-	}
-	return err
+	return s.vcs.PublishReview(ctx, pr.Repo, pr.Number, c.Published())
 }
 
 // reviewOf tells how many findings code accepted in the report of a review
