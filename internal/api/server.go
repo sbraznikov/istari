@@ -17,6 +17,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/scheduler"
@@ -55,12 +56,14 @@ type Server struct {
 	reviews   *runner.Reviews
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
-	firstRepo string          // the first configured repository: where a plan goes without its own
-	repos     map[string]bool // the configured repositories: only their tickets get worktrees
+	github    *ratelimit.Transport // nil: no counts, no hold
+	firstRepo string               // the first configured repository: where a plan goes without its own
+	repos     map[string]bool      // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
 	changed   *notifier
 	clock     func() time.Time
 	keys      keyLocks
+	mu        sync.Mutex // one POST /v1/step at a time
 	closing   chan struct{}
 	once      sync.Once
 	mux       *http.ServeMux
@@ -87,6 +90,13 @@ type ServerOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side: pushes, pull requests, checks and reviews.
 	VCS *vcs.Client
+	// GitHub is the transport under Tracker and VCS: the sync and the PR
+	// watch wait while its quota is low, and istari doctor reads its counts
+	// (#208). nil: neither waits, and there are no counts.
+	GitHub *ratelimit.Transport
+	// Stepped serves POST /v1/step, one pass of a loop per request; only a
+	// daemon of a test build sets it (spec section 3.1).
+	Stepped bool
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -122,8 +132,13 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
 		}
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged})
+		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged}
+		if opts.GitHub != nil {
+			syncOpts.Hold = opts.GitHub.Hold
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, syncOpts)
 	}
+	srv.github = opts.GitHub
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
 		srv.firstRepo = opts.Repos[0].Repo
@@ -197,8 +212,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
+	var rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
+		rerun = srv.watch.Rerun // red CI an implementer answered as unrelated (spec 4.3)
 		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if errors.Is(err, store.ErrNotFound) {
@@ -223,7 +240,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	// The engine's notes go to the ticket when the tracker takes comments.
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Rerun: rerun, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
@@ -257,6 +274,9 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	for name, op := range srv.ops {
 		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(name, op))
 	}
+	if opts.Stepped {
+		srv.mux.HandleFunc("POST /v1/step", srv.stepHandler())
+	}
 	return srv
 }
 
@@ -284,28 +304,34 @@ func (s *Server) RunWorkspaces(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		changed := s.changed.wait()
-		// The pipeline first: a ticket it starts gets its worktree at once.
-		all, err := s.tickets.List(ctx)
-		if err == nil {
-			err = s.engine.Reconcile(ctx, s.configured(all))
-		}
-		if err != nil && ctx.Err() == nil {
-			log.Printf("istari: pipeline: %v", err)
-		}
-		if s.spaces != nil {
-			all, err := s.tickets.List(ctx)
-			if err == nil {
-				err = s.spaces.Reconcile(ctx, s.configured(all))
-			}
-			if err != nil && ctx.Err() == nil {
-				log.Printf("istari: workspaces: %v", err)
-			}
-		}
+		s.reconcile(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-changed:
 		case <-ticker.C:
+		}
+	}
+}
+
+// reconcile is one pass of RunWorkspaces: the pipeline first, so a ticket it
+// starts gets its worktree at once, then the worktrees. Errors are logged;
+// the next pass repairs them.
+func (s *Server) reconcile(ctx context.Context) {
+	all, err := s.tickets.List(ctx)
+	if err == nil {
+		err = s.engine.Reconcile(ctx, s.configured(all))
+	}
+	if err != nil && ctx.Err() == nil {
+		log.Printf("istari: pipeline: %v", err)
+	}
+	if s.spaces != nil {
+		all, err := s.tickets.List(ctx)
+		if err == nil {
+			err = s.spaces.Reconcile(ctx, s.configured(all))
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Printf("istari: workspaces: %v", err)
 		}
 	}
 }
@@ -343,7 +369,11 @@ func (s *Server) RunVCS(ctx context.Context, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
-		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil {
+		if s.github != nil && s.github.Hold(ctx, "the PR watch") != nil {
+			return // ctx ended
+		}
+		// A refusal for the rate limit is "later" (#208): the next Hold waits.
+		if err := s.watch.Poll(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ratelimit.ErrRateLimited) {
 			log.Printf("istari: pull requests: %v", err)
 		}
 		select {

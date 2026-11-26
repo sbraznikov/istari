@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
@@ -38,19 +39,28 @@ const (
 
 // Options configures the adapter.
 type Options struct {
-	BaseURL    string // default DefaultBaseURL
-	Token      string // a token that may read and write issues and labels
+	BaseURL string // default DefaultBaseURL
+	Token   string // a token that may read and write issues and labels
+	// HTTPClient sends the requests; nil: one with its own
+	// ratelimit.Transport. The daemon gives every GitHub client one shared
+	// transport, so that istari doctor sees all requests (#208).
 	HTTPClient *http.Client
+	// Backoff are the waits before each retry of a write that met a server
+	// error, a rate limit or a network error (spec section 5); its length is
+	// the number of retries. nil: tickets.DefaultBackoff; empty: no retry.
+	Backoff []time.Duration
 }
 
 // Provider talks to GitHub Issues.
 type Provider struct {
-	base   string
-	token  string
-	http   *http.Client
-	mu     sync.Mutex
-	labels map[string]bool // "owner/repo\x00label" known to exist
-	self   string          // the token's login, once known
+	base    string
+	token   string
+	http    *http.Client
+	backoff []time.Duration
+	mu      sync.Mutex      // serializes labels, self and files
+	labels  map[string]bool // "owner/repo\x00label" known to exist
+	self    string          // the token's login, once known
+	files   map[string]file // "owner/repo\x00path" as the default branch's head had it
 }
 
 var (
@@ -68,11 +78,17 @@ const ownMark = "<!-- istari -->"
 // runs it: the token of the GitHub CLI (`gh auth token`, maintainer decision
 // on #16) and GITHUB_API_URL, if set, as the API base (GitHub Enterprise).
 func FromEnvironment(ctx context.Context) (*Provider, error) {
+	return FromEnvironmentWith(ctx, nil)
+}
+
+// FromEnvironmentWith is FromEnvironment sending through client (nil: the
+// default of Options.HTTPClient).
+func FromEnvironmentWith(ctx context.Context, client *http.Client) (*Provider, error) {
 	token, err := CLIToken(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token}), nil
+	return New(Options{BaseURL: os.Getenv("GITHUB_API_URL"), Token: token, HTTPClient: client}), nil
 }
 
 // CLIToken returns the GitHub CLI's token (`gh auth token`).
@@ -117,12 +133,16 @@ func New(opts Options) *Provider {
 		opts.BaseURL = DefaultBaseURL
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{Timeout: requestTimeout}
+		opts.HTTPClient = &http.Client{Timeout: requestTimeout, Transport: ratelimit.New(ratelimit.Options{})}
 	}
 	client := *opts.HTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.HTTPClient = &client
-	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient, labels: map[string]bool{}}
+	if opts.Backoff == nil {
+		opts.Backoff = tickets.DefaultBackoff
+	}
+	return &Provider{base: strings.TrimRight(opts.BaseURL, "/"), token: opts.Token, http: opts.HTTPClient,
+		backoff: opts.Backoff, labels: map[string]bool{}, files: map[string]file{}}
 }
 
 // Capabilities implements tickets.Provider.
@@ -325,6 +345,7 @@ func (p *Provider) SetState(ctx context.Context, ref tickets.Ref, s tickets.Stat
 	if err := checkState(s); err != nil {
 		return err
 	}
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	current, err := p.Get(ctx, ref)
 	if err != nil {
 		return err
@@ -379,6 +400,7 @@ func (p *Provider) SetSize(ctx context.Context, ref tickets.Ref, size string) er
 	if !slices.Contains(core.Sizes(), size) {
 		return fmt.Errorf("github: %q is not a size", size)
 	}
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	current, err := p.Get(ctx, ref)
 	if err != nil {
 		return err
@@ -406,7 +428,7 @@ func (p *Provider) SetBody(ctx context.Context, ref tickets.Ref, body string) er
 	if _, err := repoOf(ref); err != nil {
 		return err
 	}
-	if err := p.do(ctx, http.MethodPatch, issuePath(ref, ""), map[string]any{"body": body}, nil); err != nil {
+	if err := p.do(ratelimit.WithKind(ctx, ratelimit.KindJournal), http.MethodPatch, issuePath(ref, ""), map[string]any{"body": body}, nil); err != nil {
 		return fmt.Errorf("github: set the body of %s: %w", ref, err)
 	}
 	return nil
@@ -421,7 +443,7 @@ func (p *Provider) Comment(ctx context.Context, ref tickets.Ref, body string) (t
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 	}
-	if err := p.do(ctx, http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body + "\n\n" + ownMark}, &c); err != nil {
+	if err := p.do(ratelimit.WithKind(ctx, ratelimit.KindJournal), http.MethodPost, issuePath(ref, "/comments"), map[string]any{"body": body + "\n\n" + ownMark}, &c); err != nil {
 		return tickets.CommentRef{}, fmt.Errorf("github: comment on %s: %w", ref, err)
 	}
 	return tickets.CommentRef{ID: c.ID, URL: c.HTMLURL}, nil
@@ -518,15 +540,56 @@ func (p *Provider) Self(ctx context.Context) (string, error) {
 }
 
 // ReadFile implements tickets.Files with the contents API's raw media type.
+// A file is read once per commit of the default branch (#208): every call
+// asks for the branch's head, a conditional read that does not count against
+// the quota while the head stays, and an answer of the same head, the file or
+// its absence, is given again. Without a head (an empty repository) the file
+// is read each time.
 func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, error) {
 	if err := checkRepo(repo); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), nil)
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindFiles)
+	key := repo + "\x00" + path
+	head, headErr := p.raw(ctx, "/repos/"+repo+"/commits/HEAD", "application/vnd.github.sha")
+	p.mu.Lock()
+	f, ok := p.files[key]
+	p.mu.Unlock()
+	sameHead := headErr == nil && f.head == string(head)
+	// While GitHub refuses for the rate limit, the file of the last known
+	// head is given again: a refusal is "later", not a missing file.
+	refused := errors.Is(headErr, ratelimit.ErrRateLimited)
+	if ok && (sameHead || refused) {
+		return slices.Clone(f.data), f.err
+	}
+	data, err := p.raw(ctx, fmt.Sprintf("/repos/%s/contents/%s", repo, strings.TrimPrefix(path, "/")), "application/vnd.github.raw+json")
+	if err != nil {
+		err = fmt.Errorf("github: read %s in %s: %w", path, repo, err)
+	}
+	// Only an answer of a known head is kept: the file, or its absence.
+	answered := err == nil || errors.Is(err, tickets.ErrNotFound)
+	if headErr == nil && answered {
+		p.mu.Lock()
+		p.files[key] = file{head: string(head), data: data, err: err}
+		p.mu.Unlock()
+	}
+	return data, err
+}
+
+// file is a file of the default branch as its head commit had it.
+type file struct {
+	head string
+	data []byte
+	err  error // ErrNotFound: the commit has no such file
+}
+
+// raw GETs path with the media type accept and returns the body as it is.
+func (p *Provider) raw(ctx context.Context, path, accept string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github.raw+json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	res, err := p.http.Do(req)
@@ -539,7 +602,7 @@ func (p *Provider) ReadFile(ctx context.Context, repo, path string) ([]byte, err
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github: read %s in %s: %w", path, repo, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(data))})
+		return nil, errorOf(res, strings.TrimSpace(string(data)))
 	}
 	return data, nil
 }
@@ -655,6 +718,7 @@ func labelInfo(name string) (color, description string) {
 
 // ensureLabels creates the labels missing from the repository.
 func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []string) error {
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindLabels)
 	for _, name := range labels {
 		key := repo + "\x00" + name
 		p.mu.Lock()
@@ -685,13 +749,32 @@ func (p *Provider) ensureLabels(ctx context.Context, repo string, labels []strin
 type apiError struct {
 	Status  int
 	Message string
+	// Limited: GitHub refused for its rate limit (ratelimit.RateLimited), ask
+	// again later.
+	Limited bool
 }
 
 func (e *apiError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Message) }
 
+// errorOf is the apiError of a non-2xx answer with its message.
+func errorOf(res *http.Response, message string) *apiError {
+	e := &apiError{Status: res.StatusCode, Message: message, Limited: ratelimit.RateLimited(res)}
+	if e.Limited {
+		e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
+	}
+	return e
+}
+
+// unavailable tells a server error or a rate limit from a refusal.
+func (e *apiError) unavailable() bool { return e.Status >= 500 || e.Limited }
+
 // Is makes 404 (missing), 410 (deleted) and 301 (transferred to another
-// repository) match tickets.ErrNotFound: the ticket is not at its ref.
+// repository) match tickets.ErrNotFound: the ticket is not at its ref; and a
+// refusal for the rate limit match ratelimit.ErrRateLimited.
 func (e *apiError) Is(target error) bool {
+	if target == ratelimit.ErrRateLimited {
+		return e.Limited
+	}
 	if target != tickets.ErrNotFound {
 		return false
 	}
@@ -727,13 +810,46 @@ func (p *Provider) doPage(ctx context.Context, path string, out any) (string, er
 	return m[1], nil // an absolute URL, followed as given
 }
 
+// request sends one API request. A write that meets a server error, a rate
+// limit or a network error is tried again after each wait of the backoff
+// (spec section 5); a read is not, since the next poll reads again.
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) (*http.Response, error) {
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
 			return nil, err
 		}
+	}
+	var res *http.Response
+	send := func() (err error) {
+		res, err = p.send(ctx, method, path, data, out)
+		return err
+	}
+	if method == http.MethodGet {
+		return res, send()
+	}
+	err := tickets.RetryWrite(ctx, p.backoff, transient, send)
+	return res, err
+}
+
+// transient tells whether an error is the tracker's passing trouble: a server
+// error, a rate limit or a network error, not a refusal of the request.
+func transient(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.unavailable()
+	}
+	var network *url.Error
+	return errors.As(err, &network)
+}
+
+func (p *Provider) send(ctx context.Context, method, path string, data []byte, out any) (*http.Response, error) {
+	var reader io.Reader
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	target := path
@@ -747,7 +863,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Authorization", "Bearer "+p.token)
-	if body != nil {
+	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := p.http.Do(req)
@@ -755,7 +871,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		return nil, err
 	}
 	defer res.Body.Close()
-	data, err := io.ReadAll(res.Body)
+	reply, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -763,17 +879,14 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		var e struct {
 			Message string `json:"message"`
 		}
-		json.Unmarshal(data, &e)
+		json.Unmarshal(reply, &e)
 		if e.Message == "" {
-			e.Message = strconv.Quote(string(data))
+			e.Message = strconv.Quote(string(reply))
 		}
-		if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
-			e.Message += " (rate limited until " + res.Header.Get("X-RateLimit-Reset") + res.Header.Get("Retry-After") + ")"
-		}
-		return nil, &apiError{Status: res.StatusCode, Message: e.Message}
+		return nil, errorOf(res, e.Message)
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
+	if out != nil && len(reply) > 0 {
+		if err := json.Unmarshal(reply, out); err != nil {
 			return nil, fmt.Errorf("decoding %s %s: %w", method, path, err)
 		}
 	}

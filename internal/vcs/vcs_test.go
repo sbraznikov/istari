@@ -8,13 +8,17 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -216,6 +220,51 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	}
 }
 
+func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
+	t.Parallel()
+	_, remote, work, spec := pushFixture(t)
+	spec.Force = true
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	// The remote takes the next push at once and answers late: the push is
+	// cut short after the remote updated the branch. post-receive runs once
+	// the branch is updated; the push is cut short when its marker appears,
+	// not after a fixed time a slow machine may not reach the update in.
+	hook := filepath.Join(remote, "hooks", "post-receive")
+	taken := filepath.Join(t.TempDir(), "taken")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch '"+taken+"'\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "cut short")
+	short, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		defer cancel()
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline) && short.Err() == nil; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(taken); err == nil {
+				return
+			}
+		}
+	}()
+	if err := vcs.Push(short, spec); err == nil {
+		t.Fatal("the push was not cut short")
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want the cut-short push's %s taken", got, want)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "cut short, rewritten")
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("the next forced push: %v", err)
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want %s", got, want)
+	}
+}
+
 func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
 	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
@@ -285,7 +334,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
 	hooks := filepath.Join(root, "evil-hooks")
 	os.MkdirAll(hooks, 0o755)
-	os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n"), 0o755)
+	exectest.Write(t, filepath.Join(hooks, "pre-push"), "#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n")
 	git(t, work, "config", "core.hooksPath", hooks)
 	spec.Token = "secret-installation-token"
 	if err := vcs.Push(ctx, spec); err != nil {
@@ -321,6 +370,58 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	w.Poll(ctx)
 	if tr, err := w.PullRequestOf(ctx, ticket); err != nil || !tr.Done {
 		t.Fatalf("after the merge: %+v, %v; want done", tr, err)
+	}
+}
+
+func TestAPollOfAnUnchangedOrMergedPullRequestMakesNoRequestThatCounts(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
+	ticket := "gh:" + githubtest.Repo + "#3"
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	poll := func(what string) {
+		t.Helper()
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+		before := len(gh.Counted())
+		if err := w.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+		if got := gh.Counted()[before:]; len(got) != 0 {
+			t.Errorf("counted requests of a second poll of %s = %v, want none", what, got)
+		}
+	}
+	poll("an unchanged pull request")
+	gh.HumanMerge(pr.Number, "alex")
+	poll("a merged pull request")
+}
+
+func TestAPollRefusedForTheRateLimitSaysLater(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	if _, err := c.Status(ctx, githubtest.Repo, pr.Number); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Errorf("Status while the quota is spent: %v, want ErrRateLimited", err)
 	}
 }
 
@@ -465,6 +566,32 @@ func TestMarkReadyWorksOnGitHubEnterprise(t *testing.T) {
 	}
 }
 
+func TestAReviewIsPublishedThroughAShortOutageAndUnavailableAfterALongOne(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).WithBackoff([]time.Duration{time.Millisecond, time.Millisecond, time.Millisecond})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := vcs.Review{Standards: vcs.Axis{Summary: "0 findings"}, Spec: vcs.Axis{Summary: "0 findings"}}
+	gh.FailNext(2)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err != nil {
+		t.Fatalf("PublishReview after two 500s: %v", err)
+	}
+	gh.FailNext(4)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview during an outage: %v, want ErrUnavailable", err)
+	}
+	gh.FailNextWith(1, http.StatusUnprocessableEntity)
+	if err := c.PublishReview(ctx, githubtest.Repo, pr.Number, review); err == nil || errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("PublishReview answered 422: %v, want a plain error", err)
+	}
+	if got := len(gh.Issue(pr.Number).Reviews); got != 1 {
+		t.Fatalf("%d reviews, want the one published through the short outage", got)
+	}
+}
+
 func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)
@@ -492,6 +619,42 @@ func TestAReviewIsPublishedWithTheTwoAxesApartAndUnranked(t *testing.T) {
 	if !strings.Contains(body[standards:spec], "cache.go:3: Get has no doc comment") || !strings.Contains(body[spec:], "0 findings") {
 		t.Fatalf("body = %q, want each axis with its own findings", body)
 	}
+}
+
+// noCIFixture is a tracked pull request in a repository without CI, watched
+// with a clock the test moves.
+func noCIFixture(t *testing.T) (gh *githubtest.Server, s store.Store, w *vcs.Watcher, ticket string, pr vcs.Opened, now *time.Time) {
+	t.Helper()
+	gh = githubtest.New(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	clock := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	now = &clock
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	w = vcs.NewWatcher(c, db, vcs.WatcherOptions{Clock: func() time.Time { return *now }})
+	ticket = "gh:" + githubtest.Repo + "#3"
+	pr, err = c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	return gh, db, w, ticket, pr, now
+}
+
+// checksEvents lists the ticket's vcs.checks events as checks@sha, joined
+// by spaces.
+func checksEvents(t *testing.T, s store.Store, ticket string) string {
+	t.Helper()
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(checkEvents(t, s, ref), " ")
 }
 
 func TestAFailedCheckRunsLogComesBackWithItsCheckCommitAndRun(t *testing.T) {
@@ -532,9 +695,39 @@ func TestALogLargerThanTheLimitIsCutToItsEnd(t *testing.T) {
 	}
 }
 
+func TestARerunRerunsOnlyTheFailedJobsOfACommit(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "lint", Status: "completed", Conclusion: "success"},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+	)
+	jobs, err := c.RerunFailed(ctx, githubtest.Repo, "abc123")
+	if err != nil {
+		t.Fatalf("RerunFailed: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0] != "test" || gh.Reruns() != 1 {
+		t.Fatalf("rerun jobs = %v, the fake saw %d reruns; want only test, once", jobs, gh.Reruns())
+	}
+	if _, err := c.FailureLog(ctx, githubtest.Repo, "abc123"); err == nil {
+		t.Fatal("FailureLog after a green rerun found a failed check; want none")
+	}
+}
+
+func TestARerunGitHubRefusesIsAnError(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	gh.SetChecks("abc123", githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	if _, err := c.RerunFailed(ctx, githubtest.Repo, "abc123"); err == nil || !strings.Contains(err.Error(), "test") {
+		t.Fatalf("RerunFailed error = %v, want one that names the job", err)
+	}
+}
+
 // redHead tracks a pull request whose head has the checks given, with a
 // journal on the watcher.
-func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
+func redHead(t *testing.T, checks ...githubtest.Check) (*githubtest.Server, store.Store, *vcs.Watcher, *journal.Journal, tickets.Ref) {
 	t.Helper()
 	gh := githubtest.New(t)
 	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
@@ -559,7 +752,7 @@ func redHead(t *testing.T, checks ...githubtest.Check) (store.Store, *vcs.Watche
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, w, j, ref
+	return gh, s, w, j, ref
 }
 
 // checkEvents are the vcs.checks events of the ticket, as "checks@sha".
@@ -580,6 +773,109 @@ func checkEvents(t *testing.T, s store.Store, ref tickets.Ref) []string {
 	return got
 }
 
+func TestAPullRequestWithoutChecksTenMinutesAfterItsPushHasNoCI(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "abc123") // no check runs, no statuses
+	*now = now.Add(9*time.Minute + 59*time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("before 10 minutes: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Second)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "none" || tr.SHA != "abc123" {
+		t.Fatalf("after 10 minutes: %+v, want checks none of abc123", tr)
+	}
+	if err := w.Poll(ctx); err != nil { // nothing new
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@abc123"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPushRestartsTheNoCIWindowAndLaterChecksReplaceNone(t *testing.T) {
+	t.Parallel()
+	gh, s, w, ticket, pr, now := noCIFixture(t)
+	gh.SetHeadSHA(pr.Number, "old111")
+	*now = now.Add(10 * time.Minute)
+	if err := w.Poll(ctx); err != nil { // old111 has no CI
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Hour)
+	if err := w.Pushed(ctx, ticket, "new222"); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "new222")
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the push: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "in_progress"}) // CI was added
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetChecks("new222", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@old111 none@new222 pending@new222 success@new222"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
+func TestAPullRequestTrackedBeforeTheNoCIWindowExistedStartsItsWindowAtTheFirstPoll(t *testing.T) {
+	t.Parallel()
+	gh, s, w, _, _, now := noCIFixture(t)
+	ticket := "gh:" + githubtest.Repo + "#4"
+	pr, err := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/4/y", Base: "main", Title: "Y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(map[string]any{"ticket": ticket, "repo": githubtest.Repo, "number": pr.Number}) // stored with no pushed key
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, store.Event{Type: "vcs.tracked", At: *now, Actor: "system", Ticket: ticket},
+		store.Change{Kind: "pull_request", ID: ticket, Data: legacy}); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "leg444") // no check runs, no statuses
+	*now = now.Add(time.Hour)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(9 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := w.PullRequestOf(ctx, ticket); tr.Checks != "" {
+		t.Fatalf("9 minutes after the first poll: checks %q, want none read yet", tr.Checks)
+	}
+	*now = now.Add(time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := checksEvents(t, s, ticket), "none@leg444"; got != want {
+		t.Fatalf("checks events = %s, want %s", got, want)
+	}
+}
+
 // storedEntries are the journal entries of the ticket in istari's log.
 func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.Entry {
 	t.Helper()
@@ -592,7 +888,7 @@ func storedEntries(t *testing.T, j *journal.Journal, ref tickets.Ref) []journal.
 
 func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 	t.Parallel()
-	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestX (0.00s)\n    x_test.go:9: got 1, want 2\n"})
 	for range 2 { // the second poll sees the same red head
 		if err := w.Poll(ctx); err != nil {
 			t.Fatalf("Poll: %v", err)
@@ -610,9 +906,36 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 	}
 }
 
+func TestAHeadIsReadRedOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	gh, s, w, j, ref := redHead(t,
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "pending@abc123" {
+		t.Fatalf("vcs.checks events while race runs = %v, want pending only", got)
+	}
+	if entries := storedEntries(t, j, ref); len(entries) != 0 {
+		t.Fatalf("journal while race runs = %+v, want no ci entry", entries)
+	}
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky"},
+		githubtest.Check{Name: "race", Status: "completed", Conclusion: "success"},
+	)
+	mustPoll(t, w)
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want pending, then the failure once", got)
+	}
+	if entries := storedEntries(t, j, ref); len(entries) != 1 || entries[0].Kind != journal.CI {
+		t.Fatalf("journal = %+v, want one ci entry", entries)
+	}
+}
+
 func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
 	t.Parallel()
-	s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
 	if err := w.Poll(ctx); err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -635,6 +958,112 @@ func TestAFailureOfCommitStatusesOnlyHasNoLogToRead(t *testing.T) {
 	gh.SetStatus("def456", "failure")
 	if _, err := c.FailureLog(ctx, githubtest.Repo, "def456"); err == nil || !strings.Contains(err.Error(), "commit status") {
 		t.Fatalf("FailureLog error = %v, want one that says a commit status has no log", err)
+	}
+}
+
+func TestARedHeadAnsweredUnrelatedIsRerunOnceAndItsNewResultRead(t *testing.T) {
+	t.Parallel()
+	gh, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "success"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	started, err := w.Rerun(ctx, ref.String())
+	if err != nil || started != core.RerunStarted {
+		t.Fatalf("Rerun = %v, %v; want started", started, err)
+	}
+	if again, err := w.Rerun(ctx, ref.String()); err != nil || again != core.RerunNone {
+		t.Fatalf("second Rerun = %v, %v; want none: one rerun per head", again, err)
+	}
+	if gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns, want 1", gh.Reruns())
+	}
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "success@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure, then the rerun's success on the same head", got)
+	}
+	entries := storedEntries(t, j, ref)
+	if len(entries) != 2 || entries[1].Kind != journal.Note {
+		t.Fatalf("journal = %+v, want the ci entry and a note of the rerun", entries)
+	}
+	if note := entries[1].Text; !strings.Contains(note, "the known ETXTBSY flake") || !strings.Contains(note, "test") || !strings.Contains(note, "abc123") {
+		t.Fatalf("rerun note = %q, want the reason, the job and the commit", note)
+	}
+}
+
+func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
+	t.Parallel()
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "failure"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != core.RerunStarted {
+		t.Fatalf("Rerun = %v, %v; want started", started, err)
+	}
+	mustPoll(t, w)
+	mustPoll(t, w) // the same red rerun: no third entry
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure twice", got)
+	}
+	var cis []journal.Entry
+	for _, e := range storedEntries(t, j, ref) {
+		if e.Kind == journal.CI {
+			cis = append(cis, e)
+		}
+	}
+	if len(cis) != 2 || cis[0].CI.Rerun || !cis[1].CI.Rerun || cis[1].CI.Commit != "abc123" {
+		t.Fatalf("ci entries = %+v, want the first failure and the rerun's", cis)
+	}
+	if text := journal.Text(cis[1]); !strings.Contains(text, "the rerun failed too") {
+		t.Fatalf("rerun entry text = %q, want it to say the rerun failed too", text)
+	}
+}
+
+func TestASecondUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T) {
+	t.Parallel()
+	gh, _, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
+		t.Fatalf("Rerun refused by GitHub = %v, %v; want none started, so the round starts", got, err)
+	}
+	if err := w.Unrelated(ctx, ref.String(), "still flaky"); err != nil {
+		t.Fatalf("second Unrelated: %v", err)
+	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunSpent {
+		t.Fatalf("Rerun after the second answer = %v, %v; want spent", got, err)
+	}
+	if gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns, want none", gh.Reruns())
+	}
+	var notes []string
+	for _, e := range storedEntries(t, j, ref) {
+		if e.Kind == journal.Note {
+			notes = append(notes, e.Text)
+		}
+	}
+	if len(notes) != 2 {
+		t.Fatalf("notes = %q, want the refused rerun and the spent answer", notes)
+	}
+	if spent := notes[1]; !strings.Contains(spent, "abc123") || !strings.Contains(spent, "still flaky") || !strings.Contains(spent, "not rerun again") {
+		t.Fatalf("spent note = %q, want the head, the reason and that it is not rerun again", spent)
+	}
+}
+
+func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.T) {
+	t.Parallel()
+	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); !errors.Is(err, vcs.ErrNotRed) {
+		t.Fatalf("Unrelated on a green head = %v, want %v", err, vcs.ErrNotRed)
+	}
+	_, _, w, _, ref = redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
+	mustPoll(t, w)
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != core.RerunNone {
+		t.Fatalf("Rerun without an answer = %v, %v; want none", started, err)
 	}
 }
 

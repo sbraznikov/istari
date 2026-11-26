@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,9 +36,18 @@ type EngineOptions struct {
 	// "the plan is published in the ticket"); nil: the plan task's
 	// completion is enough.
 	HasPlan func(ctx context.Context, ref string) (bool, error)
-	// Checks tells the CI state of a ticket's pull request (pending, success
-	// or failure); ok is false while it has none. nil: CI is not watched.
+	// Checks tells the CI state of a ticket's pull request (pending, success,
+	// failure, or none: its head has had no checks for 10 minutes after
+	// istari's last push, spec 4.3); ok is false while it has no state yet.
+	// nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
+	// Rerun is asked on red CI before a rework round: it reruns the failed
+	// jobs of the head once when the implementer answered them as not caused
+	// by the change (spec 4.3). RerunStarted: verify waits for the new
+	// result and starts no round; RerunSpent: the head was answered again
+	// after its one rerun or refusal, so the ticket is held needs_input.
+	// nil: red CI always starts a round.
+	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
 	// pull request is left as it is.
@@ -72,8 +82,9 @@ type Engine struct {
 	tickets *core.Tickets
 	opts    EngineOptions
 
-	mu    sync.Mutex
-	cache map[string]cached
+	mu     sync.Mutex // the cache and the warnings already logged
+	cache  map[string]cached
+	warned map[string]bool
 
 	states map[string]core.TicketState // of this reconcile's tickets
 }
@@ -113,7 +124,22 @@ func (e *Engine) Load(ctx context.Context, repo string) (Pipeline, error) {
 	}
 	e.mu.Lock()
 	e.cache[repo] = cached{p: p, err: err, at: e.opts.Clock()}
+	var fresh []string
+	if err == nil {
+		if e.warned == nil {
+			e.warned = map[string]bool{}
+		}
+		for _, w := range p.Warnings() {
+			if key := repo + " " + w; !e.warned[key] {
+				e.warned[key] = true
+				fresh = append(fresh, w)
+			}
+		}
+	}
 	e.mu.Unlock()
+	for _, w := range fresh {
+		log.Printf("istari: pipeline of %s: %s", repo, w)
+	}
 	return p, err
 }
 
@@ -299,9 +325,12 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
+	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && !r.conflict) && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
 		// tracker (istari recover): it gets the stages of its state on.
+		// Its first round is expanded again, as expand skips the tasks that
+		// exist: a daemon stopped while it made them left out the rest, and
+		// round.done reads a stage without a task as completed.
 		if err := e.expand(ctx, tk, 1, false, from); err != nil {
 			return err
 		}
@@ -601,7 +630,7 @@ func exhausted(ref string, all []core.Task) bool {
 
 // verify follows CI once the implementer is done (spec 4.3, stage verify):
 // green ends the pull request's draft, completes the verify task and fires
-// T6; red starts a rework round.
+// T6; red starts a rework round; no CI holds the ticket needs_input.
 func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state string) error {
 	v, ok := r.tasks[StageVerify]
 	if !ok || v.State != core.TaskReady { // the implementer is not done, or it was handled
@@ -625,6 +654,17 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
 		return err
 	case "failure":
+		// A rerun is no round: verify waits for its result. A head answered
+		// unrelated again after its one rerun opens no second round on it.
+		if e.opts.Rerun != nil {
+			switch outcome, err := e.opts.Rerun(ctx, tk.Ref); {
+			case err != nil || outcome == core.RerunStarted:
+				return err
+			case outcome == core.RerunSpent:
+				_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
+				return err
+			}
+		}
 		// The red CI is handled once: the next round's verify waits for its
 		// implementer, and a round that leaves CI red counts toward
 		// max_review_rounds.
@@ -632,6 +672,11 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
 			return nil // the ticket is held for a human
 		}
+		return err
+	case "none":
+		// No CI: a human adds it, merges by hand or cancels; the ticket
+		// does not wait silently.
+		_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 		return err
 	}
 	return nil

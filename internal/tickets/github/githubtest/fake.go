@@ -9,8 +9,11 @@ package githubtest
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -43,7 +46,15 @@ type Server struct {
 	deleted    map[int]bool
 	dropLabels bool
 	failNext   int
-	files      map[string]string // repository files on the default branch
+	failStatus int
+
+	failCommentsOn   string // comments containing it fail
+	failComments     int
+	failCommentsWith int
+	failReviews      int // reviews of a pull request that fail
+	failReviewsWith  int
+	files            map[string]string // repository files on the default branch
+	commits          int               // commits on the default branch: its head
 
 	appID           int64
 	appKey          *rsa.PublicKey
@@ -51,7 +62,11 @@ type Server struct {
 	issued          map[string]time.Time // installation tokens → expiry
 	checks          map[string][]Check   // commit → check runs
 	statuses        map[string]string    // commit → combined status
+	reruns          int                  // jobs rerun through the API
 	deletedBranches []string
+	counted         []string  // "METHOD path" of the requests that count against the quota
+	remaining       int       // the quota the answers report, with reset
+	reset           time.Time // zero: no X-RateLimit-* headers
 }
 
 // Label is a repository label.
@@ -133,6 +148,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		s.write(w, http.StatusOK, map[string]string{"login": s.TokenUser})
 	})
 	mux.HandleFunc("GET "+repo+"/contents/{path...}", s.contents)
+	mux.HandleFunc("GET "+repo+"/commits/{ref}", s.commit)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}", s.getPull)
 	mux.HandleFunc("POST "+repo+"/pulls", s.createPull)
 	mux.HandleFunc("PATCH "+repo+"/pulls/{n}", s.updatePull)
@@ -142,6 +158,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", s.checkRuns)
 	mux.HandleFunc("GET "+repo+"/commits/{sha}/status", s.combinedStatus)
 	mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", s.jobLogs)
+	mux.HandleFunc("POST "+repo+"/actions/jobs/{id}/rerun", s.rerunJob)
 	mux.HandleFunc("DELETE "+repo+"/git/refs/{ref...}", s.deleteRef)
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
@@ -157,7 +174,7 @@ func New(t testing.TB, opts ...Option) *Server {
 		}
 		if s.failNext > 0 {
 			s.failNext--
-			s.write(w, http.StatusInternalServerError, map[string]string{"message": "Server Error"})
+			s.write(w, s.failStatus, map[string]string{"message": http.StatusText(s.failStatus)})
 			return
 		}
 		if gql, ok := strings.CutSuffix(s.prefix, "/v3"); ok && r.URL.Path == gql+"/graphql" {
@@ -168,11 +185,62 @@ func New(t testing.TB, opts ...Option) *Server {
 			return
 		}
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, s.prefix)
-		mux.ServeHTTP(w, r)
+		s.serveConditional(w, r, mux)
 	}))
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + s.prefix
 	return s
+}
+
+// serveConditional answers as GitHub does with ETags: a GET's 200 carries the
+// ETag of its body, and a GET whose If-None-Match names the ETag of the
+// answer it would get is answered 304 and does not count against the quota.
+// Every other answer is counted.
+func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	if !s.reset.IsZero() {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(s.remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(s.reset.Unix(), 10))
+		if s.remaining == 0 {
+			s.write(w, http.StatusForbidden, map[string]string{"message": "API rate limit exceeded for user ID 1."})
+			return
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	res := rec.Result()
+	body := rec.Body.Bytes()
+	if r.Method == http.MethodGet && res.StatusCode == http.StatusOK {
+		sum := sha256.Sum256(body)
+		etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+		res.Header.Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			maps.Copy(w.Header(), res.Header)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	s.counted = append(s.counted, r.Method+" "+r.URL.Path)
+	maps.Copy(w.Header(), res.Header)
+	w.WriteHeader(res.StatusCode)
+	w.Write(body)
+}
+
+// SetRateLimit makes every answer carry X-RateLimit-Remaining and
+// X-RateLimit-Reset; with remaining 0 every request is refused with 403, as
+// GitHub refuses once the quota is spent. The fake does not count down.
+func (s *Server) SetRateLimit(remaining int, reset time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remaining, s.reset = remaining, reset
+}
+
+// Counted returns the requests that counted against the quota, as "METHOD
+// path", oldest first: all but the ones answered 304.
+func (s *Server) Counted() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.counted)
 }
 
 func (s *Server) tick() time.Time {
@@ -426,6 +494,11 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct{ Body string }
 	json.NewDecoder(r.Body).Decode(&req)
+	if s.failComments > 0 && strings.Contains(req.Body, s.failCommentsOn) {
+		s.failComments--
+		s.write(w, s.failCommentsWith, map[string]string{"message": http.StatusText(s.failCommentsWith)})
+		return
+	}
 	c := s.addComment(i, s.TokenUser, req.Body)
 	s.write(w, http.StatusCreated, map[string]any{"id": c.ID, "html_url": fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", Repo, i.Number, c.ID)})
 }
@@ -494,11 +567,23 @@ func (s *Server) contents(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(body))
 }
 
-// SetFile puts a file on the repository's default branch.
+// SetFile puts a file on the repository's default branch, in a new commit.
 func (s *Server) SetFile(path, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.files[path] = body
+	s.commits++
+}
+
+// commit answers the SHA of the default branch's head for the ref HEAD, with
+// the media type that asks for the bare SHA.
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("ref") != "HEAD" || r.Header.Get("Accept") != "application/vnd.github.sha" {
+		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "the fake answers only HEAD as a bare SHA"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "%040x", s.commits)
 }
 
 // HumanEditBody replaces an issue's body as login would.
@@ -583,10 +668,21 @@ func (s *Server) SetPermission(login, perm string) {
 }
 
 // FailNext makes the next n requests answer 500.
-func (s *Server) FailNext(n int) {
+func (s *Server) FailNext(n int) { s.FailNextWith(n, http.StatusInternalServerError) }
+
+// FailNextWith makes the next n requests answer status.
+func (s *Server) FailNextWith(n, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failNext = n
+	s.failNext, s.failStatus = n, status
+}
+
+// FailComments makes the next n comments that contain text answer status;
+// every other request is answered as usual.
+func (s *Server) FailComments(text string, n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCommentsOn, s.failComments, s.failCommentsWith = text, n, status
 }
 
 // SetPageSize sets how many items a page holds.

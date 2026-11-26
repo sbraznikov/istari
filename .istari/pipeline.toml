@@ -3,7 +3,7 @@
 
 [limits]
 max_attempts = 3
-max_review_rounds = 10                # temporary: back to 5 once #137, #178 and #192 are merged
+max_review_rounds = 5
 max_size = "L"                        # larger tickets are split before work starts
 questions = "decide"                  # or "hold"
 max_assumptions = 3
@@ -11,9 +11,10 @@ self_review = true
 
 [checks]                              # run by istari, not by an agent
 typecheck = "go vet ./..."
-test      = "go test ./... -short"
+test      = "go test -short {dirs}"          # a checkpoint runs the packages whose tests the slice changed (#145); full runs before istari pr open
 full      = "go test ./..."
-lint      = { run = "go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./... && go run github.com/kisielk/errcheck@v1.9.0 -exclude .errcheck-excludes ./...", at = ["pr"] }  # pins as in ci.yml
+lint      = { run = "golangci-lint run --new-from-rev=origin/main ./...", at = ["pr"] }   # only what the branch adds; #228 clears main and adds .golangci.yml
+flaky     = { run = "sh scripts/flaky.sh {files}", at = ["checkpoint"] }   # the slice's new and changed tests, twenty times under -race (#265)
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
 
 [merge]

@@ -1,20 +1,27 @@
 package pipeline_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 var ctx = context.Background()
@@ -284,7 +291,7 @@ func TestAnInvalidPipelineDoesNotStartTheTicket(t *testing.T) {
 func TestAStageWithoutNeedsFollowsThePreviousOne(t *testing.T) {
 	t.Parallel()
 	// The scaffolded file: approve names no needs.
-	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n\n[[stage]]\nname = \"approve\"\nkind = \"human\"\nvia = \"github_review\"\n"})
 	f.readyTicket(t, ref)
 	f.reconcile(t)
 	if approve := f.stage(t, ref, "approve"); approve.State != core.TaskWaiting || len(approve.Needs) != 1 || pipeline.StageOf(core.Task{ID: approve.Needs[0]}) != "review" {
@@ -655,6 +662,34 @@ func TestT6FiresOnlyWhenCIIsGreenAndRedCIMeansRework(t *testing.T) {
 	}
 }
 
+func TestAPullRequestWithoutCIHoldsTheTicketUntilChecksAreGreen(t *testing.T) {
+	t.Parallel()
+	ci := "none"
+	checks := func(context.Context, string) (string, bool) { return ci, true }
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInProgress || tk.Hold != "needs_input" {
+		t.Fatalf("a pull request without CI: %s, hold %q; want in_progress on needs_input", tk.State, tk.Hold)
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready", v.State)
+	}
+	ci = "success" // a human added CI
+	if _, err := f.tickets.ClearHold(ctx, "human:alex", ref, "needs_input"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInReview {
+		t.Fatalf("with CI green and the hold cleared the ticket is %s, want in_review (T6)", st)
+	}
+}
+
 func TestOnGreenCIThePullRequestIsMarkedReadyBeforeT6(t *testing.T) {
 	t.Parallel()
 	ci := "pending"
@@ -745,6 +780,214 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 	}
 }
 
+func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) {
+	t.Parallel()
+	ci := "failure"
+	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
+	var reruns int
+	rerun := func(context.Context, string) (core.RerunOutcome, error) {
+		reruns++
+		ci = "" // the watch forgets the red result until it reads the rerun's
+		if reruns == 1 {
+			return core.RerunStarted, nil
+		}
+		return core.RerunNone, nil
+	}
+	defaults := config.Defaults{MaxReviewRounds: 1}
+	f := newEngine(t, defaults, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1") // it answered the red CI as unrelated
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready: it waits for the rerun", v.State)
+	}
+	ci = "success"
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("after a green rerun with max_review_rounds 1 the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
+	t.Parallel()
+	checks := func(context.Context, string) (string, bool) { return "failure", true }
+	rerun := func(context.Context, string) (core.RerunOutcome, error) { return core.RerunNone, nil } // not answered
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+}
+
+// watchedPR is a ticket whose pull request the real watch follows over the
+// fake GitHub, its head abc123 with the checks given, and an engine wired to
+// the watch as the daemon wires it.
+type watchedPR struct {
+	*engineFixture
+	gh      *githubtest.Server
+	watch   *vcs.Watcher
+	journal *journal.Journal
+}
+
+func newWatchedPR(t *testing.T, defaults config.Defaults, checks ...githubtest.Check) *watchedPR {
+	t.Helper()
+	f := newEngine(t, defaults, nil)
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	j := journal.New(nil, f.store, nil)
+	w := vcs.NewWatcher(c, f.store, vcs.WatcherOptions{Journal: j})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ref, Head: "istari/1/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ref, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", checks...)
+	state := func(ctx context.Context, ref string) (string, bool) {
+		pr, err := w.PullRequestOf(ctx, ref)
+		return pr.Checks, err == nil && pr.Checks != ""
+	}
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: state, Rerun: w.Rerun})
+	return &watchedPR{engineFixture: f, gh: gh, watch: w, journal: j}
+}
+
+// answeredUnrelated takes the ticket to its first implementer, which sees
+// the red CI, answers it as not this change and completes.
+func (p *watchedPR) answeredUnrelated(t *testing.T) {
+	t.Helper()
+	p.readyTicket(t, ref)
+	p.reconcile(t)
+	p.finish(t, ref, "plan", "agent:planner-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+}
+
+func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns while race runs, want none", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a pending head started round %d, want none", pipeline.RoundOf(impl))
+	}
+	p.gh.SetCheck("abc123", "race", "completed", "success")
+	for range 2 { // the first reads the head red and reruns, the second reads the rerun
+		if err := p.watch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p.reconcile(t)
+	}
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns once the run finished, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("a refused rerun left implement in round %d, want its one rework round 2", pipeline.RoundOf(impl))
+	}
+	// Round 2 has nothing to change on the same head and answers unrelated again.
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("second Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("the second answer started round %d, want no round after 2", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
+		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
+	}
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns, want none", p.gh.Reruns())
+	}
+}
+
+func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := p.journal.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, rerun bool
+	for _, e := range entries {
+		if e.Kind == journal.CI && e.CI.Commit == "abc123" {
+			first, rerun = first || !e.CI.Rerun, rerun || e.CI.Rerun
+		}
+	}
+	if !first || !rerun {
+		t.Fatalf("journal = %+v, want a ci entry of the first failure and one of the rerun", entries)
+	}
+}
+
 func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -775,6 +1018,38 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 				t.Errorf("%s: it got a %s task", state, c.none)
 			}
 		}
+	}
+}
+
+func TestARecoveredTicketWhoseStagesADaemonStoppedMakingGetsTheRest(t *testing.T) {
+	t.Parallel()
+	awaitingApproval := func() *engineFixture {
+		f := newEngine(t, config.Defaults{}, nil)
+		if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+	whole := awaitingApproval()
+	whole.reconcile(t)
+	approve := whole.stage(t, ref, "approve")
+
+	// The daemon stopped after it made the approve task, before the merge task.
+	f := awaitingApproval()
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: approve.Ticket, Project: approve.Project, Role: approve.Role, MaxAttempts: approve.MaxAttempts}); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("the ticket is %s, want awaiting_approval: nothing merged it", st)
+	}
+	if merge := f.stage(t, ref, pipeline.StageMerge); merge.State != core.TaskWaiting || !slices.Equal(merge.Needs, []string{approve.ID}) {
+		t.Fatalf("merge is %s needing %v, want waiting on %s", merge.State, merge.Needs, approve.ID)
 	}
 }
 
@@ -1093,5 +1368,34 @@ func TestATaskFailedBelowItsLimitDoesNotHoldTheTicket(t *testing.T) {
 	}
 	if plan := f.stage(t, ref, "plan"); plan.State != core.TaskReady {
 		t.Fatalf("plan is %s, want ready for its next attempt", plan.State)
+	}
+}
+
+// Not parallel: it reads the log, which every test of the package shares.
+func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
+	repos := []string{"acme/web", "acme/api"}
+	// A cache of a nanosecond: every Load reads the file again.
+	e := pipeline.NewEngine(core.NewTasks(s, core.TaskOptions{}), core.NewTickets(s, core.TicketOptions{}),
+		pipeline.EngineOptions{Files: files{repos[0]: early, repos[1]: early}, CacheFor: time.Nanosecond})
+	for range 3 {
+		for _, repo := range repos {
+			if _, err := e.Load(ctx, repo); err != nil {
+				t.Fatalf("%s: %v", repo, err)
+			}
+		}
+	}
+	for _, repo := range repos {
+		if n := strings.Count(logged.String(), repo+": .istari/pipeline.toml line 5"); n != 1 {
+			t.Errorf("%s: the warning was logged %d times, want once\n%s", repo, n, logged.String())
+		}
 	}
 }

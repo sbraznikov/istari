@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sbraznikov/istari/internal/exectest"
 )
 
 var binary string
@@ -24,7 +26,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	binary = filepath.Join(dir, "istari")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	// Built for tests: its daemon accepts --stepped (spec section 3.1).
+	build := exec.Command("go", "build", "-tags", "istaritest", "-o", binary, ".")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		panic(err)
@@ -96,9 +99,7 @@ func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
 
 	withFake := t.TempDir()
 	fake := "#!/bin/sh\necho 1.0.0\n"
-	if err := os.WriteFile(filepath.Join(withFake, "claude"), []byte(fake), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(withFake, "claude"), fake)
 	// Only the harness row is judged: other checks (gh, tracker token, user
 	// config) depend on the machine and may fail with exit 1.
 	cmd = exec.Command(binary, "doctor")

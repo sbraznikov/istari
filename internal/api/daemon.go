@@ -15,6 +15,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -66,10 +67,16 @@ type DaemonOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side; nil turns pushes and pull requests off.
 	VCS *vcs.Client
+	// GitHub is the transport under Tracker and VCS (ServerOptions.GitHub).
+	GitHub *ratelimit.Transport
 	// PausedBy, when set, pauses the hand-out of tasks for all projects in
 	// this actor's name before the first sync and claim, as
 	// istari pause --all does.
 	PausedBy string
+	// Stepped runs the scheduler, the pipeline, the ticket sync and the PR
+	// watch one pass per POST /v1/step instead of on their timers; the runner
+	// and the leases keep the real clock. Only a test build sets it (spec 3.1).
+	Stepped bool
 }
 
 // RunDaemon owns the data directory until ctx is canceled: it takes an
@@ -105,7 +112,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	defer os.Remove(socket)
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
-		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS})
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS, GitHub: opts.GitHub, Stepped: opts.Stepped})
 	// The lock proves no other daemon owns a run still recorded running.
 	if err := srv.EndRunsLeftRunning(ctx); err != nil {
 		return fmt.Errorf("ending runs left running: %w", err)
@@ -124,19 +131,21 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	}
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
-	background.Add(1)
-	go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
-	background.Add(1)
-	go func() { defer background.Done(); srv.RunWorkspaces(bgCtx) }()
-	background.Add(1)
-	go func() { defer background.Done(); srv.RunVCS(bgCtx, time.Minute) }()
+	if !opts.Stepped {
+		background.Add(1)
+		go func() { defer background.Done(); srv.Scheduler().Run(bgCtx) }()
+		background.Add(1)
+		go func() { defer background.Done(); srv.RunWorkspaces(bgCtx) }()
+		background.Add(1)
+		go func() { defer background.Done(); srv.RunVCS(bgCtx, time.Minute) }()
+		if srv.Syncer() != nil {
+			background.Add(1)
+			go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval) }()
+		}
+	}
 	if srv.Runner() != nil {
 		background.Add(1)
 		go func() { defer background.Done(); srv.Runner().Run(bgCtx) }()
-	}
-	if srv.Syncer() != nil {
-		background.Add(1)
-		go func() { defer background.Done(); srv.Syncer().Run(bgCtx, opts.SyncInterval) }()
 	}
 	defer func() { stopBackground(); background.Wait() }()
 	httpSrv := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}
