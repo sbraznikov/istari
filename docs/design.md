@@ -262,6 +262,7 @@ canceled — from any open state
 
 Rules:
 
+- An implement task is done only when its ticket has a tracked pull request: `istari complete` from an implementer whose ticket has none is refused and names `istari pr open`. The run then ends without a result, and the task is released, not completed, so verify never waits for a pull request that does not exist.
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
 - A PR without CI: when the PR's head commit still has no checks (no check runs, no commit statuses) 10 minutes after istari's last push to it, the repository is read as having no CI, and the ticket gets the hold `needs_input` in `in_progress` instead of waiting silently. The full suite that `istari pr open` runs is not taken as the CI result: auto-merge (section 4.8) is tied to CI. A human adds CI (checks that appear later replace "no checks", and verify goes on once the hold is cleared), merges by hand (T11), or cancels; a hold cleared while there are still no checks is set again.
@@ -949,12 +950,12 @@ The principle: less model, more deterministic code. The model is non-determinist
 | `istari pr open` | every check at `pr`: the full suite and the project's own checks | the PR is not opened; for a red full suite, see below for whose failure it is |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
 
-**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command once on the tip of the main branch, as last fetched, in a scratch worktree, and records that result in the journal entry together with the main commit. The result is kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
+**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command on the tip of the main branch, as last fetched, in a scratch worktree. A red result there is run once more, since one red run can be a flaky test: main counts as red only when the second run is red too. The result is recorded in the journal entry together with the main commit, and kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
 
 | Main branch | Journal entry | What follows |
 |---|---|---|
 | green | the branch's failure and output, as before | the failure is the ticket's: the agent fixes it |
-| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again |
+| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again, and its implement task is released, not completed. Lifting the hold makes that task ready again: the next implement run opens the pull request |
 
 A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch.
 
