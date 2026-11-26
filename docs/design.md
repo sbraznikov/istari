@@ -211,7 +211,7 @@ A hold set on a ticket with a running run stops the run with a checkpoint, as a 
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
-| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7) | human, by replying in the thread |
+| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7); or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
 | `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
 | `paused` | a human paused the ticket | human, with the `resume` command |
@@ -264,6 +264,7 @@ Rules:
 
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
+- A PR without CI: when the PR's head commit still has no checks (no check runs, no commit statuses) 10 minutes after istari's last push to it, the repository is read as having no CI, and the ticket gets the hold `needs_input` in `in_progress` instead of waiting silently. The full suite that `istari pr open` runs is not taken as the CI result: auto-merge (section 4.8) is tied to CI. A human adds CI (checks that appear later replace "no checks", and verify goes on once the hold is cleared), merges by hand (T11), or cancels; a hold cleared while there are still no checks is set again.
 - When verify sees a failed check on the pull request's head, istari reads the failed jobs' logs through its own GitHub access (the gh CLI's token or the GitHub App; agents have none, section 7.3) and records a CI failure entry in the journal (section 4.6), once per head commit. The entry holds the end of each failed job's log, cut to a fixed size from its start, so the failing tests and their messages stay. When the log cannot be read, the entry says so and why; the rework round starts either way.
 - A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first. A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
