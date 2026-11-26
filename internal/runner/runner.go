@@ -268,6 +268,19 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 // budget_exceeded and then clears the hold, so an interrupted call leaves the
 // ticket held and a repeat finishes it.
 func (r *Runner) LiftBudgetHold(ctx context.Context, actor, ref string, anyway bool) (core.Ticket, error) {
+	tk, err := r.tickets.Get(ctx, ref)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	if !anyway {
+		left, capped, err := r.budgetLeft(ctx, tk)
+		if err != nil {
+			return core.Ticket{}, err
+		}
+		if capped && left <= 0 {
+			return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("the budget of %s is still spent ($%.2f left): raise its size label first, or pass --anyway", ref, left)}
+		}
+	}
 	all, err := r.tasks.List(ctx)
 	if err != nil {
 		return core.Ticket{}, err
