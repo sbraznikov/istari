@@ -749,6 +749,55 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 	}
 }
 
+func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) {
+	t.Parallel()
+	ci := "failure"
+	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
+	var reruns int
+	rerun := func(context.Context, string) (bool, error) {
+		reruns++
+		ci = "" // the watch forgets the red result until it reads the rerun's
+		return reruns == 1, nil
+	}
+	defaults := config.Defaults{MaxReviewRounds: 1}
+	f := newEngine(t, defaults, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1") // it answered the red CI as unrelated
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready: it waits for the rerun", v.State)
+	}
+	ci = "success"
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("after a green rerun with max_review_rounds 1 the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
+	t.Parallel()
+	checks := func(context.Context, string) (string, bool) { return "failure", true }
+	rerun := func(context.Context, string) (bool, error) { return false, nil } // already rerun, or not answered
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+}
+
 func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
