@@ -32,12 +32,15 @@ import (
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
-	var paused bool
+	var paused, stepped bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the istari daemon in the foreground",
 		Args:  Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if stepped && !forTests {
+				return usageError{errors.New("--stepped is only for tests: this istari binary was not built for tests (go build -tags istaritest)")}
+			}
 			cfg, err := loadConfig(opts.Config)
 			if err != nil {
 				return err
@@ -87,6 +90,8 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&paused, "paused", false, "start with the hand-out of tasks paused for all projects, as istari pause --all does; tickets still sync")
+	cmd.Flags().BoolVar(&stepped, "stepped", false, "tests only: run the scheduler, pipeline, sync and watch loops one pass per POST /v1/step")
+	cmd.Flags().MarkHidden("stepped")
 	cmd.AddCommand(newDaemonInstallCommand(opts))
 	return cmd
 }
