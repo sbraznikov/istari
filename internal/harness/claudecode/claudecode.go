@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -195,13 +196,20 @@ func passed(key string) bool {
 	return false
 }
 
+// environment is what the agent gets: the passed part of the daemon's
+// environment, the run's own variables, and a PATH that starts with the
+// directory of the daemon's binary, so that `istari` is the daemon's own
+// even when that directory is not on the daemon's PATH.
 func environment(spec harness.RunSpec) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
-		if _, own := spec.Env[k]; passed(k) && !own {
+		if _, own := spec.Env[k]; passed(k) && !own && k != "PATH" {
 			env = append(env, kv)
 		}
+	}
+	if _, own := spec.Env["PATH"]; !own {
+		env = append(env, "PATH="+agentPath())
 	}
 	keys := make([]string, 0, len(spec.Env))
 	for k := range spec.Env {
@@ -212,6 +220,22 @@ func environment(spec harness.RunSpec) []string {
 		env = append(env, k+"="+spec.Env[k])
 	}
 	return env
+}
+
+// agentPath is the daemon's PATH with the directory of the running binary
+// first. Symlinks are not resolved: the directory a link named istari lies
+// in holds an istari, the directory of its target may not.
+func agentPath() string {
+	path := os.Getenv("PATH")
+	self, err := os.Executable()
+	if err != nil {
+		return path
+	}
+	dir := filepath.Dir(self)
+	if path == "" {
+		return dir
+	}
+	return dir + string(os.PathListSeparator) + path
 }
 
 func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string) (harness.Session, error) {
