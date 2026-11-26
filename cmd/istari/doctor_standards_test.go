@@ -21,14 +21,15 @@ func standardsRow(t *testing.T, out string) string {
 	return ""
 }
 
-// doctorInRepo runs doctor in repo with a fake claude on PATH, so that no
-// other row fails, and returns its output and exit code.
-func doctorInRepo(t *testing.T, repo string) (string, int) {
+// doctorInRepo runs doctor, after the global flags, in repo with a fake
+// claude on PATH, so that no other row fails, and returns its output and
+// exit code.
+func doctorInRepo(t *testing.T, repo string, flags ...string) (string, int) {
 	t.Helper()
 	bin := t.TempDir()
 	exectest.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 1.0.0\n")
 	config := writeDaemonConfig(t, newDataDir(t))
-	out, stderr, code := istariEnv(t, repo, config, []string{"PATH=" + bin + ":/usr/bin:/bin"}, "doctor")
+	out, stderr, code := istariEnv(t, repo, config, []string{"PATH=" + bin + ":/usr/bin:/bin"}, append(flags, "doctor")...)
 	return out + stderr, code
 }
 
