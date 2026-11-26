@@ -172,6 +172,44 @@ func TestTicketCommands(t *testing.T) {
 	}
 }
 
+func TestUnholdLiftsOnlyABudgetHold(t *testing.T) {
+	t.Parallel()
+	d := startDaemon(t, newDataDir(t))
+	ref := "gh:acme/web#1" // the ticket of createTask's tasks
+	createTicket(t, d, ref)
+	hold := func() string {
+		var tk struct{ Hold string }
+		d.mustCLI(t, &tk, "ticket", "show", ref)
+		return tk.Hold
+	}
+	d.mustCLI(t, nil, "ticket", "pause", ref)
+	if _, stderr, code := d.cli(t, "ticket", "unhold", ref); code != 1 || !strings.Contains(stderr, "istari ticket resume") {
+		t.Fatalf("unhold of a paused ticket: exit %d %q, want a refusal naming istari ticket resume", code, stderr)
+	}
+	if h := hold(); h != "paused" {
+		t.Fatalf("after the refused unhold the hold is %q, want paused", h)
+	}
+	d.mustCLI(t, nil, "ticket", "resume", ref)
+
+	d.createTask(t, "t_1", "implementer")
+	var l lease
+	d.mustCLI(t, &l, "task", "claim", "t_1", "--actor", "agent:a")
+	d.mustCLI(t, nil, "task", "block", "t_1", "--actor", "agent:a", "--token", l.Token, "--kind", "budget_exceeded")
+	d.call(t, "ticket.hold", map[string]any{"actor": "system", "ref": ref, "reason": "budget_exceeded"}, nil)
+	if _, stderr, code := d.cli(t, "ticket", "unhold", ref, "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "human_only") {
+		t.Fatalf("unhold by an agent: exit %d %q, want human_only", code, stderr)
+	}
+	d.mustCLI(t, nil, "ticket", "unhold", ref) // no runner here: no budget counts as spent
+	if h := hold(); h != "" {
+		t.Fatalf("after unhold the hold is %q, want none", h)
+	}
+	var task struct{ State string }
+	d.mustCLI(t, &task, "task", "show", "t_1")
+	if task.State != "ready" {
+		t.Fatalf("after unhold t_1 is %s, want ready", task.State)
+	}
+}
+
 func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t))

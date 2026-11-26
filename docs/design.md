@@ -213,7 +213,7 @@ A hold set on a ticket with a running run stops the run with a checkpoint, as a 
 |---|---|---|
 | `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7); or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
-| `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
+| `budget_exceeded` | the ticket budget is exceeded | human, by raising the size, then the `unhold` command (section 7.5) |
 | `paused` | a human paused the ticket | human, with the `resume` command |
 | `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
@@ -825,6 +825,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Per-run limits: time, tokens, cost. Per ticket: total cost (budget by size, section 4.7), number of attempts, number of review rounds.
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
+- The decision on an exceeded budget: a trusted member raises the ticket's size label, which raises its budget (section 4.7), then runs `istari ticket unhold <ref>`. The command unblocks the ticket's tasks blocked `budget_exceeded` and then clears the hold, so an interrupted call leaves the ticket held and a repeat finishes it. While the budget is still spent, the command refuses and names the size label and `--anyway`; `--anyway` lifts the hold without raising the size. On any other hold the command refuses and names the command that lifts it (`istari ticket resume` for `paused`, `istari ticket retry` for `attempts_exhausted`).
 - Global concurrency limits: per project, per role, for the whole installation.
 - `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
@@ -1022,6 +1023,7 @@ istari workspace list|prune          # ticket worktrees
 
 
 istari ticket list|show|create|check|refine|ready|pause|resume|cancel|reopen|retry
+istari ticket unhold <ref> [--anyway]  # lift a budget_exceeded hold (section 7.5)
 istari ticket create --file plan.yaml  # a set of linked tickets in one call
 istari ticket priority <ref> <P0..P3>
 istari ticket deps [ref]             # dependency graph and zone overlaps
