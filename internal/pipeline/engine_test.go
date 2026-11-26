@@ -784,10 +784,13 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 	ci := "failure"
 	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
 	var reruns int
-	rerun := func(context.Context, string) (bool, error) {
+	rerun := func(context.Context, string) (core.RerunOutcome, error) {
 		reruns++
 		ci = "" // the watch forgets the red result until it reads the rerun's
-		return reruns == 1, nil
+		if reruns == 1 {
+			return core.RerunStarted, nil
+		}
+		return core.RerunNone, nil
 	}
 	defaults := config.Defaults{MaxReviewRounds: 1}
 	f := newEngine(t, defaults, nil)
@@ -814,7 +817,7 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
 	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "failure", true }
-	rerun := func(context.Context, string) (bool, error) { return false, nil } // already rerun, or not answered
+	rerun := func(context.Context, string) (core.RerunOutcome, error) { return core.RerunNone, nil } // not answered
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
 	f.readyTicket(t, ref)
@@ -896,6 +899,65 @@ func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *t
 	}
 	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
 		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns while race runs, want none", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a pending head started round %d, want none", pipeline.RoundOf(impl))
+	}
+	p.gh.SetCheck("abc123", "race", "completed", "success")
+	for range 2 { // the first reads the head red and reruns, the second reads the rerun
+		if err := p.watch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p.reconcile(t)
+	}
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns once the run finished, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("a refused rerun left implement in round %d, want its one rework round 2", pipeline.RoundOf(impl))
+	}
+	// Round 2 has nothing to change on the same head and answers unrelated again.
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("second Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
+		t.Fatalf("the second answer started round %d, want no round after 2", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
+		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
+	}
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns, want none", p.gh.Reruns())
 	}
 }
 

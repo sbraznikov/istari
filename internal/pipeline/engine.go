@@ -43,9 +43,11 @@ type EngineOptions struct {
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// Rerun is asked on red CI before a rework round: it reruns the failed
 	// jobs of the head once when the implementer answered them as not caused
-	// by the change (spec 4.3); started means verify waits for the new
-	// result and starts no round. nil: red CI always starts a round.
-	Rerun func(ctx context.Context, ref string) (started bool, err error)
+	// by the change (spec 4.3). RerunStarted: verify waits for the new
+	// result and starts no round; RerunSpent: the head was answered again
+	// after its one rerun or refusal, so the ticket is held needs_input.
+	// nil: red CI always starts a round.
+	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
 	// pull request is left as it is.
@@ -649,9 +651,14 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
 		return err
 	case "failure":
-		// A rerun is no round: verify waits for its result.
+		// A rerun is no round: verify waits for its result. A head answered
+		// unrelated again after its one rerun opens no second round on it.
 		if e.opts.Rerun != nil {
-			if started, err := e.opts.Rerun(ctx, tk.Ref); err != nil || started {
+			switch outcome, err := e.opts.Rerun(ctx, tk.Ref); {
+			case err != nil || outcome == core.RerunStarted:
+				return err
+			case outcome == core.RerunSpent:
+				_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 				return err
 			}
 		}

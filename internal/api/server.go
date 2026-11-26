@@ -212,7 +212,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
-	var rerun func(ctx context.Context, ref string) (bool, error)
+	var rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
 		rerun = srv.watch.Rerun // red CI an implementer answered as unrelated (spec 4.3)
