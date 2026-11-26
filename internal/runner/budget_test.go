@@ -185,7 +185,7 @@ func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
 	sized(t, f, parent.Ref, "M")
 	f.start(t)
 	spendAndFinish(t, f, task.ID) // the planner spends $4 on the parent
-	sized(t, f, parent.Ref, "XL")  // too large: the planner splits it
+	sized(t, f, parent.Ref, "XL") // too large: the planner splits it
 	child := split(t, f, parent.Ref, 51, "S")
 	implement(t, f, child.Ref)
 	c := f.session(t)

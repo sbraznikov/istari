@@ -123,6 +123,45 @@ type Status struct {
 // ReviewNone is the review state of a pull request without a deciding review.
 const ReviewNone = "none"
 
+// checkRun is one check run of a commit; an Actions job's id is its check
+// run's id.
+type checkRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	URL        string `json:"html_url"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// state is the run's part in a commit's checks: pending, success or failure.
+func (r checkRun) state() string {
+	switch {
+	case r.Status != "completed":
+		return "pending"
+	case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
+		return "success"
+	default: // failure, cancelled, timed_out, action_required, stale
+		return "failure"
+	}
+}
+
+// checkRuns lists every check run of a commit.
+func (c *Client) checkRuns(ctx context.Context, repo, sha string) ([]checkRun, error) {
+	var all []checkRun
+	for page := 1; ; page++ {
+		var runs struct {
+			CheckRuns []checkRun `json:"check_runs"`
+		}
+		if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page), nil, &runs); err != nil {
+			return nil, err
+		}
+		all = append(all, runs.CheckRuns...)
+		if len(runs.CheckRuns) < 100 {
+			return all, nil
+		}
+	}
+}
+
 // checks sums up a commit's check runs and its combined status: failure if
 // any failed, pending if any still runs, success if all passed, "" if there
 // are none.
@@ -138,29 +177,12 @@ func (c *Client) checks(ctx context.Context, repo, sha string) (string, error) {
 			state = "success"
 		}
 	}
-	for page := 1; ; page++ {
-		var runs struct {
-			CheckRuns []struct {
-				Status     string `json:"status"`
-				Conclusion string `json:"conclusion"`
-			} `json:"check_runs"`
-		}
-		if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page), nil, &runs); err != nil {
-			return "", err
-		}
-		for _, r := range runs.CheckRuns {
-			switch {
-			case r.Status != "completed":
-				add("pending")
-			case r.Conclusion == "success" || r.Conclusion == "neutral" || r.Conclusion == "skipped":
-				add("success")
-			default: // failure, cancelled, timed_out, action_required, stale
-				add("failure")
-			}
-		}
-		if len(runs.CheckRuns) < 100 {
-			break
-		}
+	runs, err := c.checkRuns(ctx, repo, sha)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range runs {
+		add(r.state())
 	}
 	var combined struct {
 		State      string `json:"state"`
@@ -341,15 +363,29 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 // limit or a network error is tried again after each wait of the backoff; what
 // still fails so is tickets.ErrUnavailable (spec section 5).
 func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
-	var data []byte
+	var payload []byte
 	if body != nil {
-		data, _ = json.Marshal(body)
+		payload, _ = json.Marshal(body)
 	}
-	send := func() error { return c.send(ctx, repo, method, url, data, out) }
+	var data []byte
+	send := func() error {
+		var err error
+		data, err = c.send(ctx, repo, method, url, payload)
+		return err
+	}
+	var err error
 	if method == http.MethodGet {
-		return send()
+		err = send()
+	} else {
+		err = tickets.RetryWrite(ctx, c.backoff, func(err error) bool { return errors.Is(err, errTransient) }, send)
 	}
-	return tickets.RetryWrite(ctx, c.backoff, func(err error) bool { return errors.Is(err, errTransient) }, send)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(data) > 0 {
+		return json.Unmarshal(data, out)
+	}
+	return nil
 }
 
 // errTransient marks a server error, a rate limit or a network error: the
@@ -361,18 +397,20 @@ type transientError struct{ error }
 func (e transientError) Is(target error) bool { return target == errTransient }
 func (e transientError) Unwrap() error        { return e.error }
 
-func (c *Client) send(ctx context.Context, repo, method, url string, data []byte, out any) error {
+// send makes a request and returns the body of its answer; an answer other
+// than 2xx is an error that names GitHub's message.
+func (c *Client) send(ctx context.Context, repo, method, url string, payload []byte) ([]byte, error) {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var reader io.Reader
-	if data != nil {
-		reader = bytes.NewReader(data)
+	if payload != nil {
+		reader = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -380,25 +418,22 @@ func (c *Client) send(ctx context.Context, repo, method, url string, data []byte
 	res, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return err
+			return nil, err
 		}
-		return transientError{err}
+		return nil, transientError{err}
 	}
 	defer res.Body.Close()
-	data, _ = io.ReadAll(res.Body)
+	data, _ := io.ReadAll(res.Body)
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
 		json.Unmarshal(data, &e)
 		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
 		if tickets.TransientStatus(res.StatusCode, res.Header) {
-			return transientError{err}
+			return nil, transientError{err}
 		}
-		return err
+		return nil, err
 	}
-	if out != nil && len(data) > 0 {
-		return json.Unmarshal(data, out)
-	}
-	return nil
+	return data, nil
 }
 
 // CodePushRefused refuses a push outside the agent's own ticket branch.
@@ -411,7 +446,7 @@ type PushSpec struct {
 	Private  string // istari's private bare repository the push is made from
 	Own      string // the ticket's branch
 	Target   string // the branch asked for
-	Force    bool   // with a lease on what istari last pushed or saw
+	Force    bool   // with a lease on what istari last pushed or saw, or on a remote branch the pushed commit contains
 	Token    string
 }
 
@@ -421,8 +456,9 @@ type PushSpec struct {
 // made from it: istari fetches the commits into a private repository of its
 // own and pushes from there to the repository's URL, with no hooks and the
 // token in git's environment, not its arguments. A forced push leases on what
-// istari itself last pushed or saw, so work pushed by someone else is never
-// overwritten.
+// istari itself last pushed or saw, or on the remote branch as it is now when
+// the pushed commit already contains it, so work pushed by someone else is
+// never overwritten.
 func Push(ctx context.Context, p PushSpec) error {
 	refuse := func(format string, args ...any) error {
 		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf(format, args...)}
@@ -460,12 +496,20 @@ func Push(ctx context.Context, p PushSpec) error {
 	auth := authEnv(p.Token)
 	args := []string{"push", "--porcelain"}
 	if p.Force {
+		var current string
+		if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
+			current, _, _ = strings.Cut(out, "\t")
+		}
 		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
 		if err != nil {
 			// Nothing pushed from here yet: lease on the branch as it is now.
-			expected = ""
-			if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
-				expected, _, _ = strings.Cut(out, "\t")
+			expected = current
+		}
+		if current != "" && current != expected {
+			// Someone else moved the branch. A commit that contains it
+			// overwrites nothing; a commit missing here is not contained.
+			if _, err := run(nil, "merge-base", "--is-ancestor", current, work); err == nil {
+				expected = current
 			}
 		}
 		args = append(args, "--force-with-lease=refs/heads/"+p.Own+":"+expected)

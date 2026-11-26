@@ -82,6 +82,7 @@ func stateLabels(labels []string) []string {
 }
 
 func TestCreateMakesAnIssueInStateNewWithItsLabels(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	ticket, err := p.Create(ctx, tickets.Draft{Repo: "acme/web", Title: "Add rate limits", Body: "## Context\n…", Labels: []string{"bug", "size:S"}})
 	if err != nil {
@@ -105,6 +106,7 @@ func TestCreateMakesAnIssueInStateNewWithItsLabels(t *testing.T) {
 }
 
 func TestCreateKeepsExactlyOneStateLabelAndNoticesDroppedLabels(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	ticket, err := p.Create(ctx, tickets.Draft{Repo: "acme/web", Title: "t", Labels: []string{"istari:ready", "istari:hold:paused", "bug"}})
 	if err != nil {
@@ -124,6 +126,7 @@ func TestCreateKeepsExactlyOneStateLabelAndNoticesDroppedLabels(t *testing.T) {
 }
 
 func TestSetStateRejectsAnUnknownStateOrHold(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	n := fake.Seed("t", "", "alex", "istari:new")
 	for _, s := range []tickets.State{{}, {State: "sleeping"}, {State: core.TicketNew, Hold: "bored"}} {
@@ -137,6 +140,7 @@ func TestSetStateRejectsAnUnknownStateOrHold(t *testing.T) {
 }
 
 func TestMovedAndDeletedIssuesAreNotFoundAndNeverWrittenThrough(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	fake.Seed("the redirect target", "", "alex", "istari:new")
 	moved := fake.Seed("moved", "", "alex", "istari:new")
@@ -157,6 +161,7 @@ func TestMovedAndDeletedIssuesAreNotFoundAndNeverWrittenThrough(t *testing.T) {
 }
 
 func TestListPagesUnderAnAPIPathPrefix(t *testing.T) {
+	t.Parallel()
 	fake := githubtest.New(t, githubtest.Prefix("/api/v3")) // GitHub Enterprise
 	fake.SetPageSize(2)
 	for range 5 {
@@ -173,6 +178,7 @@ func TestListPagesUnderAnAPIPathPrefix(t *testing.T) {
 }
 
 func TestGetRoundTripsTitleBodyLabelsAndAuthor(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	n := fake.Seed("Flaky test", "Steps:\n1. run\n", "alex", "bug", "istari:in_progress", "istari:hold:paused")
 	ticket, err := p.Get(ctx, ref(n))
@@ -194,6 +200,7 @@ func TestGetRoundTripsTitleBodyLabelsAndAuthor(t *testing.T) {
 }
 
 func TestSetStateLeavesExactlyOneStateLabel(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	// A human left two state labels; istari's write repairs that.
 	n := fake.Seed("t", "", "alex", "bug", "istari:new", "istari:ready")
@@ -212,6 +219,7 @@ func TestSetStateLeavesExactlyOneStateLabel(t *testing.T) {
 }
 
 func TestDoneClosesAsCompletedAndCanceledAsNotPlanned(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	done := fake.Seed("a", "", "alex", "istari:awaiting_approval")
 	canceled := fake.Seed("b", "", "alex", "istari:in_progress")
@@ -237,6 +245,7 @@ func TestDoneClosesAsCompletedAndCanceledAsNotPlanned(t *testing.T) {
 }
 
 func TestAHoldLabelComesAndGoesWithoutTouchingTheStateLabel(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	n := fake.Seed("t", "", "alex", "istari:in_review")
 	if err := p.SetState(ctx, ref(n), tickets.State{State: core.TicketInReview, Hold: "needs_input"}); err != nil {
@@ -254,6 +263,7 @@ func TestAHoldLabelComesAndGoesWithoutTouchingTheStateLabel(t *testing.T) {
 }
 
 func TestListFiltersByLabelsAcrossPagesAndSkipsPullRequests(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	fake.SetPageSize(2)
 	for range 5 {
@@ -277,6 +287,7 @@ func TestListFiltersByLabelsAcrossPagesAndSkipsPullRequests(t *testing.T) {
 }
 
 func TestCommentAndLink(t *testing.T) {
+	t.Parallel()
 	p, fake := newProvider(t)
 	parent := fake.Seed("parent", "", "alex", "istari:in_progress")
 	child := fake.Seed("child", "", "alex", "istari:new")
@@ -302,6 +313,7 @@ func TestCommentAndLink(t *testing.T) {
 }
 
 func TestAWrongTokenIsAnError(t *testing.T) {
+	t.Parallel()
 	fake := githubtest.New(t)
 	p := github.New(github.Options{BaseURL: fake.URL, Token: "wrong"})
 	if _, err := p.Get(ctx, ref(1)); err == nil || errors.Is(err, tickets.ErrNotFound) {
@@ -310,6 +322,7 @@ func TestAWrongTokenIsAnError(t *testing.T) {
 }
 
 func TestOnlyIstarisOwnCommentsAreOwnEvenWithTheMarkCopied(t *testing.T) {
+	t.Parallel()
 	gh := githubtest.New(t)
 	p := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
 	n := gh.Seed("Cache", "## Context\n", "bob")

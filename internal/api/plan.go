@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -35,10 +36,10 @@ func (s *Server) createPlan(ctx context.Context, r TicketPlanRequest) (map[strin
 	if repo == "" {
 		repo = s.firstRepo
 	}
-	if !s.repos[strings.ToLower(repo)] {
-		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: repo + " is no repository istari syncs: add it with istari repo add"}
-	}
 	r.Plan.Repo = repo
+	if err := s.synced(r.Plan); err != nil {
+		return nil, err
+	}
 	refs, err := tickets.CreatePlan(withoutKey(ctx), s.tracker, r.Plan, repo)
 	if err != nil {
 		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
@@ -63,6 +64,23 @@ func (s *Server) createPlan(ctx context.Context, r TicketPlanRequest) (map[strin
 		log.Printf("istari: plan %v: mirroring: %v; the next sync repairs it", out, err)
 	}
 	return out, nil
+}
+
+// synced refuses a plan with a ticket in a repository istari does not sync:
+// the plan's own, or one a ticket names (spec 4.4).
+func (s *Server) synced(p tickets.Plan) error {
+	repos := []string{p.Repo}
+	for _, pt := range p.Tickets {
+		if pt.Repo != "" {
+			repos = append(repos, pt.Repo)
+		}
+	}
+	for _, repo := range repos {
+		if !s.repos[strings.ToLower(repo)] {
+			return &core.Error{Code: core.CodeInvalidTicket, Message: repo + " is no repository istari syncs: add it with istari repo add"}
+		}
+	}
+	return nil
 }
 
 // planAgain answers a repeated plan from the event of its first time.
@@ -103,6 +121,9 @@ func (s *Server) submitPlan(ctx context.Context, r PlanSubmitRequest) (any, erro
 	}
 	answer, err := s.applyPlan(ctx, run, r.Plan)
 	if err != nil {
+		if errors.Is(err, runner.ErrChildStandard) {
+			return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+		}
 		return nil, s.rejectOrYield(ctx, run, err)
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
@@ -136,6 +157,11 @@ func (s *Server) applyPlan(ctx context.Context, run runner.Run, raw string) (Pla
 	}
 	answer := PlanAnswer{Size: res.Size}
 	if res.Split != nil && len(res.Split.Tickets) > 0 {
+		split := *res.Split
+		split.Repo = ref.Repo
+		if err := s.synced(split); err != nil {
+			return PlanAnswer{}, err
+		}
 		// The split goes first: if it fails, the journal has no plan for it.
 		if answer.Children, err = s.plans.Split(withoutKey(ctx), run, *res.Split); err != nil {
 			return PlanAnswer{}, err

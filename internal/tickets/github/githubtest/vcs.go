@@ -16,6 +16,11 @@ import (
 // Check is one check run of a commit.
 type Check struct {
 	Name, Status, Conclusion string // status: queued, in_progress, completed
+	// Log is the log of the check's Actions job; "" serves none (404), as
+	// GitHub does for a check that is no Actions job or whose log expired.
+	Log string
+
+	id int64
 }
 
 // Review is one review of a pull request.
@@ -69,7 +74,26 @@ func (s *Server) SetMergeable(n int, mergeable *bool, state string) {
 func (s *Server) SetChecks(sha string, checks ...Check) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for i := range checks {
+		s.nextID++
+		checks[i].id = s.nextID
+	}
 	s.checks[sha] = checks
+}
+
+// jobLogs serves an Actions job's log as plain text; a check run's id is its
+// job's id, as on GitHub.
+func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
+	for _, checks := range s.checks {
+		for _, c := range checks {
+			if strconv.FormatInt(c.id, 10) == r.PathValue("id") && c.Log != "" {
+				w.Header().Set("Content-Type", "text/plain")
+				w.Write([]byte(c.Log))
+				return
+			}
+		}
+	}
+	s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
 }
 
 // AddReview adds a review to a pull request.
@@ -233,7 +257,8 @@ func (s *Server) updatePull(w http.ResponseWriter, r *http.Request) {
 func (s *Server) checkRuns(w http.ResponseWriter, r *http.Request) {
 	var runs []map[string]any
 	for _, c := range s.checks[r.PathValue("sha")] {
-		runs = append(runs, map[string]any{"name": c.Name, "status": c.Status, "conclusion": c.Conclusion})
+		runs = append(runs, map[string]any{"id": c.id, "name": c.Name, "status": c.Status, "conclusion": c.Conclusion,
+			"html_url": fmt.Sprintf("https://github.com/%s/runs/%d", Repo, c.id)})
 	}
 	if runs == nil {
 		runs = []map[string]any{}

@@ -108,16 +108,22 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		mux:     http.NewServeMux(),
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
+	// One journal for the syncer, the runner and the watcher, so a ticket's
+	// entries keep one order in the tracker and in istari's log. It writes to
+	// the tracker when it can, else to istari's log.
+	var jt journal.Tracker
+	if t, ok := opts.Tracker.(journal.Tracker); ok {
+		jt = t
+	}
+	j := journal.New(jt, ns, opts.Clock)
 	if opts.Tracker != nil {
-		var jt journal.Tracker
-		if t, ok := opts.Tracker.(journal.Tracker); ok {
-			jt = t
-		}
-		j := journal.New(jt, ns, opts.Clock)
 		note := func(ctx context.Context, ref tickets.Ref, text string) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
 		}
-		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Merged: srv.merged})
+		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
+			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
+		}
+		srv.syncer = tickets.NewSyncer(opts.Tracker, srv.tickets, ns, opts.Repos, tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged})
 	}
 	srv.tracker = opts.Tracker
 	if len(opts.Repos) > 0 {
@@ -131,17 +137,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		ws := opts.Workspaces
 		ws.Clock = opts.Clock
 		srv.spaces = runner.NewWorkspaces(ns, ws)
-		// The journal writes to the tracker when it can, else to istari's log.
-		var jt journal.Tracker
-		if t, ok := opts.Tracker.(journal.Tracker); ok {
-			jt = t
-		}
 		var tokens vcs.Tokens
 		if opts.VCS != nil {
 			tokens = opts.VCS.Tokens()
 		}
-		// One journal, so a run's notes and its checkpoints keep one order.
-		j := journal.New(jt, ns, opts.Clock)
 		srv.saves = runner.NewCheckpoints(srv.spaces, j, tokens)
 		if len(opts.Runner.Slots) > 0 {
 			ro := opts.Runner
@@ -158,7 +157,8 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	}
 	if opts.VCS != nil {
 		srv.vcs = opts.VCS
-		srv.watch = vcs.NewWatcher(opts.VCS, ns, opts.Clock)
+		// A red head's CI failure entry reaches the rework brief (spec 4.3).
+		srv.watch = vcs.NewWatcher(opts.VCS, ns, vcs.WatcherOptions{Clock: opts.Clock, Journal: j})
 	}
 	if pt, ok := opts.Tracker.(runner.PendingTracker); ok {
 		po := runner.PendingOptions{Tracker: pt, Clock: opts.Clock}
@@ -236,11 +236,8 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 			return opts.VCS.MarkReady(ctx, pr.Repo, pr.Number)
 		}
 	}
-	var jt journal.Tracker // the engine's notes go to the ticket when the tracker takes comments
-	if t, ok := opts.Tracker.(journal.Tracker); ok {
-		jt = t
-	}
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: journal.New(jt, ns, opts.Clock)})
+	// The engine's notes go to the ticket when the tracker takes comments.
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
