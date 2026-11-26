@@ -13,6 +13,7 @@ self_review = true
 typecheck = "go vet ./..."
 test      = "go test -short {dirs}"          # a checkpoint runs the packages whose tests the slice changed (#145); full runs before istari pr open
 full      = "go test ./..."
+lint      = { run = "golangci-lint run --new-from-rev=origin/main ./...", at = ["pr"] }   # only what the branch adds; #228 clears main and adds .golangci.yml
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
 
 [merge]
