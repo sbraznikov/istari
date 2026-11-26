@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1152 442" width="1152" height="442" role="img" aria-label="A ticket moves from new through ready, planning, in_progress, in_review and awaiting_approval to done; from review and approval it can return to in_progress for rework">
+<title>A ticket moves from new through ready, planning, in_progress, in_review and awaiting_approval to done; from review and approval it can return to in_progress for rework</title>
+<style>
+.bg{fill:#ffffff}
+.bx{fill:#f3f5f2;stroke:#c9d1cc;stroke-width:1.5}
+.bx-a{fill:#dcecea;stroke:#0d6b68;stroke-width:1.5}
+.bx-h{fill:#f5ead2;stroke:#a9770f;stroke-width:1.5}
+.bx-d{fill:none;stroke:#5d6b67;stroke-width:1.3;stroke-dasharray:5 4}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1b2422}
+.nm{font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.tt{font-weight:600;font-size:12.5px}
+.sb{font-size:11.5px;fill:#5d6b67}
+.wa{font:600 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#0d6b68}
+.wh{font:600 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#a9770f}
+.wc{font:500 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#5d6b67}
+.lb{font-size:11.5px}
+.ar{fill:none;stroke:#1b2422;stroke-width:1.4}
+.ab{fill:none;stroke:#7f8c88;stroke-width:1.4}
+</style>
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1b2422"/></marker>
+<marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7f8c88"/></marker>
+</defs>
+<rect class="bg" x="-16" y="-16" width="1152" height="442" rx="8"/>
+<text class="lb" x="160" y="36" text-anchor="middle">T2 · meets the standard,</text>
+<text class="lb" x="160" y="51" text-anchor="middle">admitted</text>
+<text class="lb" x="320" y="36" text-anchor="middle">T3 · free slot,</text>
+<text class="lb" x="320" y="51" text-anchor="middle">needs done</text>
+<text class="lb" x="480" y="36" text-anchor="middle">T4 · plan accepted,</text>
+<text class="lb" x="480" y="51" text-anchor="middle">change zone free</text>
+<text class="lb" x="640" y="36" text-anchor="middle">T6 · pull request open,</text>
+<text class="lb" x="640" y="51" text-anchor="middle">CI green</text>
+<text class="lb" x="800" y="51" text-anchor="middle">T8 · no findings</text>
+<text class="lb" x="960" y="36" text-anchor="middle">T11 · approved,</text>
+<text class="lb" x="960" y="51" text-anchor="middle">merged</text>
+<rect class="bx-a" x="12" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="80" y="94" text-anchor="middle">new</text>
+<text class="sb" x="80" y="114" text-anchor="middle">standard check</text>
+<text class="wa" x="80" y="138" text-anchor="middle">refiner</text>
+<path class="ar" d="M149,112 H171" marker-end="url(#a)"/>
+<rect class="bx" x="172" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="240" y="94" text-anchor="middle">ready</text>
+<text class="sb" x="240" y="114" text-anchor="middle">waits for a free slot</text>
+<text class="wc" x="240" y="138" text-anchor="middle">queue</text>
+<path class="ar" d="M309,112 H331" marker-end="url(#a)"/>
+<rect class="bx-a" x="332" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="400" y="94" text-anchor="middle">planning</text>
+<text class="sb" x="400" y="114" text-anchor="middle">technical plan</text>
+<text class="wa" x="400" y="138" text-anchor="middle">planner</text>
+<path class="ar" d="M469,112 H491" marker-end="url(#a)"/>
+<rect class="bx-a" x="492" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="560" y="94" text-anchor="middle">in_progress</text>
+<text class="sb" x="560" y="114" text-anchor="middle">code, tests, CI</text>
+<text class="wa" x="560" y="138" text-anchor="middle">implementer</text>
+<path class="ar" d="M629,112 H651" marker-end="url(#a)"/>
+<rect class="bx-a" x="652" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="720" y="94" text-anchor="middle">in_review</text>
+<text class="sb" x="720" y="114" text-anchor="middle">pull request review</text>
+<text class="wa" x="720" y="138" text-anchor="middle">reviewer</text>
+<path class="ar" d="M789,112 H811" marker-end="url(#a)"/>
+<rect class="bx-h" x="812" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="880" y="94" text-anchor="middle">awaiting_approval</text>
+<text class="sb" x="880" y="114" text-anchor="middle">approval and merge</text>
+<text class="wh" x="880" y="138" text-anchor="middle">human</text>
+<path class="ar" d="M949,112 H971" marker-end="url(#a)"/>
+<rect class="bx" x="972" y="70" width="136" height="84" rx="5"/>
+<text class="nm" x="1040" y="94" text-anchor="middle">done</text>
+<text class="sb" x="1040" y="114" text-anchor="middle">merged, ticket closed</text>
+<text class="wc" x="1040" y="138" text-anchor="middle">end</text>
+<path class="ab" d="M720,154 V198 H572 V156" marker-end="url(#b)"/>
+<path class="ab" d="M880,154 V238 H548 V156" marker-end="url(#b)"/>
+<text class="lb" x="646" y="192" text-anchor="middle">T7 · findings</text>
+<text class="lb" x="714" y="232" text-anchor="middle">T9 · human requests changes · T10 · conflict with main</text>
+<path class="ab" d="M400,154 V305 H439" marker-end="url(#b)"/>
+<text class="lb" x="392" y="252" text-anchor="end">T5 · larger than</text>
+<text class="lb" x="392" y="267" text-anchor="end">max_size: split</text>
+<rect class="bx-d" x="440" y="282" width="210" height="46" rx="5"/>
+<text class="tt" x="545" y="301" text-anchor="middle">child tickets</text>
+<text class="sb" x="545" y="318" text-anchor="middle">each starts at new</text>
+<path class="ab" d="M650,305 H1040 V156" marker-end="url(#b)"/>
+<text class="lb" x="845" y="299" text-anchor="middle">T12 · all children done</text>
+<rect class="bx-h" x="12" y="358" width="136" height="44" rx="5"/>
+<text class="nm" x="80" y="385" text-anchor="middle">canceled</text>
+<text class="lb" x="164" y="376" text-anchor="start">T13 · a human cancels a ticket in any unfinished state: its runs are stopped, its pull request is closed.</text>
+<text class="lb" x="164" y="393" text-anchor="start">T14 · reopen returns it to new. There is no way back from done: a regression is a new ticket.</text>
+</svg>
