@@ -27,6 +27,26 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+  flaky:
+    # The tests a pull request adds or changes, twenty times in a row (#265):
+    # the last line of defense behind the checkpoint's flaky check.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: new and changed tests, twenty times
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          files=$(git diff --name-only --diff-filter=d "$base" HEAD -- '*_test.go')
+          BASE="$base" sh scripts/flaky.sh $files
+
   race:
     runs-on: ubuntu-latest
     steps:
