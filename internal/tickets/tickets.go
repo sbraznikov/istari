@@ -181,6 +181,11 @@ type Caps struct {
 var (
 	ErrNotFound       = errors.New("tickets: not found")
 	ErrNotImplemented = errors.New("tickets: not implemented by this provider yet")
+	// ErrUnavailable is a write the tracker or code host could not take
+	// because of its own trouble (a server error, a rate limit or a network
+	// error), still after the adapter's retries: the write is to be tried
+	// again later, not refused (spec section 5).
+	ErrUnavailable = errors.New("tickets: the tracker is unavailable")
 )
 
 // Provider is a ticket tracker (spec section 5: TicketProvider).

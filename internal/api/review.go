@@ -38,19 +38,26 @@ func (s *Server) submitReview(ctx context.Context, r ReviewSubmitRequest) (any, 
 		return nil, s.yieldReview(ctx, run, early)
 	}
 	if err != nil {
-		if _, rerr := s.runs.Reject(ctx, run.ID, err.Error()); rerr != nil {
-			return nil, rerr
-		}
-		return nil, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+		return nil, s.rejectOrYield(ctx, run, err)
 	}
-	if err := s.reviews.Record(ctx, run, checked); err != nil {
+	// Published before it is recorded: a review the code host cannot take
+	// leaves nothing behind, and the next run does it again (spec section 4.2).
+	err = s.publishReview(ctx, run.Ticket, checked)
+	if errors.Is(err, tickets.ErrUnavailable) {
+		return nil, s.rejectOrYield(ctx, run, err)
+	}
+	if err != nil {
+		log.Printf("istari: review of %s: publishing on the pull request: %v", run.Ticket, err)
+	}
+	err = s.reviews.Record(ctx, run, checked)
+	if errors.Is(err, tickets.ErrUnavailable) {
+		return nil, s.rejectOrYield(ctx, run, err)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if _, err := s.runs.Accept(ctx, run.ID); err != nil {
 		return nil, err
-	}
-	if err := s.publishReview(ctx, run.Ticket, checked); err != nil {
-		log.Printf("istari: review of %s: publishing on the pull request: %v", run.Ticket, err)
 	}
 	return ReviewAnswer{Accepted: len(checked.Accepted), Dropped: len(checked.Dropped)}, nil
 }
