@@ -15,15 +15,42 @@ tests() {
 	sed -n 's/^func \(Test[A-Za-z0-9_]*\)([A-Za-z0-9_]* \*testing\.T).*/\1/p' "$1"
 }
 
+# changed prints the names of the Test functions of a Go test file that hold
+# a line changed since base: a line the diff adds, or the line a removal
+# follows. A change outside a Test function, in a helper, counts for none.
+changed() {
+	lines=$(git diff -U0 --no-color "$base" -- "$1" | awk '
+		/^@@ / {
+			split(substr($3, 2), a, ",")
+			n = (a[2] == "") ? 1 : a[2]
+			if (n == 0) printf "%d ", a[1]
+			for (i = 0; i < n; i++) printf "%d ", a[1] + i
+		}')
+	awk -v lines="$lines" '
+		BEGIN { n = split(lines, l, " "); for (i = 1; i <= n; i++) hit[l[i]] = 1 }
+		/^func / {
+			cur = ""
+			if ($0 ~ /^func Test[A-Za-z0-9_]*\([A-Za-z0-9_]* \*testing\.T\)/) {
+				cur = substr($0, 6)
+				sub(/\(.*/, "", cur)
+			}
+		}
+		(NR in hit) && cur != "" { found[cur] = 1 }
+		/^}/ { cur = "" }
+		END { for (name in found) print name }' "$1"
+}
+
 for file in "$@"; do
 	case $file in *_test.go) ;; *) continue ;; esac
 	[ -f "$file" ] || continue
 	file=${file#./}
 	dir=$(dirname "$file")
 	if git cat-file -e "$base:./$file" 2>/dev/null; then
-		continue
+		names=$(changed "$file")
+	else
+		names=$(tests "$file")
 	fi
-	for name in $(tests "$file"); do
+	for name in $names; do
 		printf '%s %s\n' "./${dir#./}" "$name" >>"$list"
 	done
 done

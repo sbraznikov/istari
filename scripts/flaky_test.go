@@ -99,3 +99,50 @@ func TestFlakyShNamesATestOfANewFileThatFailsOnItsFifthRun(t *testing.T) {
 		t.Errorf("the output does not name the test and its failing run:\n%s", out)
 	}
 }
+
+func TestFlakyShRunsOnlyTheTestsAChangedFileChanges(t *testing.T) {
+	t.Parallel()
+	r := newFlakyRepo(t)
+	r.write("p/p_test.go", `package p
+
+import "testing"
+
+func TestAlwaysFails(t *testing.T) {
+	t.Fatal("not changed, so not run")
+}
+
+func TestOK(t *testing.T) {
+	if Answer() != 42 {
+		t.Fatal("wrong answer")
+	}
+}
+`)
+	r.commit("base tests")
+	r.write("p/p_test.go", `package p
+
+import "testing"
+
+func TestAlwaysFails(t *testing.T) {
+	t.Fatal("not changed, so not run")
+}
+
+func TestOK(t *testing.T) {
+	if got := Answer(); got != 42 {
+		t.Fatalf("Answer() = %d, want 42", got)
+	}
+}
+`)
+	r.commit("TestOK changed")
+
+	out, code := r.flaky("p/p_test.go")
+
+	if code != 0 {
+		t.Fatalf("flaky.sh exited %d, though only TestOK changed:\n%s", code, out)
+	}
+	if !strings.Contains(out, "-run '^(TestOK)$' ./p") {
+		t.Errorf("the output does not show TestOK run alone:\n%s", out)
+	}
+	if strings.Contains(out, "TestAlwaysFails") {
+		t.Errorf("the unchanged TestAlwaysFails was run:\n%s", out)
+	}
+}
