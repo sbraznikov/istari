@@ -576,7 +576,9 @@ func limitStream(t *testing.T, text string) string {
 	line, _ := json.Marshal(map[string]any{"type": "assistant", "session_id": "s", "message": map[string]any{
 		"id": "m1", "content": []map[string]string{{"type": "text", "text": text}}}})
 	stream := filepath.Join(t.TempDir(), "stream.jsonl")
-	os.WriteFile(stream, append(line, '\n'), 0o644)
+	if err := os.WriteFile(stream, append(line, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return stream
 }
 
