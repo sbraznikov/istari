@@ -140,6 +140,8 @@ A single `istari` binary contains the daemon (`istari daemon`), the CLI and the 
 
 **Policy.** Checks who can do what: human roles, agent profile permissions, budgets.
 
+**Stepped loops (tests only).** A daemon of a test build (built with the `istaritest` tag) can run with stepped loops: `istari daemon --stepped`. The scheduler, the pipeline reconcile, the ticket sync and the PR watch then run no pass on their own timers, only one pass each time `POST /v1/step {"loop": "scheduler" | "pipeline" | "sync" | "watch"}` names them; the call answers when that pass has finished. The runner and the leases keep the real clock. A binary built without the tag refuses `--stepped`.
+
 ### 3.2 Stack
 
 The decision is **Go**:
