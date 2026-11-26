@@ -219,7 +219,7 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 	}
 	var changes []change
 	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
-	var failed error // a CI failure entry that could not be recorded; the event goes on regardless
+	var failed error                                        // a CI failure entry that could not be recorded; the event goes on regardless
 	if s.Checks != "" && !stale && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
 		t.Checks, t.SHA = s.Checks, s.HeadSHA
 		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})

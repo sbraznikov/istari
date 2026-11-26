@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/runner"
 )
 
@@ -44,13 +45,9 @@ func repoWithWorktree(t *testing.T) (main, worktree string) {
 	gitIn(t, root, "init", "-q", "-b", "main", main)
 	gitIn(t, main, "commit", "-q", "--allow-empty", "-m", "initial")
 	own := "#!/bin/sh\necho 'Reviewed-by: the repo hook' >> \"$1\"\n"
-	if err := os.WriteFile(filepath.Join(main, ".git", "hooks", "commit-msg"), []byte(own), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(main, ".git", "hooks", "commit-msg"), own)
 	pre := "#!/bin/sh\necho ran >> " + filepath.Join(root, "pre-commit.log") + "\n"
-	if err := os.WriteFile(filepath.Join(main, ".git", "hooks", "pre-commit"), []byte(pre), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(main, ".git", "hooks", "pre-commit"), pre)
 	gitIn(t, main, "worktree", "add", "-q", "-b", "istari/7/x", worktree)
 	return main, worktree
 }

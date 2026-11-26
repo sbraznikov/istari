@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
@@ -55,7 +56,9 @@ const splitAgent = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
 log=%[2]q
-[ "$ISTARI_ROLE" = planner ] || exit 1
+# Only the parent is planned here: its split child is admitted and handed
+# out too, and must not write to the log.
+[ "$ISTARI_ROLE" = planner ] && [ "$ISTARI_TICKET" = %[3]q ] || exit 1
 for size in "" "size: S"; do
   echo "--- submit" >> "$log"
   "$istari" plan submit --file - >> "$log" 2>&1 <<PLAN
@@ -101,12 +104,11 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
 	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
+	parentRef := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(splitAgent, binary, log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(splitAgent, binary, log, parentRef))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
@@ -141,12 +143,18 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 		var parent struct {
 			State string `json:"state"`
 		}
-		d.mustCLI(t, &parent, "ticket", "show", fmt.Sprintf("gh:%s#%d", githubtest.Repo, n))
-		var runs []struct {
+		d.mustCLI(t, &parent, "ticket", "show", parentRef)
+		var all, runs []struct {
+			Ticket   string `json:"ticket"`
 			State    string `json:"state"`
 			Rejected string `json:"rejected"`
 		}
-		d.mustCLI(t, &runs, "run", "list")
+		d.mustCLI(t, &all, "run", "list")
+		for _, r := range all {
+			if r.Ticket == parentRef { // the child's runs are not this test's
+				runs = append(runs, r)
+			}
+		}
 		if parent.State == "in_progress" && len(runs) == 1 && runs[0].State != "running" {
 			if runs[0].Rejected != "" {
 				t.Fatalf("the run = %+v, want it not rejected: the planner fixed the split in it", runs[0])
@@ -299,9 +307,7 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(longPlanner, binary, log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(longPlanner, binary, log))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {

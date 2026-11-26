@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strconv"
 	"strings"
@@ -72,8 +73,9 @@ type Engine struct {
 	tickets *core.Tickets
 	opts    EngineOptions
 
-	mu    sync.Mutex
-	cache map[string]cached
+	mu     sync.Mutex // the cache and the warnings already logged
+	cache  map[string]cached
+	warned map[string]bool
 
 	states map[string]core.TicketState // of this reconcile's tickets
 }
@@ -113,7 +115,22 @@ func (e *Engine) Load(ctx context.Context, repo string) (Pipeline, error) {
 	}
 	e.mu.Lock()
 	e.cache[repo] = cached{p: p, err: err, at: e.opts.Clock()}
+	var fresh []string
+	if err == nil {
+		if e.warned == nil {
+			e.warned = map[string]bool{}
+		}
+		for _, w := range p.Warnings() {
+			if key := repo + " " + w; !e.warned[key] {
+				e.warned[key] = true
+				fresh = append(fresh, w)
+			}
+		}
+	}
 	e.mu.Unlock()
+	for _, w := range fresh {
+		log.Printf("istari: pipeline of %s: %s", repo, w)
+	}
 	return p, err
 }
 
@@ -360,7 +377,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
 			return err
 		}
-		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, false, fmt.Sprintf("refine-%d", done+1)),Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
+		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, false, fmt.Sprintf("refine-%d", done+1)), Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
 		return err
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the

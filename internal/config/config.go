@@ -37,6 +37,16 @@ type GitHubApp struct {
 type Daemon struct {
 	DataDir           string `toml:"data_dir"`
 	MaxConcurrentRuns int    `toml:"max_concurrent_runs"`
+	// StopCheckpointTimeout limits the checkpoint a stopping run makes, as a
+	// Go duration (spec section 4.2); "": the runner's default.
+	StopCheckpointTimeout string `toml:"stop_checkpoint_timeout"`
+}
+
+// StopCheckpoint returns daemon.stop_checkpoint_timeout; 0 when it is absent.
+// Load has validated it.
+func (d Daemon) StopCheckpoint() time.Duration {
+	limit, _ := time.ParseDuration(d.StopCheckpointTimeout)
+	return limit
 }
 
 // Defaults apply to every project; .istari/pipeline.toml overrides them.
@@ -247,6 +257,11 @@ func (c *Config) validate() error {
 	}
 
 	positive("daemon.max_concurrent_runs", c.Daemon.MaxConcurrentRuns)
+	if s := c.Daemon.StopCheckpointTimeout; s != "" {
+		if limit, err := time.ParseDuration(s); err != nil || limit <= 0 {
+			fail("daemon.stop_checkpoint_timeout", "%q is not a positive duration such as \"15m\"", s)
+		}
+	}
 	positive("defaults.max_review_rounds", c.Defaults.MaxReviewRounds)
 	positive("defaults.max_attempts", c.Defaults.MaxAttempts)
 	oneOf("defaults.priority", c.Defaults.Priority, priorities)

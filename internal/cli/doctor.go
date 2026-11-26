@@ -90,9 +90,9 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 			// The repository the command runs in; outside one, its checks
 			// are skipped.
 			if root, ok := workingRoot(); ok {
-				// Its pipeline (spec 12).
+				// Its pipeline (spec 12): a warning does not count as failed.
 				if c, ok := pipelineCheck(root); ok {
-					if !c.OK {
+					if !c.OK && !c.Warn {
 						failed++
 					}
 					checks = append(checks, c)
@@ -228,6 +228,8 @@ func pipelineCheck(root string) (doctorCheck, bool) {
 	}
 	if err != nil {
 		c.OK, c.Detail = false, err.Error()
+	} else if w := p.Warnings(); len(w) > 0 {
+		c.OK, c.Warn, c.Detail = false, true, strings.Join(w, "; ")
 	}
 	return c, true
 }

@@ -172,6 +172,20 @@ func (s Stage) role() string {
 	return s.Role
 }
 
+// Warnings are what loads but is likely a mistake: a reviewer stage that
+// does not need verify. A review is submitted in in_review, which green CI
+// enters (spec 4.1); handed out earlier, the review is refused and costs no
+// attempt (spec 4.2), but its run is spent for nothing.
+func (p Pipeline) Warnings() []string {
+	var warnings []string
+	for _, s := range p.Stages {
+		if s.Kind == "" && s.Role == "reviewer" && !slices.Contains(s.Needs, StageVerify) {
+			warnings = append(warnings, fmt.Sprintf("%s: the reviewer stage does not need verify, so its review may start before CI is green; set needs = [\"implement\", \"verify\"]", s.at()))
+		}
+	}
+	return warnings
+}
+
 // Validate checks the stages: a name each, once; a known role or kind;
 // needs that name stages; no cycle.
 func (p Pipeline) Validate() error {

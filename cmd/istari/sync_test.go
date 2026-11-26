@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -29,9 +30,7 @@ func fakeGHAs(t *testing.T, token, login string) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\n[ \"$1 $2\" = \"auth token\" ] && echo %s\n[ \"$1 $2\" = \"api user\" ] && echo %s\nexit 0\n", token, login)
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(dir, "gh"), script)
 	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 

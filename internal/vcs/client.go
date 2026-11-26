@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -417,7 +418,7 @@ type PushSpec struct {
 	Private  string // istari's private bare repository the push is made from
 	Own      string // the ticket's branch
 	Target   string // the branch asked for
-	Force    bool   // with a lease on what istari last pushed or saw, or on a remote branch the pushed commit contains
+	Force    bool   // with a lease on what istari last pushed or saw, on its own push the remote took, or on a remote branch the pushed commit contains
 	Token    string
 }
 
@@ -427,9 +428,10 @@ type PushSpec struct {
 // made from it: istari fetches the commits into a private repository of its
 // own and pushes from there to the repository's URL, with no hooks and the
 // token in git's environment, not its arguments. A forced push leases on what
-// istari itself last pushed or saw, or on the remote branch as it is now when
-// the pushed commit already contains it, so work pushed by someone else is
-// never overwritten.
+// istari itself last pushed or saw, on its own push that was cut short after
+// the remote took it, or on the remote branch as it is now when the pushed
+// commit already contains it, so work pushed by someone else is never
+// overwritten.
 func Push(ctx context.Context, p PushSpec) error {
 	refuse := func(format string, args ...any) error {
 		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf(format, args...)}
@@ -437,20 +439,7 @@ func Push(ctx context.Context, p PushSpec) error {
 	if p.Target != p.Own {
 		return refuse("an agent pushes only to its ticket branch %s, not %s", p.Own, p.Target)
 	}
-	run := func(env []string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
-		cmd.Dir = p.Private
-		cmd.Env = append(cleanEnv(), env...)
-		out, err := cmd.CombinedOutput()
-		msg := strings.TrimSpace(string(out))
-		if p.Token != "" {
-			msg = strings.ReplaceAll(msg, p.Token, "***")
-		}
-		if err != nil {
-			return msg, refuse("git %s: %s", args[0], msg)
-		}
-		return msg, nil
-	}
+	run := func(env []string, args ...string) (string, error) { return pushGit(ctx, p, env, args...) }
 	if _, err := os.Stat(p.Private); err != nil {
 		if err := os.MkdirAll(p.Private, 0o700); err != nil {
 			return err
@@ -461,20 +450,24 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	work := "refs/istari/push/" + p.Own
 	seen := "refs/istari/seen/" + p.Own
+	// The last push's commit: when it is not the seen one, that push was cut
+	// short, and the remote may have taken it.
+	tried, _ := run(nil, "rev-parse", "--verify", "-q", work) // "" when nothing was pushed from here
 	if _, err := run(nil, "fetch", "-q", "--no-tags", p.Worktree, "+HEAD:"+work); err != nil {
 		return err
 	}
 	auth := authEnv(p.Token)
 	args := []string{"push", "--porcelain"}
 	if p.Force {
-		var current string
-		if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
-			current, _, _ = strings.Cut(out, "\t")
-		}
+		current, _ := RemoteHead(ctx, p) // "" when the branch is unknown or the remote does not answer
 		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
-		if err != nil {
+		switch {
+		case err != nil:
 			// Nothing pushed from here yet: lease on the branch as it is now.
 			expected = current
+		case tried != "" && tried != expected && current == tried:
+			// istari's own push, cut short after the remote took it.
+			expected = tried
 		}
 		if current != "" && current != expected {
 			// Someone else moved the branch. A commit that contains it
@@ -491,6 +484,38 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	_, err := run(nil, "update-ref", seen, work)
 	return err
+}
+
+// RemoteHead returns the commit of the ticket's branch on the remote, ""
+// when the remote has no such branch.
+func RemoteHead(ctx context.Context, p PushSpec) (string, error) {
+	out, err := pushGit(ctx, p, authEnv(p.Token), "ls-remote", p.URL, "refs/heads/"+p.Own)
+	if err != nil {
+		return "", err
+	}
+	head, _, _ := strings.Cut(out, "\t")
+	return head, nil
+}
+
+// pushGit runs git in istari's private repository of a push, without hooks
+// and with the token kept out of what it reports. When ctx ends, git ends
+// with the helpers it started (a remote helper, a local receive-pack).
+func pushGit(ctx context.Context, p PushSpec, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
+	cmd.Dir = p.Private
+	cmd.Env = append(cleanEnv(), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if p.Token != "" {
+		msg = strings.ReplaceAll(msg, p.Token, "***")
+	}
+	if err != nil {
+		return msg, &core.Error{Code: CodePushRefused, Message: fmt.Sprintf("git %s: %s", args[0], msg)}
+	}
+	return msg, nil
 }
 
 // authEnv gives git the token as a header through its environment.
