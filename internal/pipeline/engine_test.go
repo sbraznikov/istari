@@ -996,6 +996,22 @@ func TestACutShortResumeInAwaitingApprovalDoesNotMerge(t *testing.T) {
 	}
 }
 
+func TestACutShortResumeGetsItsMissingStagesAndMergesByIstari(t *testing.T) {
+	t.Parallel()
+	f := cutShortResume(t)
+	f.reconcile(t)
+	approve, merge := f.stage(t, ref, "approve"), f.stage(t, ref, "merge")
+	if pipeline.RoundOf(merge) != 1 || merge.State != core.TaskWaiting || len(merge.Needs) != 1 || merge.Needs[0] != approve.ID {
+		t.Fatalf("merge task = %+v, want round 1 waiting for %s", merge, approve.ID)
+	}
+	f.finish(t, ref, "approve", "human:alex")
+	f.finish(t, ref, "merge", "system")
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketDone {
+		t.Fatalf("after istari's merge the ticket is %s, want done (T11)", st)
+	}
+}
+
 // reports are the findings code accepted in the report of each review task.
 type reports map[string]int
 

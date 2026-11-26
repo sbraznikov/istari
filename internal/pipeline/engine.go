@@ -323,10 +323,15 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && r.n == 0 && r.others == 0 && len(tk.Children) == 0 {
+	gap, err := e.resumeGap(ctx, tk, r)
+	if err != nil {
+		return err
+	}
+	if gap {
 		// A ticket past planning without tasks was recovered from the
-		// tracker (istari recover): it gets the stages of its state on.
-		if err := e.expand(ctx, tk, 1, false, from); err != nil {
+		// tracker (istari recover): it gets the stages of its state on. A
+		// resume cut short between its creates gets the rest of them.
+		if err := e.expand(ctx, tk, 1, false, resumeFrom(tk.State)); err != nil {
 			return err
 		}
 		tasks, err := e.tasks.List(ctx)
@@ -472,6 +477,34 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 	}
 	return nil
+}
+
+// resumeGap tells whether a ticket past planning lacks a stage its state
+// resumes from (resumeFrom): it has no tasks at all, or only a first round
+// that a resume cut short. A first round that started at planning has every
+// stage, and tasks made by hand are their maker's.
+func (e *Engine) resumeGap(ctx context.Context, tk core.Ticket, r round) (bool, error) {
+	from := resumeFrom(tk.State)
+	if from == nil || r.others > 0 || len(tk.Children) > 0 || r.n > 1 || r.conflict {
+		return false, nil
+	}
+	if r.n == 0 {
+		return true, nil
+	}
+	ref, err := tickets.ParseRef(tk.Ref)
+	if err != nil {
+		return false, err
+	}
+	p, err := e.Load(ctx, ref.Repo)
+	if err != nil {
+		return false, err
+	}
+	for _, spec := range p.Expand(p.Settings(e.opts.Defaults)) {
+		if _, ok := r.tasks[spec.Stage]; from(spec) && !ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 const waitingDependency = "waiting_dependency"
