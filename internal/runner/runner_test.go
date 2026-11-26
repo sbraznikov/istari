@@ -840,6 +840,9 @@ func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
 	f.start(t)
 	s := f.session(t)
 	defer s.Stop(0)
+	if !renewedPastTheClaim(ctx, f, lease) {
+		t.Fatal("the preparation did not outlast the lease of the claim")
+	}
 	if s.spec.Env["ISTARI_TASK"] != task.ID || len(f.events(t, "task.expired")) != 0 {
 		t.Fatalf("the run of %s lost its lease while it was prepared: %d expirations", task.ID, len(f.events(t, "task.expired")))
 	}
