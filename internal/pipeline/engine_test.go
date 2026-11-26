@@ -18,7 +18,9 @@ import (
 	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 var ctx = context.Background()
@@ -774,6 +776,152 @@ func TestAReworkThatLeavesCIRedCountsAsARound(t *testing.T) {
 	}
 	if tk.Hold != "attempts_exhausted" {
 		t.Fatalf("after two rounds with CI red the ticket is %s, hold %q", tk.State, tk.Hold)
+	}
+}
+
+func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) {
+	t.Parallel()
+	ci := "failure"
+	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
+	var reruns int
+	rerun := func(context.Context, string) (bool, error) {
+		reruns++
+		ci = "" // the watch forgets the red result until it reads the rerun's
+		return reruns == 1, nil
+	}
+	defaults := config.Defaults{MaxReviewRounds: 1}
+	f := newEngine(t, defaults, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1") // it answered the red CI as unrelated
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if v := f.stage(t, ref, "verify"); v.State != core.TaskReady {
+		t.Fatalf("verify is %s, want still ready: it waits for the rerun", v.State)
+	}
+	ci = "success"
+	f.reconcile(t)
+	if tk, _ := f.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("after a green rerun with max_review_rounds 1 the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
+	t.Parallel()
+	checks := func(context.Context, string) (string, bool) { return "failure", true }
+	rerun := func(context.Context, string) (bool, error) { return false, nil } // already rerun, or not answered
+	f := newEngine(t, config.Defaults{}, nil)
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.finish(t, ref, "implement", "agent:implementer-1")
+	f.reconcile(t)
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+}
+
+// watchedPR is a ticket whose pull request the real watch follows over the
+// fake GitHub, its head abc123 with the checks given, and an engine wired to
+// the watch as the daemon wires it.
+type watchedPR struct {
+	*engineFixture
+	gh      *githubtest.Server
+	watch   *vcs.Watcher
+	journal *journal.Journal
+}
+
+func newWatchedPR(t *testing.T, defaults config.Defaults, checks ...githubtest.Check) *watchedPR {
+	t.Helper()
+	f := newEngine(t, defaults, nil)
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	j := journal.New(nil, f.store, nil)
+	w := vcs.NewWatcher(c, f.store, vcs.WatcherOptions{Journal: j})
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ref, Head: "istari/1/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Track(ctx, ref, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "abc123")
+	gh.SetChecks("abc123", checks...)
+	state := func(ctx context.Context, ref string) (string, bool) {
+		pr, err := w.PullRequestOf(ctx, ref)
+		return pr.Checks, err == nil && pr.Checks != ""
+	}
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: state, Rerun: w.Rerun})
+	return &watchedPR{engineFixture: f, gh: gh, watch: w, journal: j}
+}
+
+// answeredUnrelated takes the ticket to its first implementer, which sees
+// the red CI, answers it as not this change and completes.
+func (p *watchedPR) answeredUnrelated(t *testing.T) {
+	t.Helper()
+	p.readyTicket(t, ref)
+	p.reconcile(t)
+	p.finish(t, ref, "plan", "agent:planner-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	p.finish(t, ref, "implement", "agent:implementer-1")
+	p.reconcile(t)
+	if err := p.watch.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.reconcile(t)
+}
+
+func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
+func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
+	p.answeredUnrelated(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
+		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	}
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := p.journal.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, rerun bool
+	for _, e := range entries {
+		if e.Kind == journal.CI && e.CI.Commit == "abc123" {
+			first, rerun = first || !e.CI.Rerun, rerun || e.CI.Rerun
+		}
+	}
+	if !first || !rerun {
+		t.Fatalf("journal = %+v, want a ci entry of the first failure and one of the rerun", entries)
 	}
 }
 
