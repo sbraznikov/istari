@@ -343,8 +343,9 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 }
 
 // recordFailure appends a CI failure entry for the tracked head, once per
-// commit: the failed jobs' logs, or why they could not be read. It comes
-// before the vcs.checks event, so the rework brief has it.
+// commit and once more for its rerun: the failed jobs' logs, or why they
+// could not be read. It comes before the vcs.checks event, so the rework
+// brief has it.
 func (w *Watcher) recordFailure(ctx context.Context, t Tracked) error {
 	if w.journal == nil {
 		return nil
@@ -357,13 +358,14 @@ func (w *Watcher) recordFailure(ctx context.Context, t Tracked) error {
 	if err != nil {
 		return err
 	}
+	rerun := t.Rerun == t.SHA
 	for _, e := range entries {
-		if e.Kind == journal.CI && e.CI.Commit == t.SHA {
+		if e.Kind == journal.CI && e.CI.Commit == t.SHA && e.CI.Rerun == rerun {
 			return nil // recorded by an earlier poll whose event did not get through
 		}
 	}
 	f, err := w.client.FailureLog(ctx, t.Repo, t.SHA)
-	ci := &journal.CIEntry{Check: f.Check, Commit: t.SHA, URL: f.URL, Output: f.Output, Cut: f.Cut}
+	ci := &journal.CIEntry{Check: f.Check, Commit: t.SHA, URL: f.URL, Output: f.Output, Cut: f.Cut, Rerun: rerun}
 	if err != nil {
 		ci.Error = err.Error()
 	}

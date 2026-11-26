@@ -761,6 +761,35 @@ func TestARedHeadAnsweredUnrelatedIsRerunOnceAndItsNewResultRead(t *testing.T) {
 	}
 }
 
+func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
+	t.Parallel()
+	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "failure"})
+	mustPoll(t, w)
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || !started {
+		t.Fatalf("Rerun = %v, %v; want started", started, err)
+	}
+	mustPoll(t, w)
+	mustPoll(t, w) // the same red rerun: no third entry
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want the failure twice", got)
+	}
+	var cis []journal.Entry
+	for _, e := range storedEntries(t, j, ref) {
+		if e.Kind == journal.CI {
+			cis = append(cis, e)
+		}
+	}
+	if len(cis) != 2 || cis[0].CI.Rerun || !cis[1].CI.Rerun || cis[1].CI.Commit != "abc123" {
+		t.Fatalf("ci entries = %+v, want the first failure and the rerun's", cis)
+	}
+	if text := journal.Text(cis[1]); !strings.Contains(text, "the rerun failed too") {
+		t.Fatalf("rerun entry text = %s", text)
+	}
+}
+
 func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.T) {
 	t.Parallel()
 	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
