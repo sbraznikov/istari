@@ -24,8 +24,9 @@ func (h *humanMerge) tasks(t *testing.T) []task {
 }
 
 // returnedForConflict runs a watch pass and a pipeline pass and asserts the
-// ticket is then in_progress with a ready implement task, got there by
-// merge_failed (T10), and that the watch recorded the conflict.
+// ticket is then in_progress with an open implement task, got there by
+// merge_failed (T10), and that the watch recorded the conflict. The runner
+// is not stepped, so the implement task may already be claimed.
 func (h *humanMerge) returnedForConflict(t *testing.T) []task {
 	t.Helper()
 	h.d.step(t, "watch")
@@ -34,8 +35,8 @@ func (h *humanMerge) returnedForConflict(t *testing.T) []task {
 		t.Fatalf("the watch recorded %d conflicts, want 1", len(conflicts))
 	}
 	all := h.tasks(t)
-	if st := h.state(t); st != "in_progress" || !slices.ContainsFunc(all, func(tk task) bool { return tk.Role == "implementer" && tk.State == "ready" }) {
-		t.Fatalf("the ticket of a pull request in conflict is %s with %+v, want in_progress with a ready implement\n%s", st, all, h.d.stderr)
+	if st := h.state(t); st != "in_progress" || !slices.ContainsFunc(all, func(tk task) bool { return tk.Role == "implementer" && (tk.State == "ready" || tk.State == "claimed") }) {
+		t.Fatalf("the ticket of a pull request in conflict is %s with %+v, want in_progress with a ready or claimed implement\n%s", st, all, h.d.stderr)
 	}
 	if tr := h.lastTrigger(t); tr != "merge_failed" {
 		t.Fatalf("the ticket returned by %s, want merge_failed (T10)", tr)
