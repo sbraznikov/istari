@@ -33,18 +33,11 @@ func TestDoctorShowsTheLastHoursGitHubRequestsByKindAndTheQuotaLeft(t *testing.T
 		t.Fatal(err)
 	}
 	ghDir, _, _ := strings.Cut(fakeGH(t, gh.Token), string(os.PathListSeparator))
-	d := startDaemonWithConfig(t, dataDir, config, "PATH="+ghDir+string(os.PathListSeparator)+"/usr/bin:/bin", "GITHUB_API_URL="+gh.URL)
+	d := startSteppedDaemon(t, dataDir, config, "PATH="+ghDir+string(os.PathListSeparator)+"/usr/bin:/bin", "GITHUB_API_URL="+gh.URL)
 
-	var row string
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		out, stderr, _ := d.cli(t, "doctor")
-		if row = githubRow(out + stderr); strings.Contains(row, "sync ") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("doctor shows no GitHub requests of the sync:\n%s%s\ndaemon: %s", out, stderr, d.stderr)
-		}
-	}
+	d.step(t, "sync")
+	out, stderr, _ := d.cli(t, "doctor")
+	row := githubRow(out + stderr)
 	for _, want := range []string{"sync ", "labels ", "4321 of 5000 left"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("github requests row lacks %q: %s", want, row)

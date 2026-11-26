@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,18 @@ func (s *Server) SetChecks(sha string, checks ...Check) {
 	s.checks[sha] = checks
 }
 
+// SetCheck sets the status and conclusion of a commit's check by name, as a
+// job of a running workflow finishes; the check keeps its id.
+func (s *Server) SetCheck(sha, name, status, conclusion string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.checks[sha] {
+		if c := &s.checks[sha][k]; c.Name == name {
+			c.Status, c.Conclusion = status, conclusion
+		}
+	}
+}
+
 // jobLogs serves an Actions job's log as plain text; a check run's id is its
 // job's id, as on GitHub.
 func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
@@ -100,13 +113,18 @@ func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // rerunJob reruns an Actions job: its check takes the conclusion of Rerun at
-// once, the fake has no queue.
+// once, the fake has no queue. Like GitHub it refuses while a check of the
+// same commit still runs, the fake's stand-in for the same workflow run.
 func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request) {
 	for _, checks := range s.checks {
 		for k := range checks {
 			c := &checks[k]
 			if strconv.FormatInt(c.id, 10) != r.PathValue("id") {
 				continue
+			}
+			if slices.ContainsFunc(checks, func(o Check) bool { return o.Status != "completed" }) {
+				s.write(w, http.StatusForbidden, map[string]string{"message": "The workflow run containing this job is already running"})
+				return
 			}
 			if c.Rerun == "" {
 				s.write(w, http.StatusForbidden, map[string]string{"message": "Unable to retry this workflow run because it was created over a month ago"})
