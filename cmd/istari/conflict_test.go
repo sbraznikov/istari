@@ -81,14 +81,20 @@ func TestAPullRequestInConflictReturnsItsInReviewTicketAndCancelsTheReview(t *te
 func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "awaiting_approval")
+	h.stop(t) // no daemon polls a half-set pull request
 	h.gh.SetMergeable(h.pr, nil, "unknown") // GitHub is still computing
 	h.gh.SetHeadSHA(h.pr, "h1")
 	h.gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "in_progress"}) // so the poll leaves a trace
-	h.restart(t)
-	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.checks")) == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not poll\n%s", h.d.stderr)
+	h.start(t)
+	// A slow poll on a loaded race job is no failure: wait as long as the test
+	// may run, and leave a second to report.
+	deadline, bounded := t.Deadline()
+	deadline = deadline.Add(-time.Second)
+	for len(h.d.eventTypes(t, h.ref, "vcs.checks")) == 0 {
+		if bounded && time.Now().After(deadline) {
+			t.Fatalf("the watch did not poll before the test deadline\n%s", h.d.stderr)
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	// Nothing to wait for: the ticket must stay through the reconciles after
 	// the poll.

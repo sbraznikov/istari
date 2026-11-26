@@ -273,10 +273,24 @@ func (h *humanMerge) state(t *testing.T) string {
 // restart stops the daemon and starts it again: its PR watch polls at once.
 func (h *humanMerge) restart(t *testing.T) {
 	t.Helper()
+	h.stop(t)
+	h.start(t)
+}
+
+// stop stops the daemon and waits until it has exited: nothing polls the
+// pull request until start.
+func (h *humanMerge) stop(t *testing.T) {
+	t.Helper()
 	if err := h.d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	h.d.cmd.Wait()
+}
+
+// start starts a new daemon on the same data directory: its PR watch polls at
+// once.
+func (h *humanMerge) start(t *testing.T) {
+	t.Helper()
 	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
 }
 
