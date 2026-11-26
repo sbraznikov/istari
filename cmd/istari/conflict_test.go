@@ -87,17 +87,17 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	h.restart(t)
 	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.checks")) == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not poll\n%s", h.d.stderr)
+			t.Fatalf("the watch did not poll\n%s", h.evidence(t))
 		}
 	}
 	// Nothing to wait for: the ticket must stay through the reconciles after
 	// the poll.
 	for until := time.Now().Add(time.Second); time.Now().Before(until); time.Sleep(100 * time.Millisecond) {
 		if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 0 {
-			t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
+			t.Fatalf("an unknown mergeable recorded %d conflicts\n%s", len(conflicts), h.evidence(t))
 		}
 		if st := h.state(t); st != "awaiting_approval" {
-			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval", st)
+			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval\n%s", st, h.evidence(t))
 		}
 	}
 }

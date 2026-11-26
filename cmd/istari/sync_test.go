@@ -224,6 +224,7 @@ type humanMerge struct {
 	env       []string
 	issue, pr int
 	ref       string
+	stopped   string // the stderr of the daemons restart stopped
 }
 
 func newHumanMerge(t *testing.T) *humanMerge {
@@ -272,7 +273,17 @@ func (h *humanMerge) state(t *testing.T) string {
 // restart stops the daemon and starts it again: its PR watch polls at once.
 func (h *humanMerge) restart(t *testing.T) {
 	t.Helper()
-	h.d = restartDaemon(t, h.d, h.dataDir, h.config, h.env...)
+	old := h.d
+	h.d = restartDaemon(t, old, h.dataDir, h.config, h.env...)
+	h.stopped += old.stderr.String()
+}
+
+// evidence is what a failed check prints: the ticket's events and the
+// stderr of every daemon the test ran.
+func (h *humanMerge) evidence(t *testing.T) string {
+	t.Helper()
+	events, stderr, _ := h.d.cli(t, "tail", "--ticket", h.ref)
+	return fmt.Sprintf("events:\n%s%s\ndaemon stderr:\n%s%s", events, stderr, h.stopped, h.d.stderr.String())
 }
 
 // finished asserts the ticket ended in done the way istari's own merge ends
@@ -323,12 +334,12 @@ func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
 	h.restart(t)
 	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.closed")) == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not record the close\n%s", h.d.stderr)
+			t.Fatalf("the watch did not record the close\n%s", h.evidence(t))
 		}
 	}
 	h.d.mustCLI(t, nil, "sync")
 	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval\n%s", st, h.evidence(t))
 	}
 }
 
