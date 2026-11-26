@@ -63,6 +63,7 @@ type Server struct {
 	changed   *notifier
 	clock     func() time.Time
 	keys      keyLocks
+	steps     steps
 	closing   chan struct{}
 	once      sync.Once
 	mux       *http.ServeMux
@@ -93,6 +94,9 @@ type ServerOptions struct {
 	// watch wait while its quota is low, and istari doctor reads its counts
 	// (#208). nil: neither waits, and there are no counts.
 	GitHub *ratelimit.Transport
+	// Stepped serves POST /v1/step, one pass of a loop per request; only a
+	// daemon of a test build sets it (spec section 3.1).
+	Stepped bool
 }
 
 // NewServer returns the API on top of a store. Every append made through the
@@ -268,6 +272,9 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	for name, op := range srv.ops {
 		srv.mux.HandleFunc("POST /v1/"+name, srv.handle(name, op))
 	}
+	if opts.Stepped {
+		srv.mux.HandleFunc("POST /v1/step", srv.stepHandler())
+	}
 	return srv
 }
 
@@ -295,28 +302,34 @@ func (s *Server) RunWorkspaces(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		changed := s.changed.wait()
-		// The pipeline first: a ticket it starts gets its worktree at once.
-		all, err := s.tickets.List(ctx)
-		if err == nil {
-			err = s.engine.Reconcile(ctx, s.configured(all))
-		}
-		if err != nil && ctx.Err() == nil {
-			log.Printf("istari: pipeline: %v", err)
-		}
-		if s.spaces != nil {
-			all, err := s.tickets.List(ctx)
-			if err == nil {
-				err = s.spaces.Reconcile(ctx, s.configured(all))
-			}
-			if err != nil && ctx.Err() == nil {
-				log.Printf("istari: workspaces: %v", err)
-			}
-		}
+		s.reconcile(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-changed:
 		case <-ticker.C:
+		}
+	}
+}
+
+// reconcile is one pass of RunWorkspaces: the pipeline first, so a ticket it
+// starts gets its worktree at once, then the worktrees. Errors are logged;
+// the next pass repairs them.
+func (s *Server) reconcile(ctx context.Context) {
+	all, err := s.tickets.List(ctx)
+	if err == nil {
+		err = s.engine.Reconcile(ctx, s.configured(all))
+	}
+	if err != nil && ctx.Err() == nil {
+		log.Printf("istari: pipeline: %v", err)
+	}
+	if s.spaces != nil {
+		all, err := s.tickets.List(ctx)
+		if err == nil {
+			err = s.spaces.Reconcile(ctx, s.configured(all))
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Printf("istari: workspaces: %v", err)
 		}
 	}
 }

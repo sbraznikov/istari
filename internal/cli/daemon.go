@@ -80,6 +80,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				daemonOpts.Runner.Tickets = daemonOpts.Tracker // the ticket text of the brief
 			}
 			daemonOpts.Defaults = cfg.Defaults
+			daemonOpts.Stepped = stepped
 			if paused {
 				if opts.Actor == "" {
 					return usageError{errors.New("--paused records the pause in the name of --actor: pass a non-empty --actor")}
