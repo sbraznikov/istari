@@ -81,7 +81,8 @@ func TestAPullRequestInConflictReturnsItsInReviewTicketAndCancelsTheReview(t *te
 func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "awaiting_approval")
-	h.stop(t) // no daemon polls a half-set pull request
+	// No daemon polls a half-set pull request.
+	h.stop(t)
 	h.gh.SetMergeable(h.pr, nil, "unknown") // GitHub is still computing
 	h.gh.SetHeadSHA(h.pr, "h1")
 	h.gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "in_progress"}) // so the poll leaves a trace
