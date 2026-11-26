@@ -28,9 +28,13 @@ type Files interface {
 type RerunOutcome int
 
 const (
-	RerunNone    RerunOutcome = iota // nothing rerun: the rework round starts
-	RerunStarted                     // the failed jobs run again: verify waits
-	RerunSpent                       // answered again after its one rerun: a human decides
+	// RerunNone is no rerun: the rework round starts.
+	RerunNone RerunOutcome = iota
+	// RerunStarted is a rerun of the failed jobs: verify waits for its result.
+	RerunStarted
+	// RerunSpent is a head answered unrelated again after its one rerun or
+	// refusal: it opens no second round, the ticket waits for a human (spec 4.3).
+	RerunSpent
 )
 
 // EngineOptions configures an Engine.
