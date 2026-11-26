@@ -88,6 +88,18 @@ func (c *Client) RerunFailed(ctx context.Context, repo, sha string) ([]string, e
 	return jobs, errors.Join(errs...)
 }
 
+// failedChecks names the failed check runs of a commit.
+func (c *Client) failedChecks(ctx context.Context, repo, sha string) ([]string, error) {
+	runs, err := c.checkRuns(ctx, repo, sha)
+	var names []string
+	for _, r := range runs {
+		if r.state() == "failure" {
+			names = append(names, r.Name)
+		}
+	}
+	return names, err
+}
+
 // tail is the end of text in at most limit bytes, starting at a line when
 // one starts in it; cut tells whether anything was left out.
 func tail(text string, limit int) (end string, cut bool) {
