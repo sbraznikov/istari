@@ -104,8 +104,8 @@ type Runner struct {
 	opts    RunnerOptions
 
 	mu     sync.Mutex
-	active map[string]chan string   // run id → who asks it to stop
-	paused map[string]PausedSlot    // slot profile → its pause
+	active map[string]chan string  // run id → who asks it to stop
+	paused map[string]PausedSlot   // slot profile → its pause
 	limits map[string]harnessLimit // harness name → its usage-limit pause
 }
 
