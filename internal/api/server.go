@@ -212,8 +212,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
+	var rerun func(ctx context.Context, ref string) (bool, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
+		rerun = srv.watch.Rerun // red CI an implementer answered as unrelated (spec 4.3)
 		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if errors.Is(err, store.ErrNotFound) {
@@ -238,7 +240,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	// The engine's notes go to the ticket when the tracker takes comments.
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Rerun: rerun, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)

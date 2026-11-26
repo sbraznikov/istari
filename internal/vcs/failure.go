@@ -65,6 +65,29 @@ func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, err
 	return f, errors.Join(errs...)
 }
 
+// RerunFailed reruns the Actions job of each failed check run of a commit
+// through istari's own access (spec 4.3) and returns the names of the jobs
+// it reran. An error names each job GitHub refused to rerun.
+func (c *Client) RerunFailed(ctx context.Context, repo, sha string) ([]string, error) {
+	runs, err := c.checkRuns(ctx, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	var jobs []string
+	var errs []error
+	for _, r := range runs {
+		if r.state() != "failure" {
+			continue
+		}
+		if _, err := c.send(ctx, repo, http.MethodPost, fmt.Sprintf("%s/repos/%s/actions/jobs/%d/rerun", c.base, repo, r.ID), nil); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Name, err))
+			continue
+		}
+		jobs = append(jobs, r.Name)
+	}
+	return jobs, errors.Join(errs...)
+}
+
 // tail is the end of text in at most limit bytes, starting at a line when
 // one starts in it; cut tells whether anything was left out.
 func tail(text string, limit int) (end string, cut bool) {
