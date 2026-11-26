@@ -784,10 +784,13 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 	ci := "failure"
 	checks := func(context.Context, string) (string, bool) { return ci, ci != "" }
 	var reruns int
-	rerun := func(context.Context, string) (bool, error) {
+	rerun := func(context.Context, string) (pipeline.RerunOutcome, error) {
 		reruns++
 		ci = "" // the watch forgets the red result until it reads the rerun's
-		return reruns == 1, nil
+		if reruns == 1 {
+			return pipeline.RerunStarted, nil
+		}
+		return pipeline.RerunNone, nil
 	}
 	defaults := config.Defaults{MaxReviewRounds: 1}
 	f := newEngine(t, defaults, nil)
@@ -814,7 +817,7 @@ func TestARedCIThatIsRerunStartsNoRoundAndAGreenRerunGoesToReview(t *testing.T) 
 func TestARedCINotRerunStartsTheReworkRound(t *testing.T) {
 	t.Parallel()
 	checks := func(context.Context, string) (string, bool) { return "failure", true }
-	rerun := func(context.Context, string) (bool, error) { return false, nil } // already rerun, or not answered
+	rerun := func(context.Context, string) (pipeline.RerunOutcome, error) { return pipeline.RerunNone, nil } // not answered
 	f := newEngine(t, config.Defaults{}, nil)
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Checks: checks, Rerun: rerun})
 	f.readyTicket(t, ref)
@@ -858,7 +861,11 @@ func newWatchedPR(t *testing.T, defaults config.Defaults, checks ...githubtest.C
 		pr, err := w.PullRequestOf(ctx, ref)
 		return pr.Checks, err == nil && pr.Checks != ""
 	}
-	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: state, Rerun: w.Rerun})
+	rerun := func(ctx context.Context, ref string) (pipeline.RerunOutcome, error) {
+		o, err := w.Rerun(ctx, ref)
+		return map[vcs.RerunOutcome]pipeline.RerunOutcome{vcs.RerunNone: pipeline.RerunNone, vcs.RerunStarted: pipeline.RerunStarted, vcs.RerunSpent: pipeline.RerunSpent}[o], err
+	}
+	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: state, Rerun: rerun})
 	return &watchedPR{engineFixture: f, gh: gh, watch: w, journal: j}
 }
 

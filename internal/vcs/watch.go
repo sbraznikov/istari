@@ -233,59 +233,93 @@ func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
 	}
 }
 
+// RerunOutcome is what Rerun did with the pull request's red head.
+type RerunOutcome int
+
+const (
+	// RerunNone: no rerun started, because the head has no fresh unrelated
+	// answer or GitHub refused the rerun; the rework round starts.
+	RerunNone RerunOutcome = iota
+	// RerunStarted: the failed jobs run again; verify waits for their result.
+	RerunStarted
+	// RerunSpent: the head was answered unrelated again after it was rerun
+	// or its rerun was refused; no second round starts on it, the ticket
+	// waits for a human (spec 4.3).
+	RerunSpent
+)
+
 // Rerun reruns the failed jobs of the pull request's red head once, when an
-// implementer answered it as unrelated (spec 4.3); started is false when
-// there is no such answer or the head was rerun already. The checks istari
-// knew are forgotten, so the next poll reads the rerun's result, and a note
-// in the journal says what was rerun and why.
-func (w *Watcher) Rerun(ctx context.Context, ticket string) (started bool, err error) {
+// implementer answered it as unrelated (spec 4.3). The answer is used up by
+// the attempt: a rerun's red result opens the rework round. An answer on a
+// head that was rerun or refused already is spent. The checks istari knew
+// are forgotten when a rerun starts, so the next poll reads its result, and a
+// note in the journal says what was rerun and why, or why not.
+func (w *Watcher) Rerun(ctx context.Context, ticket string) (RerunOutcome, error) {
 	t, err := w.PullRequestOf(ctx, ticket)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		return RerunNone, nil
 	}
-	if err != nil || t.Checks != "failure" || t.Unrelated != t.SHA || t.Rerun == t.SHA {
-		return false, err
+	if err != nil || t.Checks != "failure" || t.Unrelated != t.SHA {
+		return RerunNone, err
 	}
-	head := t.SHA
+	head, reason := t.SHA, t.Reason
+	if t.Rerun == head {
+		if err := w.record(ctx, t, "vcs.rerun_spent", map[string]any{"number": t.Number, "sha": head, "reason": reason}, func(t *Tracked) {
+			t.Unrelated = "" // the answer holds the ticket once; a human goes on from there
+		}); err != nil {
+			return RerunNone, err
+		}
+		return RerunSpent, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` is not rerun again, and no further round starts: it was rerun, or could not be, already. The implementer says it is not this change: %s. A human decides how to go on.", head, reason))
+	}
 	jobs, rerr := w.client.RerunFailed(ctx, t.Repo, head)
-	started = len(jobs) > 0
-	raw, _ := json.Marshal(map[string]any{"number": t.Number, "sha": head, "jobs": jobs, "started": started})
-	for {
+	started := len(jobs) > 0
+	if err := w.record(ctx, t, "vcs.rerun", map[string]any{"number": t.Number, "sha": head, "jobs": jobs, "started": started}, func(t *Tracked) {
 		t.Rerun = head // GitHub has the rerun: it is recorded even when a poll came between
+		if t.Unrelated == head {
+			t.Unrelated = ""
+		}
 		if started && t.SHA == head {
 			t.Checks = ""
 		}
-		data, _ := json.Marshal(t)
-		_, err = w.store.Append(ctx, store.Event{Type: "vcs.rerun", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
-			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
-		if !errors.Is(err, store.ErrConflict) {
-			break
-		}
-		if t, err = w.PullRequestOf(ctx, ticket); err != nil {
-			return false, err
-		}
+	}); err != nil {
+		return RerunNone, err
 	}
-	if err != nil {
-		return false, err
+	if !started {
+		return RerunNone, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, reason))
 	}
-	return started, w.noteRerun(ctx, t, head, jobs, rerr)
+	text := fmt.Sprintf("CI on `%s` is rerun, once: %s. The implementer says it is not this change: %s", head, strings.Join(jobs, ", "), reason)
+	if rerr != nil {
+		text += fmt.Sprintf(". Not rerun: %v", rerr)
+	}
+	return RerunStarted, w.note(ctx, ticket, text)
 }
 
-// noteRerun records in the journal which jobs of the head were rerun and
-// why, or why none could be.
-func (w *Watcher) noteRerun(ctx context.Context, t Tracked, head string, jobs []string, rerr error) error {
+// record appends an event of the tracked pull request with change applied,
+// reading it again when a poll came between.
+func (w *Watcher) record(ctx context.Context, t Tracked, typ string, payload map[string]any, change func(*Tracked)) error {
+	raw, _ := json.Marshal(payload)
+	for {
+		change(&t)
+		data, _ := json.Marshal(t)
+		_, err := w.store.Append(ctx, store.Event{Type: typ, At: w.clock().UTC(), Actor: "system", Ticket: t.Ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: t.Ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+		if t, err = w.PullRequestOf(ctx, t.Ticket); err != nil {
+			return err
+		}
+	}
+}
+
+// note records a system note in the ticket's journal.
+func (w *Watcher) note(ctx context.Context, ticket, text string) error {
 	if w.journal == nil {
 		return nil
 	}
-	ref, err := tickets.ParseRef(t.Ticket)
+	ref, err := tickets.ParseRef(ticket)
 	if err != nil {
 		return err
-	}
-	text := fmt.Sprintf("CI on `%s` is rerun, once: %s. The implementer says it is not this change: %s", head, strings.Join(jobs, ", "), t.Reason)
-	if len(jobs) == 0 {
-		text = fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, t.Reason)
-	} else if rerr != nil {
-		text += fmt.Sprintf(". Not rerun: %v", rerr)
 	}
 	return w.journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
 }
