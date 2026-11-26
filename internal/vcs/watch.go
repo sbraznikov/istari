@@ -205,19 +205,21 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 }
 
 // ErrNotRed refuses an unrelated answer on a head whose CI istari last read
-// is not red: there is nothing to rerun.
+// is neither red nor still running: there is nothing to rerun.
 var ErrNotRed = errors.New("the CI istari last read is not red, there is nothing to rerun")
 
 // Unrelated records an implementer's answer that the red CI of the pull
-// request's head is not caused by the change (spec 4.3). It is refused while
-// the head istari knows is not red.
+// request's head is not caused by the change (spec 4.3). A head whose run
+// still runs may be answered too: one of its jobs may have failed already,
+// and the rerun waits until the run has finished. It is refused while the
+// head istari knows is green or has no CI.
 func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
 	for {
 		t, err := w.PullRequestOf(ctx, ticket)
 		if err != nil {
 			return err
 		}
-		if t.Checks != "failure" || t.SHA == "" {
+		if (t.Checks != "failure" && t.Checks != "pending") || t.SHA == "" {
 			return fmt.Errorf("vcs: the CI of %s's pull request: %w", ticket, ErrNotRed)
 		}
 		t.Unrelated, t.Reason = t.SHA, reason

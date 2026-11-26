@@ -899,6 +899,37 @@ func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *t
 	}
 }
 
+func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1},
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	p.answeredUnrelated(t)
+	if p.gh.Reruns() != 0 {
+		t.Fatalf("the fake saw %d reruns while race runs, want none", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("a pending head started round %d, want none", pipeline.RoundOf(impl))
+	}
+	p.gh.SetCheck("abc123", "race", "completed", "success")
+	for range 2 { // the first reads the head red and reruns, the second reads the rerun
+		if err := p.watch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p.reconcile(t)
+	}
+	if p.gh.Reruns() != 1 {
+		t.Fatalf("the fake saw %d reruns once the run finished, want 1", p.gh.Reruns())
+	}
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 1 {
+		t.Fatalf("the rerun started round %d, want none", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.State != core.TicketInReview || tk.Hold != "" {
+		t.Fatalf("the ticket is %s, hold %q; want in_review (T6)", tk.State, tk.Hold)
+	}
+}
+
 func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
 	t.Parallel()
 	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
