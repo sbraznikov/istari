@@ -996,6 +996,37 @@ func TestACutShortResumeInAwaitingApprovalDoesNotMerge(t *testing.T) {
 	}
 }
 
+// A round that started at planning is never refilled (resumeGap), so only
+// the T11 guard keeps a round cut short before its merge task from merging.
+func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
+	t.Parallel()
+	twin := newEngine(t, config.Defaults{}, nil)
+	twin.readyTicket(t, ref)
+	twin.reconcile(t)
+	f := newEngine(t, config.Defaults{}, nil)
+	if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := twin.tasks.List(ctx)
+	for _, task := range all {
+		if pipeline.StageOf(task) == pipeline.StageMerge {
+			continue
+		}
+		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: task.ID, Ticket: ref, Project: "web", Role: task.Role}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tr := range awaitingApproval {
+		if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: it has no merge task (T11)", st)
+	}
+}
+
 func TestACutShortResumeGetsItsMissingStagesAndMergesByIstari(t *testing.T) {
 	t.Parallel()
 	f := cutShortResume(t)
