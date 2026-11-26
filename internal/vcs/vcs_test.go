@@ -1020,6 +1020,28 @@ func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
 	}
 }
 
+func TestARedRerunIsReportedAnsweredRedOnce(t *testing.T) {
+	t.Parallel()
+	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
+	mustPoll(t, w)
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
+		t.Fatalf("Rerun of an unanswered red head = %v, %v; want none", got, err)
+	}
+	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+		t.Fatalf("Unrelated: %v", err)
+	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunStarted {
+		t.Fatalf("Rerun = %v, %v; want started", got, err)
+	}
+	mustPoll(t, w) // the rerun is red too
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunRed {
+		t.Fatalf("Rerun after the red rerun = %v, %v; want red, as answered", got, err)
+	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
+		t.Fatalf("Rerun again without a new answer = %v, %v; want none", got, err)
+	}
+}
+
 func TestAThirdUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T) {
 	t.Parallel()
 	gh, _, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
@@ -1028,8 +1050,8 @@ func TestAThirdUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T)
 		if err := w.Unrelated(ctx, ref.String(), reason); err != nil {
 			t.Fatalf("Unrelated %d: %v", i+1, err)
 		}
-		if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
-			t.Fatalf("Rerun %d refused by GitHub = %v, %v; want none started, so the round starts", i+1, got, err)
+		if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunRed {
+			t.Fatalf("Rerun %d refused by GitHub = %v, %v; want red as answered, so the unrelated round starts", i+1, got, err)
 		}
 	}
 	if err := w.Unrelated(ctx, ref.String(), "still flaky"); err != nil {

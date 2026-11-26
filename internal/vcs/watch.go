@@ -69,11 +69,13 @@ type Tracked struct {
 	// Unrelated is the red head an implementer answered as not caused by the
 	// change, with its Reason, until Rerun uses the answer up; Rerun is the
 	// head whose failed jobs istari reran or tried to, and Reruns how often,
-	// at most MaxReruns times per head (spec 4.3).
+	// at most MaxReruns times per head (spec 4.3); RedReruns is how many of
+	// those attempts Rerun reported RerunRed.
 	Unrelated string `json:"unrelated,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	Rerun     string `json:"rerun,omitempty"`
 	Reruns    int    `json:"reruns,omitempty"`
+	RedReruns int    `json:"red_reruns,omitempty"`
 
 	version int64
 }
@@ -251,20 +253,29 @@ func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
 
 // Rerun reruns the failed jobs of the pull request's red head, when an
 // implementer answered it as unrelated (spec 4.3), at most MaxReruns times
-// per head. The answer is used up by the attempt: a rerun's red result opens
-// the rework round. An answer on a head that was rerun or refused MaxReruns
-// times already is spent. The checks istari knew are forgotten when a rerun
-// starts, so the next poll reads its result, and a note in the journal says
-// what was rerun and why, or why not.
+// per head. The answer is used up by the attempt: a rerun's red result, or a
+// refused rerun, is reported RerunRed once and opens the unrelated round. An
+// answer on a head that was rerun or refused MaxReruns times already is
+// spent. The checks istari knew are forgotten when a rerun starts, so the
+// next poll reads its result, and a note in the journal says what was rerun
+// and why, or why not.
 func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, error) {
 	t, err := w.PullRequestOf(ctx, ticket)
 	if errors.Is(err, store.ErrNotFound) {
 		return core.RerunNone, nil
 	}
-	if err != nil || t.Checks != "failure" || t.Unrelated != t.SHA {
+	if err != nil || t.Checks != "failure" {
 		return core.RerunNone, err
 	}
 	head, reason := t.SHA, t.Reason
+	if t.Unrelated != head {
+		if n := t.rerunsOf(head); n > t.RedReruns {
+			return core.RerunRed, w.record(ctx, t, "vcs.rerun_red", map[string]any{"number": t.Number, "sha": head, "reruns": n}, func(t *Tracked) {
+				t.RedReruns = n
+			})
+		}
+		return core.RerunNone, nil
+	}
 	if n := t.rerunsOf(head); n >= MaxReruns {
 		return core.RerunSpent, w.spend(ctx, t, n)
 	}
@@ -272,7 +283,13 @@ func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, 
 	started := len(jobs) > 0
 	n := t.rerunsOf(head) + 1
 	if err := w.record(ctx, t, "vcs.rerun", map[string]any{"number": t.Number, "sha": head, "jobs": jobs, "started": started, "reruns": n}, func(t *Tracked) {
+		if t.Rerun != head {
+			t.RedReruns = 0 // the count of reds is of the head rerun
+		}
 		t.Rerun, t.Reruns = head, n // GitHub has the rerun: it is recorded even when a poll came between
+		if !started {
+			t.RedReruns = n // reported red below
+		}
 		if t.Unrelated == head {
 			t.Unrelated = ""
 		}
@@ -283,7 +300,7 @@ func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, 
 		return core.RerunNone, err
 	}
 	if !started {
-		return core.RerunNone, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, reason))
+		return core.RerunRed, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun (%d of %d), so the unrelated round starts: %v. The implementer said it is not this change: %s", head, n, MaxReruns, rerr, reason))
 	}
 	text := fmt.Sprintf("CI on `%s` is rerun (%d of %d): %s. The implementer says it is not this change: %s", head, n, MaxReruns, strings.Join(jobs, ", "), reason)
 	if rerr != nil {
