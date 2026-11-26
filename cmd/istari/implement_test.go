@@ -124,7 +124,10 @@ func findPull(gh *githubtest.Server) int {
 // implementerRuns returns the tasks of the implementer runs in the agent's log.
 func implementerRuns(t *testing.T, log string) []string {
 	t.Helper()
-	data, _ := os.ReadFile(log)
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("reading the agent log: %v", err)
+	}
 	var tasks []string
 	for line := range strings.Lines(string(data)) {
 		if task, ok := strings.CutPrefix(strings.TrimSpace(line), "implementer "); ok {
@@ -142,7 +145,10 @@ func TestAnImplementersCompleteWithoutAPullRequestIsRefusedAndItsTaskReleased(t 
 	implementer := "  if [ ! -e " + skipped + " ]; then touch " + skipped + "; echo x > feature.txt; \"$istari\" checkpoint \"The feature file; next the pull request\" >> \"$log\" 2>&1\n  else\n" + implementerOpens + "\n  fi"
 	d, gh, n, log := implementFixture(t, "test -f feature.txt", implementer)
 	waitFor(t, d, log, "pull request", func() bool { return findPull(gh) > 0 })
-	out, _ := os.ReadFile(log)
+	out, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("reading the agent log: %v", err)
+	}
 	if !strings.Contains(string(out), "no pull request") || !strings.Contains(string(out), "istari pr open") {
 		t.Fatalf("the complete without a pull request was not refused naming istari pr open:\n%s", out)
 	}

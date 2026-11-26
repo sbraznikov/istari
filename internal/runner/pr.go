@@ -194,7 +194,7 @@ func (p *PullRequests) Open(ctx context.Context, run Run, title, body string) (v
 			if err := p.ask(ctx, run, ref, question); err != nil {
 				return vcs.Opened{}, err
 			}
-			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s; %w: end your run, do not try again:\n%s", question, ErrMainRed, strings.Join(red, "\n\n"))
+			return vcs.Opened{}, fmt.Errorf("pr: the full checks fail, and %s:\n%s\n\nend your run, do not try again: %w", question, strings.Join(red, "\n\n"), ErrMainRed)
 		}
 		if err := record(fullRed); err != nil {
 			return vcs.Opened{}, err

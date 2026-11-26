@@ -72,12 +72,23 @@ func loggedPrFixture(t *testing.T, full string) (f *cpFixture, gh *githubtest.Se
 	return f, gh, prs, runs
 }
 
-func TestASecondPrOpenOnTheSameHeadAfterARedFullIsRefusedWithoutRunningAnyCheck(t *testing.T) {
-	t.Parallel()
-	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+// brokenFull is a full check that fails while the branch has the file broken,
+// which breakTheBranch commits.
+const brokenFull = "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }"
+
+// breakTheBranch commits the file broken to the run's branch, so that
+// brokenFull fails on it.
+func breakTheBranch(t *testing.T, f *cpFixture) {
+	t.Helper()
 	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
 	gitIn(t, f.ws.Dir, "add", ".")
 	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
+}
+
+func TestASecondPrOpenOnTheSameHeadAfterARedFullIsRefusedWithoutRunningAnyCheck(t *testing.T) {
+	t.Parallel()
+	f, gh, prs, runs := loggedPrFixture(t, brokenFull)
+	breakTheBranch(t, f)
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil {
 		t.Fatal("pr open with red full checks was accepted")
 	}
@@ -97,10 +108,8 @@ func TestASecondPrOpenOnTheSameHeadAfterARedFullIsRefusedWithoutRunningAnyCheck(
 
 func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
 	t.Parallel()
-	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
-	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
-	gitIn(t, f.ws.Dir, "add", ".")
-	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
+	f, gh, prs, runs := loggedPrFixture(t, brokenFull)
+	breakTheBranch(t, f)
 	if _, err := prs.Open(ctx, f.run, "Add the cache", description); err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") {
 		t.Fatalf("pr open with red full checks: %v", err)
 	}
@@ -124,10 +133,8 @@ func TestARedFullThatIsGreenOnMainIsTheTicketsFailure(t *testing.T) {
 func TestAFullThatFailsOnMainOnceAndPassesOnTheSecondRunRaisesNoQuestion(t *testing.T) {
 	t.Parallel()
 	flaked := filepath.Join(t.TempDir(), "flaked")
-	f, gh, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }; test -e "+flaked+" || { touch "+flaked+"; echo MAIN FLAKE; exit 1; }")
-	write(t, filepath.Join(f.ws.Dir, "broken"), "x\n")
-	gitIn(t, f.ws.Dir, "add", ".")
-	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "break it")
+	f, gh, prs, runs := loggedPrFixture(t, brokenFull+"; test -e "+flaked+" || { touch "+flaked+"; echo MAIN FLAKE; exit 1; }")
+	breakTheBranch(t, f)
 	_, err := prs.Open(ctx, f.run, "Add the cache", description)
 	if err == nil || !strings.Contains(err.Error(), "FULL SUITE BROKE") || strings.Contains(err.Error(), "end your run") {
 		t.Fatalf("pr open with a full check that flaked on main: %v", err)
@@ -155,7 +162,7 @@ func TestAFullThatFailsOnMainOnceAndPassesOnTheSecondRunRaisesNoQuestion(t *test
 
 func TestTheFullCheckRunsOnMainOncePerMainCommit(t *testing.T) {
 	t.Parallel()
-	f, _, prs, runs := loggedPrFixture(t, "test ! -e broken || { echo FULL SUITE BROKE; exit 1; }")
+	f, _, prs, runs := loggedPrFixture(t, brokenFull)
 	for _, attempt := range []string{"break it", "try again"} {
 		write(t, filepath.Join(f.ws.Dir, "broken"), attempt+"\n")
 		gitIn(t, f.ws.Dir, "add", ".")
