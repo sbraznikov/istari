@@ -11,8 +11,8 @@ import (
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
-// countingRefiner submits a result that names its run (run 1, run 2, ...)
-// and completes only when the submit was taken.
+// countingRefiner submits a result whose assumption and question name its
+// run (run 1, run 2, ...) and completes only when the submit was taken.
 const countingRefiner = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
@@ -22,6 +22,8 @@ if [ "$ISTARI_ROLE" = refiner ]; then
   if "$istari" refine submit --file - >> "$log" 2>&1 <<RESULT
 verdict: needs_input
 size: S
+assumptions:
+  - Endpoints are counted per key since run $n
 questions:
   - Which endpoints count in run $n?
 RESULT
@@ -118,7 +120,7 @@ func TestARefineResultThatOutlastsTheRetriesCostsNoAttemptAndIsRedoneByTheNextRu
 		t.Fatalf("refined comments %q, want one", got)
 	}
 	all := strings.Join(comments(gh, issue, ""), "\n")
-	if strings.Contains(all, "in run 1?") || !strings.Contains(all, "in run 2?") {
+	if strings.Contains(all, "run 1") || !strings.Contains(all, "in run 2?") {
 		t.Fatalf("the ticket's comments are\n%s\nwant the second run's questions and nothing of the first run", all)
 	}
 }
