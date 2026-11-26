@@ -152,11 +152,9 @@ func (r *Refines) Apply(ctx context.Context, run Run, res RefineResult) error {
 	if err := r.size(ctx, run, ref, t, res, &notes); err != nil {
 		return err
 	}
-	for _, a := range res.Assumptions {
-		if err := r.journal.Append(ctx, ref, journal.Entry{Kind: journal.Assumption, Actor: run.Agent(), Text: a}); err != nil {
-			return err
-		}
-	}
+	// The Refined comment is the first journal write: a tracker outage on it
+	// leaves no entry of this run behind for the next run to repeat (spec
+	// section 4.2). Body and size label before it are set again by that run.
 	var comment strings.Builder
 	fmt.Fprintf(&comment, "**Refined** — %s: %s", run.Agent(), res.Verdict)
 	list := func(title string, items []string) {
@@ -173,6 +171,11 @@ func (r *Refines) Apply(ctx context.Context, run Run, res RefineResult) error {
 	list("Notes", notes)
 	if _, err := r.tracker.Comment(ctx, ref, comment.String()); err != nil {
 		return err
+	}
+	for _, a := range res.Assumptions {
+		if err := r.journal.Append(ctx, ref, journal.Entry{Kind: journal.Assumption, Actor: run.Agent(), Text: a}); err != nil {
+			return err
+		}
 	}
 	switch res.Verdict {
 	case "needs_input":
