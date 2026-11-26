@@ -55,8 +55,8 @@ type Tracked struct {
 	// Pushed): the no-CI window runs from here. Zero: tracked before the
 	// window existed; the next poll starts the window at its own time.
 	Pushed time.Time `json:"pushed"`
-	Review   string `json:"review,omitempty"`
-	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
+	Review string    `json:"review,omitempty"`
+	Done   bool      `json:"done,omitempty"` // merged or closed: no longer polled
 	// Mergeable is GitHub's last answer whether the pull request merges into
 	// its base, MergeableClean or MergeableDirty, at the head MergeHead and the
 	// base MergeBase; "" while GitHub has not answered for istari's head.

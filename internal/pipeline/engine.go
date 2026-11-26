@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,8 +75,9 @@ type Engine struct {
 	tickets *core.Tickets
 	opts    EngineOptions
 
-	mu    sync.Mutex
-	cache map[string]cached
+	mu     sync.Mutex // the cache and the warnings already logged
+	cache  map[string]cached
+	warned map[string]bool
 
 	states map[string]core.TicketState // of this reconcile's tickets
 }
@@ -115,7 +117,22 @@ func (e *Engine) Load(ctx context.Context, repo string) (Pipeline, error) {
 	}
 	e.mu.Lock()
 	e.cache[repo] = cached{p: p, err: err, at: e.opts.Clock()}
+	var fresh []string
+	if err == nil {
+		if e.warned == nil {
+			e.warned = map[string]bool{}
+		}
+		for _, w := range p.Warnings() {
+			if key := repo + " " + w; !e.warned[key] {
+				e.warned[key] = true
+				fresh = append(fresh, w)
+			}
+		}
+	}
 	e.mu.Unlock()
+	for _, w := range fresh {
+		log.Printf("istari: pipeline of %s: %s", repo, w)
+	}
 	return p, err
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
@@ -55,9 +56,7 @@ func write(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, path, body)
 }
 
 func (f *cpFixture) checkpoint(t *testing.T, message string) *journal.CheckpointEntry {

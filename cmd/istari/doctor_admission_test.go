@@ -1,9 +1,10 @@
 package main_test
 
 import (
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/sbraznikov/istari/internal/exectest"
 )
 
 func TestDoctorShowsTheAdmissionModeOfEachProject(t *testing.T) {
@@ -11,9 +12,7 @@ func TestDoctorShowsTheAdmissionModeOfEachProject(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
 	bin := t.TempDir()
-	if err := os.WriteFile(bin+"/claude", []byte("#!/bin/sh\necho 1.0.0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, bin+"/claude", "#!/bin/sh\necho 1.0.0\n")
 	config := writeDaemonConfig(t, newDataDir(t), "\n[[project]]\nname = \"web\"\nadmission = \"label\"\n\n[[project]]\nname = \"api\"\n")
 	out, stderr, _ := istariEnv(t, repo, config, []string{"PATH=" + bin + ":/usr/bin:/bin"}, "doctor")
 	for project, mode := range map[string]string{"web": "label", "api": "trusted"} {

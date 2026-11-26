@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/harness/claudecode"
 )
@@ -64,9 +65,7 @@ func newFake(t *testing.T) fake {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "claude")
-	if err := os.WriteFile(bin, []byte(fakeClaude), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, bin, fakeClaude)
 	return fake{bin: bin, dir: dir}
 }
 
@@ -330,9 +329,7 @@ func TestWithoutADaemonPathTheAgentStillFindsTheDaemonsOwnBinary(t *testing.T) {
 	}
 	f := newFake(t)
 	script := strings.Replace(fakeClaude, "env > ", "/usr/bin/env > ", 1)
-	if err := os.WriteFile(f.bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, f.bin, script)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "exit", nil))
 	if err != nil {
 		t.Fatal(err)
