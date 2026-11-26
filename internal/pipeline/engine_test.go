@@ -1057,6 +1057,15 @@ func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
 		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: it has no merge task (T11)", st)
 	}
+	after, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range after {
+		if pipeline.StageOf(task) == pipeline.StageMerge {
+			t.Fatalf("the reconcile made merge task %s: the test no longer reaches the guard alone", task.ID)
+		}
+	}
 }
 
 func TestARecoveredTicketWhoseStagesADaemonStoppedMakingGetsTheRest(t *testing.T) {
