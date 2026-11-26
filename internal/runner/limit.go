@@ -28,6 +28,13 @@ type harnessLimit struct {
 	hits    int // hits in a row without a reset time, for the backoff
 }
 
+// backoff is the pause after l.hits hits in a row without a reset time.
+// limit stops counting hits once it reaches maxLimitBackoff, so the shift
+// stays small and cannot overflow.
+func (l harnessLimit) backoff() time.Duration {
+	return min(DefaultLimitBackoff<<max(l.hits-1, 0), maxLimitBackoff)
+}
+
 // limit pauses the run's harness until the limit's reset, or for a backoff
 // when it named none, and records the pause. A hit while the harness is
 // already paused (another slot's run) only extends the pause.
@@ -38,10 +45,10 @@ func (r *Runner) limit(ctx context.Context, run Run, e harness.Event) {
 	active := l.until.After(now)
 	until := e.Reset
 	if !until.After(now) {
-		if !active {
+		if !active && l.backoff() < maxLimitBackoff {
 			l.hits++
 		}
-		until = now.Add(min(DefaultLimitBackoff<<max(l.hits-1, 0), maxLimitBackoff))
+		until = now.Add(l.backoff())
 	}
 	extended := until.After(l.until)
 	if extended {

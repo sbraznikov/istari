@@ -143,3 +143,25 @@ func TestAUsageLimitWithoutAResetTimePausesForABackoffThatDoublesOnTheNextHit(t 
 		}
 	})
 }
+
+func TestTheBackoffOfManyUsageLimitsInARowStaysAtTwoHours(t *testing.T) {
+	// Not parallel: sets the output of the process's standard logger.
+	captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		f := limitedRunner(t, time.Time{})
+		f.readyTask(t, 1)
+		f.start(t)
+		backoffs := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour}
+		for len(backoffs) < 70 {
+			backoffs = append(backoffs, 2*time.Hour)
+		}
+		for i, backoff := range backoffs {
+			f.session(t).finish <- harness.Result{ExitCode: 1}
+			synctest.Wait()
+			if paused := f.runner.Paused(); len(paused) != 1 || !paused[0].Until.Equal(time.Now().Add(backoff)) {
+				t.Fatalf("hit %d: paused = %+v, want until %s", i+1, paused, time.Now().Add(backoff))
+			}
+			after(backoff + time.Second)
+		}
+	})
+}
