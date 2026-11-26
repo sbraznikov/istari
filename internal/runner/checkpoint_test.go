@@ -160,6 +160,30 @@ func TestAfterACrashOnlyWorkAfterTheLastCheckpointIsLost(t *testing.T) {
 	}
 }
 
+func TestACheckpointAcceptsARemoteBranchMovedForwardAndMergedIn(t *testing.T) {
+	t.Parallel()
+	f := newCheckpoints(t)
+	write(t, filepath.Join(f.ws.Dir, "src.txt"), "feature\n")
+	write(t, filepath.Join(f.ws.Dir, "tests", "feature.sh"), "grep -q feature src.txt\n")
+	f.checkpoint(t, "First")
+	// A human commits on the ticket's branch; the agent merges it in.
+	human := filepath.Join(f.root, "human")
+	gitIn(t, f.root, "clone", "-q", "-b", f.ws.Branch, filepath.Join(f.root, "remotes", "acme", "web.git"), human)
+	write(t, filepath.Join(human, "theirs.txt"), "theirs\n")
+	gitIn(t, human, "add", ".")
+	gitIn(t, human, "commit", "-q", "-m", "theirs")
+	gitIn(t, human, "push", "-q", "origin", f.ws.Branch)
+	write(t, filepath.Join(f.ws.Dir, "tests", "more.sh"), "grep -q feature src.txt\n")
+	gitIn(t, f.ws.Dir, "add", ".")
+	gitIn(t, f.ws.Dir, "commit", "-q", "-m", "more")
+	gitIn(t, f.ws.Dir, "fetch", "-q", "origin")
+	gitIn(t, f.ws.Dir, "merge", "-q", "--no-edit", "origin/"+f.ws.Branch)
+	f.checkpoint(t, "Merged theirs")
+	if head := strings.TrimSpace(gitIn(t, f.ws.Dir, "rev-parse", "HEAD")); f.head() != head {
+		t.Fatalf("remote %s, want the worktree's %s", f.head(), head)
+	}
+}
+
 func TestACheckpointWithNothingNewIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newCheckpoints(t)

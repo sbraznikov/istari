@@ -7,12 +7,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/vcs"
@@ -206,11 +208,68 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	theirs := git(t, other, "rev-parse", "HEAD")
 	git(t, work, "fetch", "-q", "origin")
 	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "mine again")
-	if err := vcs.Push(ctx, forced); err == nil {
-		t.Fatal("a forced push overwrote work istari had not seen")
-	}
+	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote work istari had not seen")
 	if got := git(t, remote, "rev-parse", own); got != theirs {
 		t.Fatalf("remote %s, want their %s kept", got, theirs)
+	}
+}
+
+func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
+	t.Parallel()
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	old := git(t, work, "rev-parse", "HEAD")
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "work, rebased")
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("forced push of the rebased work: %v", err)
+	}
+	// Someone else puts the branch back on the commit istari pushed first:
+	// a commit istari knows, which the worktree's HEAD does not contain.
+	git(t, other, "push", "-q", "--force", "origin", old+":refs/heads/"+own)
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "more")
+	assertRefused(t, vcs.Push(ctx, forced), "a forced push overwrote a commit its own did not contain")
+	if got := git(t, remote, "rev-parse", own); got != old {
+		t.Fatalf("remote %s, want their %s kept", got, old)
+	}
+}
+
+func assertRefused(t *testing.T, err error, msg string) {
+	t.Helper()
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != vcs.CodePushRefused {
+		t.Fatalf("%s: err = %v, want %s", msg, err, vcs.CodePushRefused)
+	}
+}
+
+func TestAForcedPushAcceptsARemoteBranchItsCommitContains(t *testing.T) {
+	t.Parallel()
+	root, remote, work, spec := pushFixture(t)
+	own := spec.Own
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	// Someone else moves the branch forward; the agent merges it in.
+	other := filepath.Join(root, "other")
+	git(t, root, "clone", "-q", "-b", own, remote, other)
+	git(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	git(t, other, "push", "-q", "origin", own)
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "mine")
+	git(t, work, "fetch", "-q", "origin")
+	git(t, work, "merge", "-q", "--no-edit", "origin/"+own)
+	forced := spec
+	forced.Force = true
+	if err := vcs.Push(ctx, forced); err != nil {
+		t.Fatalf("a forced push of a commit that contains the remote branch: %v", err)
+	}
+	if head, remoteHead := git(t, work, "rev-parse", "HEAD"), git(t, remote, "rev-parse", own); head != remoteHead {
+		t.Fatalf("remote %s, want %s", remoteHead, head)
 	}
 }
 
