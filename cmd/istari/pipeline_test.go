@@ -34,18 +34,24 @@ func TestDoctorRejectsAPipelineWithAnUnknownRoleAtItsLine(t *testing.T) {
 	}
 }
 
-func TestDoctorWarnsOfAReviewThatDoesNotWaitForVerify(t *testing.T) {
-	t.Parallel()
+// earlyReviewRepo returns a git repository whose pipeline's review stage
+// (line 5) needs only implement, with the standards files in place so the
+// pipeline row is doctor's only warning.
+func earlyReviewRepo(t *testing.T) string {
+	t.Helper()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
-	if err := os.MkdirAll(filepath.Join(repo, ".istari"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
+	writeFiles(t, repo, "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md", "adr/", ".istari/")
 	if err := os.WriteFile(filepath.Join(repo, ".istari", "pipeline.toml"), []byte(early), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, _, _ := istariEnv(t, repo, writeDaemonConfig(t, newDataDir(t)), []string{"PATH=/usr/bin:/bin"}, "doctor")
+	return repo
+}
+
+func TestDoctorWarnsOfAReviewThatDoesNotWaitForVerify(t *testing.T) {
+	t.Parallel()
+	out, _ := doctorInRepo(t, earlyReviewRepo(t))
 	var row string
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "pipeline ") {
@@ -59,18 +65,7 @@ func TestDoctorWarnsOfAReviewThatDoesNotWaitForVerify(t *testing.T) {
 
 func TestDoctorJSONShowsTheEarlyReviewAsAWarningThatIsNotOK(t *testing.T) {
 	t.Parallel()
-	repo := t.TempDir()
-	git(t, repo, "init", "-q", "-b", "main")
-	// The standards files are there, so the pipeline row is the only warning.
-	writeFiles(t, repo, "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md", "adr/")
-	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
-	if err := os.MkdirAll(filepath.Join(repo, ".istari"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".istari", "pipeline.toml"), []byte(early), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out, code := doctorInRepo(t, repo, "--json")
+	out, code := doctorInRepo(t, earlyReviewRepo(t), "--json")
 	if code != 0 {
 		t.Fatalf("doctor with only a warning: exit %d, want 0\n%s", code, out)
 	}
