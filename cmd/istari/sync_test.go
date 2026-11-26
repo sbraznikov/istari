@@ -328,7 +328,7 @@ func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
 	}
 	h.d.mustCLI(t, nil, "sync")
 	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval", st)
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval\nevents %v\n%s", st, h.d.eventTypes(t, h.ref, ""), h.d.stderr)
 	}
 }
 

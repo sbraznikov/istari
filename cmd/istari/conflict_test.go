@@ -97,7 +97,7 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 			t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
 		}
 		if st := h.state(t); st != "awaiting_approval" {
-			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval", st)
+			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval\nevents %v\n%s", st, h.d.eventTypes(t, h.ref, ""), h.d.stderr)
 		}
 	}
 }
