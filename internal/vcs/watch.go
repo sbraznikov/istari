@@ -270,7 +270,7 @@ func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, 
 	head, reason := t.SHA, t.Reason
 	if t.Unrelated != head {
 		if n := t.rerunsOf(head); n > t.RedReruns {
-			return core.RerunRed, w.record(ctx, t, "vcs.rerun_red", map[string]any{"number": t.Number, "sha": head, "reruns": n}, func(t *Tracked) {
+			return core.RerunRed, w.record(ctx, t, "vcs.rerun_reported_red", map[string]any{"number": t.Number, "sha": head, "reruns": n}, func(t *Tracked) {
 				t.RedReruns = n
 			})
 		}
@@ -315,9 +315,13 @@ func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, 
 func (w *Watcher) spend(ctx context.Context, t Tracked, reruns int) error {
 	head, reason := t.SHA, t.Reason
 	checks := "its failed checks could not be read"
-	if names, err := w.client.failedChecks(ctx, t.Repo, head); err != nil {
+	if runs, err := w.client.failedRuns(ctx, t.Repo, head); err != nil {
 		checks += ": " + err.Error()
-	} else if len(names) > 0 {
+	} else if len(runs) > 0 {
+		names := make([]string, len(runs))
+		for i, r := range runs {
+			names[i] = r.Name
+		}
 		checks = "failed: `" + strings.Join(names, "`, `") + "`"
 	}
 	if err := w.record(ctx, t, "vcs.rerun_spent", map[string]any{"number": t.Number, "sha": head, "reason": reason, "reruns": reruns}, func(t *Tracked) {
