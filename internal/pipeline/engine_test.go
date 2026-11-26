@@ -958,6 +958,44 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	}
 }
 
+// awaitingApproval is the trigger path of a ticket recovered in
+// awaiting_approval.
+var awaitingApproval = []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"}
+
+// cutShortResume leaves the ticket in awaiting_approval with the round a
+// resume cut short between its creates: the approve task and no merge task.
+// The approve task is the one a full resume makes, taken from a twin store.
+func cutShortResume(t *testing.T) *engineFixture {
+	t.Helper()
+	twin := newEngine(t, config.Defaults{}, nil)
+	f := newEngine(t, config.Defaults{}, nil)
+	for _, fx := range []*engineFixture{twin, f} {
+		if _, err := fx.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range awaitingApproval {
+			if _, err := fx.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	twin.reconcile(t)
+	approve := twin.stage(t, ref, "approve")
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: approve.ID, Ticket: ref, Project: "web", Role: approve.Role}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestACutShortResumeInAwaitingApprovalDoesNotMerge(t *testing.T) {
+	t.Parallel()
+	f := cutShortResume(t)
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: nothing merged it (T11)", st)
+	}
+}
+
 // reports are the findings code accepted in the report of each review task.
 type reports map[string]int
 
