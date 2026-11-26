@@ -344,6 +344,105 @@ func TestVerifyRedRunsInOneCleanWorktreeOfTheTicketNextToItsOwn(t *testing.T) {
 	}
 }
 
+func TestAProjectsOwnCheckRunsAtACheckpointByItsName(t *testing.T) {
+	t.Parallel()
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"sh run-tests.sh\"\nformat = \"! grep -l '  $' *.txt\"\nlint = \"true\"\n")
+	f.slice(t, "tidy")
+	if c := f.checkpoint(t, "Formatted"); c.Red || c.Checks["format"] != "green" || c.Checks["lint"] != "green" {
+		t.Fatalf("checks = %v red %v, want format and lint green", c.Checks, c.Red)
+	}
+	write(t, filepath.Join(f.ws.Dir, "messy.txt"), "trailing  \n")
+	c := f.checkpoint(t, "Messy")
+	if !c.Red || c.Checks["format"] != "red" || c.Checks["lint"] != "green" {
+		t.Fatalf("checks = %v red %v, want format red", c.Checks, c.Red)
+	}
+	if !strings.Contains(c.Failures["format"], "messy.txt") {
+		t.Fatalf("failures = %v, want the format check's output", c.Failures)
+	}
+}
+
+func TestACheckAtPRDoesNotRunAtACheckpoint(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "ran")
+	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"sh run-tests.sh\"\ntidy = { run = \"touch "+marker+"; exit 1\", at = [\"pr\"] }\n")
+	f.slice(t, "first")
+	if c := f.checkpoint(t, "First"); c.Red || c.Checks["tidy"] != "" || exists(marker) {
+		t.Fatalf("checks = %v red %v ran %v, want tidy left for the pull request", c.Checks, c.Red, exists(marker))
+	}
+}
+
+func TestTestFilesDecideWhatCountsAsATest(t *testing.T) {
+	t.Parallel()
+	const checks = `[checks]
+typecheck = "true"
+test = "for t in $(find . -name '*.check.ts'); do sh $t || exit 1; done"
+test_files = ["**/*.check.ts"]
+`
+	f := newCheckpointsWith(t, checks)
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "feature\n")
+	write(t, filepath.Join(f.ws.Dir, "src", "a.check.ts"), "test -f feature.txt\n")
+	write(t, filepath.Join(f.ws.Dir, "tests", "helper.sh"), "true\n") // no test by test_files
+	c := f.checkpoint(t, "A check.ts test")
+	if notes := strings.Join(c.Notes, " "); strings.Contains(notes, "no test change") || c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v notes %v, want a.check.ts counted and verify_red green", c.Checks, c.Notes)
+	}
+	write(t, filepath.Join(f.ws.Dir, "src", "b.check.ts"), "true\n")
+	c = f.checkpoint(t, "A vacuous check.ts test")
+	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "not counted") || !strings.Contains(notes, "src/b.check.ts") {
+		t.Fatalf("notes = %v, want verify_red to have run b.check.ts on the previous code", c.Notes)
+	}
+	write(t, filepath.Join(f.ws.Dir, "tests", "other.sh"), "true\n")
+	if c := f.checkpoint(t, "Not a test here"); !strings.Contains(strings.Join(c.Notes, " "), "no test change") {
+		t.Fatalf("notes = %v, want tests/other.sh not counted as a test", c.Notes)
+	}
+
+	plain := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nverify_red = false\n")
+	write(t, filepath.Join(plain.ws.Dir, "foo_test.go"), "package foo\n")
+	if c := plain.checkpoint(t, "A Go test"); strings.Contains(strings.Join(c.Notes, " "), "no test change") {
+		t.Fatalf("notes = %v, want foo_test.go counted without test_files", c.Notes)
+	}
+}
+
+func TestACheckpointRunsTheSlicesTestsThroughDirsAndFiles(t *testing.T) {
+	t.Parallel()
+	log := filepath.Join(t.TempDir(), "runs.log")
+	checks := `[checks]
+typecheck = "true"
+test = "echo test {dirs} >> ` + log + `; for d in {dirs}; do for t in $d/*_test.sh; do sh $t || exit 1; done; done"
+names = "echo names {files} >> ` + log + `"
+`
+	runs := func() []string {
+		data, _ := os.ReadFile(log)
+		os.Remove(log)
+		return strings.Split(strings.TrimSpace(string(data)), "\n")
+	}
+	f := newCheckpointsWith(t, checks)
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "feature\n")
+	write(t, filepath.Join(f.ws.Dir, "sub", "feature_test.sh"), "test -f feature.txt\n")
+	c := f.checkpoint(t, "A test in sub")
+	if c.Red || c.Checks["test"] != "green" || c.Checks["names"] != "green" || c.Checks["verify_red"] != "green" {
+		t.Fatalf("checks = %v notes %v, want green", c.Checks, c.Notes)
+	}
+	// In the worktree: test and names; then verify_red runs the same filled
+	// test command on the previous checkpoint's code.
+	if got, want := strings.Join(runs(), "|"), "test ./sub|names sub/feature_test.sh|test ./sub"; got != want {
+		t.Fatalf("runs = %s, want %s", got, want)
+	}
+	if notes := strings.Join(c.Notes, " "); strings.Contains(notes, "whole test command") {
+		t.Fatalf("notes = %v: red first was judged on the new tests alone", c.Notes)
+	}
+
+	write(t, filepath.Join(f.ws.Dir, "feature.txt"), "more\n")
+	c = f.checkpoint(t, "Code only")
+	if got := runs(); len(got) != 1 || got[0] != "" {
+		t.Fatalf("runs = %v, want no check with the slice's tests run", got)
+	}
+	notes := strings.Join(c.Notes, " ")
+	if _, ran := c.Checks["test"]; ran || !strings.Contains(notes, "test: not run") || !strings.Contains(notes, "names: not run") {
+		t.Fatalf("checks = %v notes %v, want test and names not run and noted", c.Checks, c.Notes)
+	}
+}
+
 func TestRedFirstJudgedOnTheWholeTestCommandIsNoted(t *testing.T) {
 	t.Parallel()
 	f := newCheckpoints(t)
