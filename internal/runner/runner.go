@@ -549,22 +549,29 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		fail("budget: " + err.Error())
 		return nil
 	}
-	// A human's unhold --anyway lets one run start with the budget spent,
-	// capped at the budget of the ticket's size (spec section 7.5).
+	// A human's unhold --anyway lets the next run start with the budget
+	// spent, capped at the budget of the ticket's size; that run uses it up
+	// either way (spec section 7.5).
 	var waived []store.Change
-	if capped && budget <= 0 {
+	if capped {
 		use, ok, err := r.useBudgetWaiver(bg, tk.Ref, run.ID)
 		if err != nil {
 			fail("budget: " + err.Error())
 			return nil
 		}
-		if !ok {
+		if ok {
+			waived = []store.Change{use}
+		}
+		switch {
+		case budget > 0:
+		case ok:
+			budget = full
+		default:
 			if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
 				log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
 			}
 			return nil
 		}
-		budget, waived = full, []store.Change{use}
 	}
 	run.BudgetUSD = budget
 	var conflicts []string

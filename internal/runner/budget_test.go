@@ -362,6 +362,34 @@ func TestARunLetStartAnywayStartsAfterADaemonRestart(t *testing.T) {
 	}
 }
 
+func TestAnUnholdAnywayIsUsedUpByTheNextRunEvenWithBudgetLeft(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 76)
+	sized(t, f, tk.Ref, "XS")
+	stop := f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	stop()
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, tk.Ref, "S") // before the next claim: $3 left
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // a run with budget left, $4 spent in all
+	sized(t, f, tk.Ref, "XS")    // spent again
+	next := implement(t, f, tk.Ref)
+	if blocked := f.waitTask(t, next.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+	select {
+	case s := <-f.h.started:
+		t.Fatalf("an unhold --anyway that no run needed let a later run start: capped at $%v", s.spec.MaxBudgetUSD)
+	case <-time.After(time.Second):
+	}
+}
+
 func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
 	t.Parallel()
 	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
