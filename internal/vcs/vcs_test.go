@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -218,6 +219,40 @@ func TestAPushGoesOnlyToTheOwnBranchAndMayForceWithLease(t *testing.T) {
 	}
 }
 
+func TestAPushCutShortThatTheRemoteTookIsSeenByTheNextForcedPush(t *testing.T) {
+	t.Parallel()
+	_, remote, work, spec := pushFixture(t)
+	spec.Force = true
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	// The remote takes the next push at once and answers late: the push is
+	// cut short after the remote updated the branch.
+	hook := filepath.Join(remote, "hooks", "post-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--allow-empty", "-m", "cut short")
+	short, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := vcs.Push(short, spec); err == nil {
+		t.Fatal("the push was not cut short")
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want the cut-short push's %s taken", got, want)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "-q", "--amend", "--allow-empty", "-m", "cut short, rewritten")
+	if err := vcs.Push(ctx, spec); err != nil {
+		t.Fatalf("the next forced push: %v", err)
+	}
+	if got, want := git(t, remote, "rev-parse", spec.Own), git(t, work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s, want %s", got, want)
+	}
+}
+
 func TestAForcedPushRefusesARemoteBranchItsCommitDoesNotContain(t *testing.T) {
 	t.Parallel()
 	root, remote, work, spec := pushFixture(t)
@@ -287,7 +322,7 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
 	hooks := filepath.Join(root, "evil-hooks")
 	os.MkdirAll(hooks, 0o755)
-	os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n"), 0o755)
+	exectest.Write(t, filepath.Join(hooks, "pre-push"), "#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n")
 	git(t, work, "config", "core.hooksPath", hooks)
 	spec.Token = "secret-installation-token"
 	if err := vcs.Push(ctx, spec); err != nil {
