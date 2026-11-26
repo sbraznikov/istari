@@ -25,7 +25,9 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	plan := filepath.Join(t.TempDir(), "plan.yaml")
-	os.WriteFile(plan, []byte("tickets:\n  - key: base\n    title: The base\n    body: \"## Context\\n\\nFirst.\\n\"\n  - key: top\n    title: On top\n    needs: [base]\n    body: \"## Context\\n\\nNeeds #base.\\n\"\n"), 0o644)
+	if err := os.WriteFile(plan, []byte("tickets:\n  - key: base\n    title: The base\n    body: \"## Context\\n\\nFirst.\\n\"\n  - key: top\n    title: On top\n    needs: [base]\n    body: \"## Context\\n\\nNeeds #base.\\n\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var refs map[string]string
 	for range 2 { // the same key twice: one plan
 		d.mustCLI(t, &refs, "ticket", "create", "--file", plan, "--idempotency-key", "plan-1")
@@ -38,12 +40,16 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 		t.Fatalf("ticket deps: exit %d %s\n%s", code, stderr, out)
 	}
 	other := filepath.Join(t.TempDir(), "other.yaml")
-	os.WriteFile(other, []byte("tickets:\n  - key: away\n    title: Elsewhere\n    repo: acme/other\n"), 0o644)
+	if err := os.WriteFile(other, []byte("tickets:\n  - key: away\n    title: Elsewhere\n    repo: acme/other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, stderr, code := d.cli(t, "ticket", "create", "--file", other); code == 0 || !strings.Contains(stderr, "acme/other is no repository istari syncs") || gh.IssueCount() != 2 {
 		t.Fatalf("a ticket in a repository istari does not sync: exit %d, %d issues\n%s", code, gh.IssueCount(), stderr)
 	}
 	md := filepath.Join(t.TempDir(), "one.md")
-	os.WriteFile(md, []byte("# A single ticket\n\n## Context\n\nOne.\n"), 0o644)
+	if err := os.WriteFile(md, []byte("# A single ticket\n\n## Context\n\nOne.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
 	if gh.IssueCount() != 3 || gh.Issue(3).Title != "A single ticket" {
 		t.Fatalf("a single ticket: %d issues, %+v", gh.IssueCount(), gh.Issue(3))
@@ -262,7 +268,9 @@ func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	md := filepath.Join(t.TempDir(), "ticket.md")
-	os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644)
+	if err := os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var refs map[string]string
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
 	var ref string
@@ -326,7 +334,9 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 		out, _ := os.ReadFile(log)
 		if strings.Contains(string(out), "submit exit") {
 			var bytes int
-			fmt.Sscanf(string(out), "bytes %d", &bytes)
+			if _, err := fmt.Sscanf(string(out), "bytes %d", &bytes); err != nil {
+				t.Fatalf("no byte count in the agent's log: %v\n%s", err, out)
+			}
 			if bytes < 20000 || !strings.Contains(string(out), "submit exit 0") {
 				t.Fatalf("a plan of %d bytes from the result file was not accepted:\n%s", bytes, out)
 			}

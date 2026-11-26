@@ -219,7 +219,9 @@ func TestARedPreviousCheckpointCannotJudgeRedFirst(t *testing.T) {
 	f := newCheckpoints(t)
 	write(t, filepath.Join(f.ws.Dir, "tests", "broken.sh"), "exit 1\n")
 	f.checkpoint(t, "Broken on purpose") // red
-	os.Remove(filepath.Join(f.ws.Dir, "tests", "broken.sh"))
+	if err := os.Remove(filepath.Join(f.ws.Dir, "tests", "broken.sh")); err != nil {
+		t.Fatal(err)
+	}
 	write(t, filepath.Join(f.ws.Dir, "tests", "always.sh"), "true\n")
 	c := f.checkpoint(t, "A vacuous test")
 	if notes := strings.Join(c.Notes, " "); !strings.Contains(notes, "cannot be judged") {
@@ -238,7 +240,9 @@ func newLoggedCheckpoints(t *testing.T) (*cpFixture, func() []string) {
 	f := newCheckpointsWith(t, "[checks]\ntypecheck = \"true\"\ntest = \""+test+"\"\nverify_red = true\n")
 	runs := func() []string {
 		data, _ := os.ReadFile(log)
-		os.Remove(log)
+		if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 		return strings.Split(strings.TrimSpace(string(data)), "\n")
 	}
 	return f, runs
@@ -412,7 +416,9 @@ names = "echo names {files} >> ` + log + `"
 `
 	runs := func() []string {
 		data, _ := os.ReadFile(log)
-		os.Remove(log)
+		if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 		return strings.Split(strings.TrimSpace(string(data)), "\n")
 	}
 	f := newCheckpointsWith(t, checks)

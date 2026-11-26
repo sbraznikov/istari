@@ -50,7 +50,11 @@ func newEngine(t *testing.T, global config.Defaults, repoFiles files) *engineFix
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	f := &engineFixture{store: s, tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: global, Files: repoFiles})
 	return f
@@ -364,7 +368,9 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 		t.Fatalf("the waiting ticket = %s, hold %q; want ready on waiting_dependency", tk.State, tk.Hold)
 	}
 	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
-		f.tickets.Fire(ctx, "system", need, tr)
+		if _, err := f.tickets.Fire(ctx, "system", need, tr); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f.reconcile(t)
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "" || tk.State != core.TicketPlanning {
@@ -566,7 +572,9 @@ func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
 	}
 	done := func(k string) {
 		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
-			f.tickets.Fire(ctx, "system", k, tr)
+			if _, err := f.tickets.Fire(ctx, "system", k, tr); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	done(kids[0])
@@ -601,8 +609,12 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 	f.readyTicket(t, ref)
 	f.reconcile(t)
 	kid := "gh:acme/web#2"
-	f.tickets.Create(ctx, "human:alex", kid, "web")
-	f.tickets.SetChildren(ctx, "agent:planner-1", ref, []string{kid})
+	if _, err := f.tickets.Create(ctx, "human:alex", kid, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", ref, []string{kid}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.tickets.Fire(ctx, "agent:planner-1", ref, "split"); err != nil {
 		t.Fatal(err)
 	}
@@ -1380,7 +1392,11 @@ func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
 	repos := []string{"acme/web", "acme/api"}
 	// A cache of a nanosecond: every Load reads the file again.

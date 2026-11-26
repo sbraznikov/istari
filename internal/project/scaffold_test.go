@@ -17,8 +17,12 @@ func TestScaffoldWritesValidTOMLAndKeepsExistingFiles(t *testing.T) {
 	t.Parallel()
 	for _, lang := range []map[string]string{{"go.mod": "module x\n"}, {}} {
 		root := tree(t, lang)
-		os.MkdirAll(filepath.Join(root, ".istari"), 0o755)
-		os.WriteFile(filepath.Join(root, ".istari", "skill.md"), []byte("ours\n"), 0o644)
+		if err := os.MkdirAll(filepath.Join(root, ".istari"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".istari", "skill.md"), []byte("ours\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		created, err := project.Scaffold(root)
 		if err != nil {
 			t.Fatal(err)

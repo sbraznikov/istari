@@ -727,7 +727,9 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 	stopWith := func(e ending) {
 		if end == nil {
 			end = &e
-			sess.Stop(stopGrace)
+			if err := sess.Stop(stopGrace); err != nil {
+				log.Printf("istari: run %s: stop: %v", run.ID, err)
+			}
 		}
 	}
 	var res harness.Result
@@ -797,7 +799,7 @@ loop:
 		}
 	}
 	reason, outcome, completed := r.outcome(bg, run.ID, res)
-	if end != nil && !(end.released && completed) {
+	if end != nil && (!end.released || !completed) {
 		// A runner that stops while the agent finishes its work keeps the
 		// work: a completed run completes its task even then.
 		reason, outcome = end.reason, end.outcome
@@ -859,7 +861,11 @@ func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease)
 // returns the run's usage. It signals over when the run budget is spent.
 func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Event, over chan<- struct{}) harness.Usage {
 	t := &transcript{path: run.Transcript, max: r.opts.TranscriptMax}
-	defer t.close()
+	defer func() {
+		if err := t.close(); err != nil {
+			log.Printf("istari: run %s: transcript: %v", run.ID, err)
+		}
+	}()
 	var total harness.Usage
 	for e := range events {
 		if err := t.write(e); err != nil {
@@ -971,9 +977,8 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	_, err = f.WriteString("\n/.istari/skill.md\n")
-	return err
+	return errors.Join(err, f.Close())
 }
 
 // resultRoles are the roles that submit a structured result and get a result

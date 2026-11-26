@@ -83,7 +83,7 @@ type DaemonOptions struct {
 // exclusive lock, opens the store, serves the API on a unix socket with mode
 // 0600 and runs the scheduler. On cancellation it stops accepting, ends the
 // event streams, stops the scheduler and waits for in-flight requests.
-func RunDaemon(ctx context.Context, opts DaemonOptions) error {
+func RunDaemon(ctx context.Context, opts DaemonOptions) (err error) {
 	dataDir := opts.DataDir
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
@@ -98,18 +98,18 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { err = errors.Join(err, st.Close()) }()
 
 	socket, err := SocketPath(dataDir)
 	if err != nil {
 		return err
 	}
-	os.Remove(socket) // a stale socket of a daemon that died; the lock proves none runs
+	os.Remove(socket) //nolint:errcheck // a stale socket of a daemon that died, if any; the lock proves none runs, and listen reports one that stayed
 	ln, err := listenPrivate(socket)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(socket)
+	defer os.Remove(socket) //nolint:errcheck // a socket left behind is removed by the next start
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
 		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS, GitHub: opts.GitHub, Stepped: opts.Stepped})
@@ -125,7 +125,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	if opts.PausedBy != "" {
 		// A hand-out still paused from before the restart stays paused.
 		var already *core.Error
-		if err := srv.Tasks().Pause(ctx, opts.PausedBy, ""); err != nil && !(errors.As(err, &already) && already.Code == core.CodeInvalidState) {
+		if err := srv.Tasks().Pause(ctx, opts.PausedBy, ""); err != nil && (!errors.As(err, &already) || already.Code != core.CodeInvalidState) {
 			return fmt.Errorf("pausing the hand-out: %w", err)
 		}
 	}
@@ -179,13 +179,13 @@ func lock(path string) (unlock func(), err error) {
 		return nil, fmt.Errorf("lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		f.Close() //nolint:errcheck // the file is opened only for its flock; the flock's error is the one returned
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrAlreadyRunning
 		}
 		return nil, fmt.Errorf("lock: %w", err)
 	}
-	return func() { f.Close() }, nil
+	return func() { f.Close() }, nil //nolint:errcheck // closing releases the flock, which the kernel also releases when the process exits
 }
 
 // listenPrivate listens on a unix socket that only the owner can use. The
@@ -198,7 +198,7 @@ func listenPrivate(socket string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen %s: %w", socket, err)
 	}
 	if err := os.Chmod(socket, 0o600); err != nil {
-		ln.Close()
+		ln.Close() //nolint:errcheck // the chmod's error is the one returned
 		return nil, fmt.Errorf("chmod %s: %w", socket, err)
 	}
 	return ln, nil

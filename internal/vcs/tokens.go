@@ -137,7 +137,7 @@ func (a *AppTokens) call(ctx context.Context, method, path string, out any) erro
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
-		json.NewDecoder(res.Body).Decode(&e)
+		json.NewDecoder(res.Body).Decode(&e) //nolint:errcheck // a body that is not GitHub's JSON error leaves the message empty; the status still says what failed
 		return fmt.Errorf("%s %s: %d %s", method, path, res.StatusCode, e.Message)
 	}
 	return json.NewDecoder(res.Body).Decode(out)

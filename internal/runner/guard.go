@@ -122,10 +122,10 @@ func (g guard) check(command, cwd string, depth int) error {
 			continue
 		case "env":
 			for i := 0; i < len(args); i++ {
-				switch a := args[i]; {
-				case a == "-i" || a == "--ignore-environment" || a == "-":
+				switch a := args[i]; a {
+				case "-i", "--ignore-environment", "-":
 					return fmt.Errorf("env -i drops the variables that keep the user's logins away from you")
-				case a == "-u" || a == "--unset":
+				case "-u", "--unset":
 					if i+1 < len(args) && protected(args[i+1]) {
 						return fmt.Errorf("%s keeps the user's logins away from you; it cannot be changed", args[i+1])
 					}

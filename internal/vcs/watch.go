@@ -363,7 +363,7 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 			failed = w.recordFailure(ctx, t)
 		}
 	}
-	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {
+	if s.Review != t.Review && (t.Review != "" || s.Review != ReviewNone) {
 		t.Review = s.Review
 		changes = append(changes, change{EventReview, map[string]any{"number": t.Number, "review": s.Review, "by": s.By}})
 	}

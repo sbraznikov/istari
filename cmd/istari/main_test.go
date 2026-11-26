@@ -18,7 +18,9 @@ func TestMain(m *testing.M) {
 	// the binaries the tests start to the real daemon (#154).
 	for _, kv := range os.Environ() {
 		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "ISTARI_") {
-			os.Unsetenv(name)
+			if err := os.Unsetenv(name); err != nil {
+				panic(err)
+			}
 		}
 	}
 	dir, err := os.MkdirTemp("", "istari-bin")
@@ -33,7 +35,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	code := m.Run()
-	os.RemoveAll(dir)
+	os.RemoveAll(dir) //nolint:errcheck // a test binary left in the temp dir harms no test, and the exit code is the tests' own
 	os.Exit(code)
 }
 

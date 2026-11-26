@@ -207,7 +207,9 @@ func TestBacktickedPathsMustExistUnlessMarkedNew(t *testing.T) {
 func TestTheStandardComesFromTheRepository(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "ticket-standard.toml")
-	os.WriteFile(path, []byte("sections = [\"Context\", \"Risks\"]\ntypes = [\"feature\"]\nsizes = [\"S\", \"M\"]\npriorities = [\"P1\", \"P2\"]\nrepository = true\ndependencies = \"Needs\"\n"), 0o644)
+	if err := os.WriteFile(path, []byte("sections = [\"Context\", \"Risks\"]\ntypes = [\"feature\"]\nsizes = [\"S\", \"M\"]\npriorities = [\"P1\", \"P2\"]\nrepository = true\ndependencies = \"Needs\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	std, err := standard.Load(path)
 	if err != nil {
 		t.Fatal(err)

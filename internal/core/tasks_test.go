@@ -44,7 +44,11 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := &clock{now: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}
 	return &fixture{store: s, clock: c, tasks: core.NewTasks(s, core.TaskOptions{Clock: c.Now})}
 }
@@ -392,7 +396,11 @@ func slowTasks(t *testing.T) *core.Tasks {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	slow := func() time.Time {
 		time.Sleep(20 * time.Millisecond)
 		return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)

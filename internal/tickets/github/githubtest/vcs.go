@@ -226,7 +226,9 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 		Title, Body, Head, Base string
 		Draft                   bool
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	for _, i := range s.issues {
 		if i.PullRequest && i.Branch == req.Head && i.State == "open" {
 			s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "A pull request already exists for " + req.Head})
@@ -266,7 +268,9 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 		Query     string
 		Variables struct{ ID string }
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	fail := func(msg string) {
 		s.write(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": msg}}})
 	}
@@ -294,7 +298,9 @@ func (s *Server) updatePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Title, Body *string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if req.Title != nil {
 		i.Title = *req.Title
 	}
@@ -346,7 +352,9 @@ func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Body, Event string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	state, ok := map[string]string{"COMMENT": "COMMENTED", "APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[req.Event]
 	if !ok {
 		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "Unprocessable event " + req.Event})
@@ -364,7 +372,9 @@ func (s *Server) mergePull(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Method string `json:"merge_method"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	i.Merged, i.MergeMethod, i.State = true, req.Method, "closed"
 	s.write(w, http.StatusOK, map[string]any{"merged": true, "sha": "merge-" + i.HeadSHA})
 }

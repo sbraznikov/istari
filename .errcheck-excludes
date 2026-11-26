@@ -1,7 +1,0 @@
-// Calls whose error does not matter, for errcheck -exclude (CODING_STANDARDS.md S0.1).
-// One function per line, each with the reason it is safe to ignore.
-
-// Output to a terminal or a command's out/err writer: there is no one left to tell when it fails.
-fmt.Fprint
-fmt.Fprintf
-fmt.Fprintln

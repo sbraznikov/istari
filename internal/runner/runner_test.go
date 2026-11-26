@@ -424,7 +424,9 @@ func TestATranscriptRotatedIntoPartsIsReadWhole(t *testing.T) {
 		}
 		for _, l := range lines {
 			var e harness.Event
-			json.Unmarshal(l, &e)
+			if err := json.Unmarshal(l, &e); err != nil {
+				t.Fatal(err)
+			}
 			got = append(got, e.Text)
 		}
 		pos = next
@@ -511,7 +513,9 @@ func TestAHoldOnTheTicketStopsItsRunWithACheckpoint(t *testing.T) {
 			tk, task := f.readyTask(t, c.issue)
 			f.start(t)
 			s := f.session(t)
-			os.WriteFile(filepath.Join(s.spec.Workdir, "held-work.txt"), []byte("x\n"), 0o644)
+			if err := os.WriteFile(filepath.Join(s.spec.Workdir, "held-work.txt"), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := f.tickets.SetHold(ctx, c.actor, tk.Ref, c.hold); err != nil {
 				t.Fatal(err)
 			}
@@ -543,7 +547,9 @@ func TestCancelingTheTicketStopsItsRunWithACheckpointAndTheTaskStaysCanceled(t *
 	tk, task := f.readyTask(t, 15)
 	f.start(t)
 	s := f.session(t)
-	os.WriteFile(filepath.Join(s.spec.Workdir, "canceled-work.txt"), []byte("x\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(s.spec.Workdir, "canceled-work.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.tickets.Fire(ctx, "human:alex", tk.Ref, "cancel"); err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +736,9 @@ func TestARejectedResultFailsTheRunEvenAfterComplete(t *testing.T) {
 	if _, err := f.runner.Runs().Reject(ctx, s.spec.Env["ISTARI_RUN"], "refine result: size \"huge\" is not a size"); err != nil {
 		t.Fatal(err)
 	}
-	f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done")
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
 	s.finish <- harness.Result{ExitCode: 0}
 	if failed := f.waitEvent(t, "task.failed"); !strings.Contains(string(failed.Payload), "huge") {
 		t.Fatalf("task.failed = %s, want the rejection", failed.Payload)
@@ -753,7 +761,9 @@ func TestAResultAcceptedAfterARefusalInTheSameRunCompletesTheTask(t *testing.T) 
 	if _, err := f.runner.Runs().Accept(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	f.runner.Runs().Complete(ctx, id, "reviewed")
+	if _, err := f.runner.Runs().Complete(ctx, id, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
 	s.finish <- harness.Result{ExitCode: 0}
 	f.waitTask(t, task.ID, core.TaskCompleted)
 	if run, _ := f.runner.Runs().Get(ctx, id); run.Reason != "completed: reviewed" {
@@ -839,7 +849,7 @@ func TestARunWhosePreparationOutlastsTheLeaseStillStarts(t *testing.T) {
 	_, task := f.readyTask(t, 12)
 	f.start(t)
 	s := f.session(t)
-	defer s.Stop(0)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if !renewedPastTheClaim(ctx, f, lease) {
 		t.Fatal("the preparation did not outlast the lease of the claim")
 	}

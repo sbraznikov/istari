@@ -39,7 +39,7 @@ func newTailCommand(opts *Options) *cobra.Command {
 				}
 				return c.stream(cmd.Context(), store.Cursor(after), f, func(e store.Event) bool {
 					if opts.JSON {
-						render(out, opts, e, nil, nil)
+						render(out, opts, e, nil, nil) //nolint:errcheck // a write to the terminal, as with the Fprintln beside it
 					} else {
 						fmt.Fprintln(out, strings.Join(eventRow(e), "\t"))
 					}

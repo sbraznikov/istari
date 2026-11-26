@@ -1,0 +1,34 @@
+version: "2"
+
+# The linters CI and istari's lint check run (CODING_STANDARDS.md S0.1).
+linters:
+  default: none
+  enable:
+    - staticcheck
+    - errcheck
+    - nolintlint
+  settings:
+    nolintlint:
+      # Every //nolint names its linter and says why: //nolint:errcheck // <why>.
+      require-explanation: true
+      require-specific: true
+    errcheck:
+      # Calls whose error never matters. Any other dropped error is handled,
+      # or marked where it occurs with //nolint:errcheck // <why>.
+      exclude-functions:
+        # Output to a command's terminal, an HTTP response or an event
+        # stream: when the write fails there is no one left to tell.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # A failed write to an HTTP response means the client went away; the
+        # handler has no one to report it to.
+        - (net/http.ResponseWriter).Write
+        # Closing a response body that was read: the body's content and its
+        # read errors are what count, and closing it cannot lose data.
+        - (io.ReadCloser).Close
+        # The deferred rollback after Commit returns sql.ErrTxDone; after a
+        # failure the error that caused it is the one returned.
+        - (*database/sql.Tx).Rollback
+        # rows.Err reports what went wrong while iterating; Close adds nothing.
+        - (*database/sql.Rows).Close

@@ -324,7 +324,7 @@ WantedBy=default.target
 
 func xmlEscape(s string) string {
 	var b strings.Builder
-	xml.EscapeText(&b, []byte(s))
+	xml.EscapeText(&b, []byte(s)) //nolint:errcheck // a strings.Builder never fails a write
 	return b.String()
 }
 

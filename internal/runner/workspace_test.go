@@ -46,7 +46,11 @@ func newWorkspaces(t *testing.T) *wsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	data := filepath.Join(root, "data")
 	ws := runner.NewWorkspaces(s, runner.WorkspaceOptions{
@@ -169,7 +173,11 @@ func TestWithIstarisDatabaseLostTheTicketBranchIsFoundOnTheRemote(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { fresh.Close() })
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{
 		DataDir: f.data,
 		Remote:  func(repo string) string { return "file://" + filepath.Join(f.root, "remotes", repo+".git") },
@@ -359,7 +367,11 @@ func TestAWorktreeLeftOnDiskWithoutARecordIsAnOrphanToo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { fresh.Close() })
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{DataDir: f.data})
 	orphans, err := ws.Orphans(ctx, nil)
 	if err != nil || len(orphans) != 1 || orphans[0].Dir != w.Dir {
@@ -455,7 +467,11 @@ func TestAWorktreeWithoutARecordIsAdoptedByItsTicket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { fresh.Close() })
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
 	again, err := ws.Ensure(ctx, tk)
 	if err != nil || again.Dir != w.Dir || again.Branch != w.Branch || again.State != runner.WorkspaceActive {

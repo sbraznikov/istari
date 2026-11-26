@@ -358,7 +358,7 @@ func TestTailAfterACursorResumesExactly(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck // teardown: the daemon may have exited already, and Wait reports the kill
 	time.Sleep(300 * time.Millisecond)
 	createTicket(t, d, "gh:acme/web#99")
 	dec := json.NewDecoder(stdout)

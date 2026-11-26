@@ -43,7 +43,11 @@ func newSync(t *testing.T, trusted ...string) *syncFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	k := core.NewTickets(s, core.TicketOptions{Clock: clock})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
@@ -106,7 +110,9 @@ func (f *syncFixture) transitions(t *testing.T, n int) []transition {
 	var out []transition
 	for _, e := range f.events(t, store.Filter{Ticket: ghRef(n), TypePrefix: "ticket.transitioned"}) {
 		var tr transition
-		json.Unmarshal(e.Payload, &tr)
+		if err := json.Unmarshal(e.Payload, &tr); err != nil {
+			t.Fatal(err)
+		}
 		out = append(out, tr)
 	}
 	return out
@@ -154,7 +160,11 @@ func TestWithFewRequestsLeftTheSyncWaitsUntilTheReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	now := time.Date(2026, 11, 25, 19, 12, 0, 0, time.UTC)
 	reset := now.Add(20 * time.Minute)
 	// The hold's waits: each asks its duration on asked and ends when the
@@ -195,7 +205,11 @@ func TestASyncRefusedForTheRateLimitIsLaterNotAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	var logged strings.Builder
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -377,7 +391,9 @@ func TestAHumanCommentProducesOneEvent(t *testing.T) {
 		t.Fatalf("%d comment events, want 1 (istari's own comment is not one)", len(comments))
 	}
 	var p struct{ Author, Body string }
-	json.Unmarshal(comments[0].Payload, &p)
+	if err := json.Unmarshal(comments[0].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
 	if p.Author != "bob" || p.Body != "Use the v2 API." || comments[0].Ticket != ghRef(n) || comments[0].Actor != "human:bob" {
 		t.Fatalf("comment event = %+v %+v", comments[0], p)
 	}

@@ -879,7 +879,7 @@ func (p *Provider) send(ctx context.Context, method, path string, data []byte, o
 		var e struct {
 			Message string `json:"message"`
 		}
-		json.Unmarshal(reply, &e)
+		json.Unmarshal(reply, &e) //nolint:errcheck // a body that is not GitHub's JSON error is quoted whole below
 		if e.Message == "" {
 			e.Message = strconv.Quote(string(reply))
 		}
