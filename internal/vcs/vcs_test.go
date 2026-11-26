@@ -969,10 +969,10 @@ func TestARedHeadAnsweredUnrelatedIsRerunOnceAndItsNewResultRead(t *testing.T) {
 		t.Fatalf("Unrelated: %v", err)
 	}
 	started, err := w.Rerun(ctx, ref.String())
-	if err != nil || started != vcs.RerunStarted {
+	if err != nil || started != core.RerunStarted {
 		t.Fatalf("Rerun = %v, %v; want started", started, err)
 	}
-	if again, err := w.Rerun(ctx, ref.String()); err != nil || again != vcs.RerunNone {
+	if again, err := w.Rerun(ctx, ref.String()); err != nil || again != core.RerunNone {
 		t.Fatalf("second Rerun = %v, %v; want none: one rerun per head", again, err)
 	}
 	if gh.Reruns() != 1 {
@@ -998,7 +998,7 @@ func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
 	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
 		t.Fatalf("Unrelated: %v", err)
 	}
-	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != vcs.RerunStarted {
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != core.RerunStarted {
 		t.Fatalf("Rerun = %v, %v; want started", started, err)
 	}
 	mustPoll(t, w)
@@ -1027,13 +1027,13 @@ func TestASecondUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T
 	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
 		t.Fatalf("Unrelated: %v", err)
 	}
-	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != vcs.RerunNone {
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
 		t.Fatalf("Rerun refused by GitHub = %v, %v; want none started, so the round starts", got, err)
 	}
 	if err := w.Unrelated(ctx, ref.String(), "still flaky"); err != nil {
 		t.Fatalf("second Unrelated: %v", err)
 	}
-	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != vcs.RerunSpent {
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunSpent {
 		t.Fatalf("Rerun after the second answer = %v, %v; want spent", got, err)
 	}
 	if gh.Reruns() != 0 {
@@ -1062,7 +1062,7 @@ func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.
 	}
 	_, _, w, _, ref = redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "success"})
 	mustPoll(t, w)
-	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != vcs.RerunNone {
+	if started, err := w.Rerun(ctx, ref.String()); err != nil || started != core.RerunNone {
 		t.Fatalf("Rerun without an answer = %v, %v; want none", started, err)
 	}
 }

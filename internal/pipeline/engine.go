@@ -24,19 +24,6 @@ type Files interface {
 	ReadFile(ctx context.Context, repo, path string) ([]byte, error)
 }
 
-// RerunOutcome is what EngineOptions.Rerun did with a red head.
-type RerunOutcome int
-
-const (
-	// RerunNone is no rerun: the rework round starts.
-	RerunNone RerunOutcome = iota
-	// RerunStarted is a rerun of the failed jobs: verify waits for its result.
-	RerunStarted
-	// RerunSpent is a head answered unrelated again after its one rerun or
-	// refusal: it opens no second round, the ticket waits for a human (spec 4.3).
-	RerunSpent
-)
-
 // EngineOptions configures an Engine.
 type EngineOptions struct {
 	Defaults config.Defaults
@@ -60,7 +47,7 @@ type EngineOptions struct {
 	// result and starts no round; RerunSpent: the head was answered again
 	// after its one rerun or refusal, so the ticket is held needs_input.
 	// nil: red CI always starts a round.
-	Rerun func(ctx context.Context, ref string) (RerunOutcome, error)
+	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
 	// pull request is left as it is.
@@ -668,9 +655,9 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		// unrelated again after its one rerun opens no second round on it.
 		if e.opts.Rerun != nil {
 			switch outcome, err := e.opts.Rerun(ctx, tk.Ref); {
-			case err != nil || outcome == RerunStarted:
+			case err != nil || outcome == core.RerunStarted:
 				return err
-			case outcome == RerunSpent:
+			case outcome == core.RerunSpent:
 				_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 				return err
 			}

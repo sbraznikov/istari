@@ -212,10 +212,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	var checks func(ctx context.Context, ref string) (string, bool)
 	var ready func(ctx context.Context, ref string) error
 	var conflict func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error)
-	var rerun func(ctx context.Context, ref string) (pipeline.RerunOutcome, error)
+	var rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	if srv.watch != nil {
 		merged = srv.watch.SeenMerged
-		rerun = rerunOf(srv.watch) // red CI an implementer answered as unrelated (spec 4.3)
+		rerun = srv.watch.Rerun // red CI an implementer answered as unrelated (spec 4.3)
 		conflict = func(ctx context.Context, ref string) (pipeline.PRConflict, bool, error) {
 			pr, err := srv.watch.PullRequestOf(ctx, ref)
 			if errors.Is(err, store.ErrNotFound) {
@@ -574,20 +574,6 @@ func writeError(w http.ResponseWriter, err error) {
 	default:
 		log.Printf("istari: internal error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, ErrorBody{Code: "internal", Message: err.Error()})
-	}
-}
-
-// rerunOf is the watch's rerun of a red head as the engine reads it.
-func rerunOf(w *vcs.Watcher) func(ctx context.Context, ref string) (pipeline.RerunOutcome, error) {
-	return func(ctx context.Context, ref string) (pipeline.RerunOutcome, error) {
-		o, err := w.Rerun(ctx, ref)
-		switch o {
-		case vcs.RerunStarted:
-			return pipeline.RerunStarted, err
-		case vcs.RerunSpent:
-			return pipeline.RerunSpent, err
-		}
-		return pipeline.RerunNone, err
 	}
 }
 

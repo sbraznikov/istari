@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -234,43 +235,28 @@ func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
 	}
 }
 
-// RerunOutcome is what Rerun did with the pull request's red head.
-type RerunOutcome int
-
-const (
-	// RerunNone: no rerun started, because the head has no fresh unrelated
-	// answer or GitHub refused the rerun; the rework round starts.
-	RerunNone RerunOutcome = iota
-	// RerunStarted: the failed jobs run again; verify waits for their result.
-	RerunStarted
-	// RerunSpent: the head was answered unrelated again after it was rerun
-	// or its rerun was refused; no second round starts on it, the ticket
-	// waits for a human (spec 4.3).
-	RerunSpent
-)
-
 // Rerun reruns the failed jobs of the pull request's red head once, when an
 // implementer answered it as unrelated (spec 4.3). The answer is used up by
 // the attempt: a rerun's red result opens the rework round. An answer on a
 // head that was rerun or refused already is spent. The checks istari knew
 // are forgotten when a rerun starts, so the next poll reads its result, and a
 // note in the journal says what was rerun and why, or why not.
-func (w *Watcher) Rerun(ctx context.Context, ticket string) (RerunOutcome, error) {
+func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, error) {
 	t, err := w.PullRequestOf(ctx, ticket)
 	if errors.Is(err, store.ErrNotFound) {
-		return RerunNone, nil
+		return core.RerunNone, nil
 	}
 	if err != nil || t.Checks != "failure" || t.Unrelated != t.SHA {
-		return RerunNone, err
+		return core.RerunNone, err
 	}
 	head, reason := t.SHA, t.Reason
 	if t.Rerun == head {
 		if err := w.record(ctx, t, "vcs.rerun_spent", map[string]any{"number": t.Number, "sha": head, "reason": reason}, func(t *Tracked) {
 			t.Unrelated = "" // the answer holds the ticket once; a human goes on from there
 		}); err != nil {
-			return RerunNone, err
+			return core.RerunNone, err
 		}
-		return RerunSpent, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` is not rerun again, and no further round starts: it was rerun, or could not be, already. The implementer says it is not this change: %s. A human decides how to go on.", head, reason))
+		return core.RerunSpent, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` is not rerun again, and no further round starts: it was rerun, or could not be, already. The implementer says it is not this change: %s. A human decides how to go on.", head, reason))
 	}
 	jobs, rerr := w.client.RerunFailed(ctx, t.Repo, head)
 	started := len(jobs) > 0
@@ -283,16 +269,16 @@ func (w *Watcher) Rerun(ctx context.Context, ticket string) (RerunOutcome, error
 			t.Checks = ""
 		}
 	}); err != nil {
-		return RerunNone, err
+		return core.RerunNone, err
 	}
 	if !started {
-		return RerunNone, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, reason))
+		return core.RerunNone, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun, so the rework round starts: %v. The implementer said it is not this change: %s", head, rerr, reason))
 	}
 	text := fmt.Sprintf("CI on `%s` is rerun, once: %s. The implementer says it is not this change: %s", head, strings.Join(jobs, ", "), reason)
 	if rerr != nil {
 		text += fmt.Sprintf(". Not rerun: %v", rerr)
 	}
-	return RerunStarted, w.note(ctx, ticket, text)
+	return core.RerunStarted, w.note(ctx, ticket, text)
 }
 
 // record appends an event of the tracked pull request with change applied,
