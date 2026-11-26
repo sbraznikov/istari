@@ -19,6 +19,9 @@ type Check struct {
 	// Log is the log of the check's Actions job; "" serves none (404), as
 	// GitHub does for a check that is no Actions job or whose log expired.
 	Log string
+	// Rerun is the conclusion the check reaches when its job is rerun; ""
+	// refuses the rerun (403), as GitHub does for a workflow run too old.
+	Rerun string
 
 	id int64
 }
@@ -94,6 +97,35 @@ func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+}
+
+// rerunJob reruns an Actions job: its check takes the conclusion of Rerun at
+// once, the fake has no queue.
+func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request) {
+	for _, checks := range s.checks {
+		for k := range checks {
+			c := &checks[k]
+			if strconv.FormatInt(c.id, 10) != r.PathValue("id") {
+				continue
+			}
+			if c.Rerun == "" {
+				s.write(w, http.StatusForbidden, map[string]string{"message": "Unable to retry this workflow run because it was created over a month ago"})
+				return
+			}
+			s.reruns++
+			c.Status, c.Conclusion = "completed", c.Rerun
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}
+	s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+}
+
+// Reruns returns how many jobs were rerun through the API.
+func (s *Server) Reruns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reruns
 }
 
 // AddReview adds a review to a pull request.

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -273,11 +272,7 @@ func (h *humanMerge) state(t *testing.T) string {
 // restart stops the daemon and starts it again: its PR watch polls at once.
 func (h *humanMerge) restart(t *testing.T) {
 	t.Helper()
-	if err := h.d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	h.d.cmd.Wait()
-	h.d = startDaemonWithConfig(t, h.dataDir, h.config, h.env...)
+	h.d = restartDaemon(t, h.d, h.dataDir, h.config, h.env...)
 }
 
 // finished asserts the ticket ended in done the way istari's own merge ends
