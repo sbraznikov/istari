@@ -594,11 +594,13 @@ func pausedWithSlowChecks(t *testing.T, n int, check string, hooks map[string]st
 
 func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	t.Parallel()
-	f, s, task := pausedWithSlowChecks(t, 17, "sleep 1", nil, runner.RunnerOptions{Lease: 300 * time.Millisecond})
+	// The check outlasts the lease twice over, so a run that stopped
+	// renewing would lose it.
+	f, s, task := pausedWithSlowChecks(t, 17, "sleep 3", nil, runner.RunnerOptions{Lease: stopLease})
 	// The scheduler expires leases on its ticks; here the test does.
 	// The state is read before the events: a task that leaves claimed
 	// between the two reads is then seen with its task.released event.
-	for deadline := time.Now().Add(10 * time.Second); ; {
+	for deadline := time.Now().Add(30 * time.Second); ; {
 		if time.Now().After(deadline) {
 			t.Fatal("the paused run did not release its task")
 		}
@@ -628,14 +630,14 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	}
 }
 
-// limitLease is the lease of the tests of the stop checkpoint's limit: they
-// are about the limit, not the lease, and a lease this long does not lapse
-// when a loaded machine stalls the renewals for a moment.
-const limitLease = 1500 * time.Millisecond
+// stopLease is the lease of the tests of a stopping run: a lease this long
+// does not lapse when a loaded machine, as CI's race job, stalls the
+// renewals for a moment.
+const stopLease = 1500 * time.Millisecond
 
 func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
 	t.Parallel()
-	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", nil, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: time.Second})
+	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", nil, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: time.Second})
 	abandonedAtItsLimit(t, f, s, task, time.Second) // the check alone takes 5s
 }
 
@@ -644,7 +646,7 @@ func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
 	// The remote holds the push past the limit and then refuses it.
 	pushing := filepath.Join(t.TempDir(), "pushing")
 	hooks := map[string]string{"pre-receive": "touch '" + pushing + "'; sleep 20; exit 1"}
-	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: 6 * time.Second})
+	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: 6 * time.Second})
 	abandonedAtItsLimit(t, f, s, task, 6*time.Second)
 	if _, err := os.Stat(pushing); err != nil {
 		t.Fatalf("the push never reached the remote (%v), want the limit reached while pushing", err)
@@ -703,7 +705,7 @@ func TestAStopCheckpointWhosePushOutlastsItsLimitIsKept(t *testing.T) {
 	t.Parallel()
 	// The remote takes the push at once and answers after the limit: what
 	// it took is the checkpoint, not abandoned work.
-	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": "sleep 12"}, runner.RunnerOptions{Lease: limitLease, StopCheckpoint: 6 * time.Second})
+	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": "sleep 12"}, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: 6 * time.Second})
 	f.waitTask(t, task.ID, core.TaskReady)
 	f.waitEvent(t, "run.exited")
 	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
