@@ -42,11 +42,12 @@ type EngineOptions struct {
 	// nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// Rerun is asked on red CI before a rework round: it reruns the failed
-	// jobs of the head once when the implementer answered them as not caused
-	// by the change (spec 4.3). RerunStarted: verify waits for the new
-	// result and starts no round; RerunSpent: the head was answered again
-	// after its one rerun or refusal, so the ticket is held needs_input.
-	// nil: red CI always starts a round.
+	// jobs of the head when the implementer answered them as not caused by
+	// the change (spec 4.3). RerunStarted: verify waits for the new result
+	// and starts no round; RerunRed: the answered head is red after its
+	// rerun or refusal, so an unrelated round starts; RerunSpent: the head
+	// was answered again after its reruns were used up, so the ticket is
+	// held needs_input. nil: red CI always starts a review round.
 	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
