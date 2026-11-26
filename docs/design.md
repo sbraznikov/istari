@@ -955,7 +955,7 @@ The principle: less model, more deterministic code. The model is non-determinist
 | Main branch | Journal entry | What follows |
 |---|---|---|
 | green | the branch's failure and output, as before | the failure is the ticket's: the agent fixes it |
-| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again, and its implement task is released, not completed. Lifting the hold makes that task ready again: the next implement run opens the pull request |
+| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again, and its implement task is released, not completed. A held ticket's task is not handed out; once the hold is lifted it is, and the next implement run opens the pull request |
 
 A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch. A red that main failed too is not the commit's: after the hold is lifted, `istari pr open` on the same commit runs the checks again.
 
