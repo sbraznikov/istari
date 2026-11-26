@@ -26,7 +26,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	binary = filepath.Join(dir, "istari")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	// Built for tests: its daemon accepts --stepped (spec section 3.1).
+	build := exec.Command("go", "build", "-tags", "istaritest", "-o", binary, ".")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		panic(err)
