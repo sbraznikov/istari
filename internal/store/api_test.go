@@ -33,6 +33,7 @@ var allowedAPI = []string{
 }
 
 func TestAppendIsTheOnlyWritePath(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)

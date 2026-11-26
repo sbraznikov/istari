@@ -15,6 +15,7 @@ import (
 func ref(n int) string { return ghRef(n) }
 
 func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "alex") // alex can write, so is trusted
 	f.run(t)
@@ -34,6 +35,7 @@ func TestAConformingTicketByATrustedAuthorBecomesReadyWithoutAHuman(t *testing.T
 }
 
 func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "alex")
 	parent := f.gh.Seed("Parent", conforming, "alex")
 	f.gh.SetPermission("alex", "write")
@@ -53,6 +55,7 @@ func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testin
 }
 
 func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "alex")
 	f.run(t)
@@ -68,6 +71,7 @@ func TestATicketThatMissesTheStandardIsNotAdmitted(t *testing.T) {
 }
 
 func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol may only read
 	f.run(t)
@@ -95,6 +99,7 @@ func TestAnUntrustedAuthorsTicketWaitsForATrustedMember(t *testing.T) {
 }
 
 func TestAnExplicitTrustedListReplacesWriteAccess(t *testing.T) {
+	t.Parallel()
 	f := newSync(t, "carol")
 	byAlex := f.gh.Seed("a", conforming, "alex") // can write, but not on the list
 	byCarol := f.gh.Seed("c", conforming, "carol")
@@ -111,6 +116,7 @@ func TestAnExplicitTrustedListReplacesWriteAccess(t *testing.T) {
 }
 
 func TestEditingARequiredSectionInReadyReturnsTheTicketToNew(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol")
 	f.run(t)
@@ -129,6 +135,7 @@ func TestEditingARequiredSectionInReadyReturnsTheTicketToNew(t *testing.T) {
 }
 
 func TestEditsOutsideTheRequiredSectionsLeaveTheTicketReady(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol")
 	f.run(t)
@@ -146,6 +153,7 @@ func TestEditsOutsideTheRequiredSectionsLeaveTheTicketReady(t *testing.T) {
 }
 
 func TestTheRepositorysOwnStandardIsReadFromTheTracker(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	f.gh.SetFile(".istari/ticket-standard.toml", "sections = [\"Context\", \"Risks\"]\n")
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -164,6 +172,7 @@ func labelAdmission(f *syncFixture, trusted ...string) {
 }
 
 func TestInLabelModeATrustedAuthorsTicketWaitsInNew(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex") // alex can write, so is trusted
@@ -178,6 +187,7 @@ func TestInLabelModeATrustedAuthorsTicketWaitsInNew(t *testing.T) {
 }
 
 func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -193,6 +203,7 @@ func TestInLabelModeATrustedMembersReadyLabelAdmits(t *testing.T) {
 }
 
 func TestInLabelModeAnUntrustedReadyLabelIsReverted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	n := f.gh.Seed("Add limits", conforming, "alex")
@@ -212,6 +223,7 @@ func TestInLabelModeAnUntrustedReadyLabelIsReverted(t *testing.T) {
 }
 
 func TestInLabelModeTicketReadyAdmitsAndSponsorsATicketBelowTheStandard(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	short := strings.Replace(conforming, "## Out of scope", "## Notes", 1)
@@ -240,6 +252,7 @@ func TestInLabelModeTicketReadyAdmitsAndSponsorsATicketBelowTheStandard(t *testi
 }
 
 func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	labelAdmission(f)
 	parent := f.gh.Seed("Parent", conforming, "alex")
@@ -267,6 +280,7 @@ func TestInLabelModeATicketAnAgentCreatesInheritsTheAdmission(t *testing.T) {
 }
 
 func TestATicketAlreadyReadyStaysReadyWhenTheProjectSwitchesToLabel(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "alex")
 	f.run(t)
@@ -281,6 +295,7 @@ func TestATicketAlreadyReadyStaysReadyWhenTheProjectSwitchesToLabel(t *testing.T
 }
 
 func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", strings.Replace(conforming, "## Out of scope", "## Notes", 1), "carol")
 	f.run(t)
@@ -296,6 +311,7 @@ func TestAReadyLabelOnATicketBelowTheStandardIsReverted(t *testing.T) {
 }
 
 func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", strings.Replace(conforming, "| P1 |", "| P0 |", 1), "alex")
 	f.run(t)
@@ -311,6 +327,7 @@ func TestTheTablesPriorityBecomesThePriorityOnAdmission(t *testing.T) {
 }
 
 func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
 	f.run(t)
@@ -328,6 +345,7 @@ func TestATicketAdmittedByTheReadyLabelGetsItsTablesPriority(t *testing.T) {
 }
 
 func TestATicketAdmittedByHandGetsItsTablesPriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", conforming, "carol") // carol is not trusted
 	f.run(t)

@@ -33,12 +33,18 @@ const reviewTicket = `## What needs to be done
 
 // newReviews makes a ticket whose branch changes cache/cache.go (lines 3–5
 // new) on top of main, which has CODING_STANDARDS.md.
-func newReviews(t *testing.T) *reviewFixture {
+func newReviews(t *testing.T) *reviewFixture { return newReviewsWith(t, nil) }
+
+// newReviewsWith makes the review fixture with more files on the main branch.
+func newReviewsWith(t *testing.T, onMain map[string]string) *reviewFixture {
 	t.Helper()
 	f := newWorkspaces(t)
 	seed := filepath.Join(f.root, "seed")
 	write(t, filepath.Join(seed, "cache", "cache.go"), "package cache\n\n")
 	write(t, filepath.Join(seed, "CODING_STANDARDS.md"), "# Standards\n\n- Every exported\n  function has a doc comment.\n")
+	for name, body := range onMain {
+		write(t, filepath.Join(seed, name), body)
+	}
 	gitIn(t, seed, "add", ".")
 	gitIn(t, seed, "commit", "-q", "-m", "cache")
 	gitIn(t, seed, "push", "-q", "origin", "main")
@@ -240,7 +246,30 @@ func TestCodeFindsTheDiffBaseTheFilesOutsideTheZoneAndTheStandardsForTheReviewer
 	}
 }
 
+func TestTheReviewerLearnsTheMainBranchsChecks(t *testing.T) {
+	t.Parallel()
+	f := newReviewsWith(t, map[string]string{".istari/pipeline.toml": "[checks]\ntest = \"go test ./...\"\nformat = \"test -z \\\"$(gofmt -l .)\\\"\"\ntidy = { run = \"go mod tidy -diff\", at = [\"pr\"] }\n"})
+	in, err := f.ws.ReviewInput(ctx, f.run.Ticket, f.run.Dir, []string{"cache/cache.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range in.Checks {
+		got = append(got, c.Name+": "+c.Run)
+	}
+	if want := []string{"test: go test ./...", `format: test -z "$(gofmt -l .)"`, "tidy: go mod tidy -diff"}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("checks = %q, want %q", got, want)
+	}
+	brief := runner.Brief(runner.BriefInput{Role: "reviewer", Review: &in})
+	for _, want := range []string{"`format`: `test -z \"$(gofmt -l .)\"`", "`tidy`: `go mod tidy -diff`"} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("the reviewer's brief lacks %q:\n%s", want, brief)
+		}
+	}
+}
+
 func TestAReviewerWhoseFirstCompoundCommandIsDeniedStillSubmitsItsReview(t *testing.T) {
+	t.Parallel()
 	// The scripted session opens as the runs of #159 did: one chain with a
 	// command the reviewer may not run, which Claude Code denies whole.
 	denied, err := json.Marshal(map[string]string{"command": "cat .istari/skill.md | head -80; istari whoami; git fetch -q origin main; git log --oneline -3"})

@@ -26,6 +26,7 @@ func (f *syncFixture) prioritized(t *testing.T, n int) []prioritized {
 }
 
 func TestThePriorityLabelOfANewIssueBecomesTheTicketsPriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	f.gh.SetPermission("bob", "write")
 	n := f.gh.Seed("t", "", "bob", "priority:P1")
@@ -43,6 +44,7 @@ func TestThePriorityLabelOfANewIssueBecomesTheTicketsPriority(t *testing.T) {
 }
 
 func TestAPriorityLabelChangedByAMemberChangesThePriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "bug", "priority:P2")
 	f.run(t)
@@ -61,6 +63,7 @@ func TestAPriorityLabelChangedByAMemberChangesThePriority(t *testing.T) {
 }
 
 func TestAPriorityLabelChangedByANonMemberIsRevertedWithAReason(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "bug", "priority:P2")
 	f.run(t)
@@ -84,6 +87,7 @@ func TestAPriorityLabelChangedByANonMemberIsRevertedWithAReason(t *testing.T) {
 }
 
 func TestAPrioritySetInIstariIsWrittenToTheTrackerOnce(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "bug")
 	f.run(t)
@@ -104,6 +108,7 @@ func TestAPrioritySetInIstariIsWrittenToTheTrackerOnce(t *testing.T) {
 }
 
 func TestAStateAndAPriorityChangedTogetherAreBothApplied(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "priority:P2")
 	f.run(t)
@@ -119,6 +124,7 @@ func TestAStateAndAPriorityChangedTogetherAreBothApplied(t *testing.T) {
 }
 
 func TestTheSizeLabelIsTheTicketsSize(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "size:M")
 	f.run(t)
@@ -137,6 +143,7 @@ func TestTheSizeLabelIsTheTicketsSize(t *testing.T) {
 }
 
 func TestAPriorityLabelAddedNextToTheOldOneReplacesIt(t *testing.T) {
+	t.Parallel()
 	for _, order := range [][]string{{"priority:P2", "priority:P0"}, {"priority:P0", "priority:P2"}} {
 		f := newSync(t)
 		n := f.gh.Seed("t", "", "bob", "priority:P2")
@@ -155,6 +162,7 @@ func TestAPriorityLabelAddedNextToTheOldOneReplacesIt(t *testing.T) {
 }
 
 func TestARepositorysOwnPriorityLabelsAreLeftAlone(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "", "bob", "priority:high", "priority:P1")
 	f.run(t)
@@ -191,6 +199,7 @@ func (f *syncFixture) notes(t *testing.T, n int) []string {
 func withTablePriority(p string) string { return strings.Replace(conforming, "| P1 |", "| "+p+" |", 1) }
 
 func TestAPriorityLabelOutranksTheTableAndTheDifferenceIsNotedOnce(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", withTablePriority("P3"), "alex", "priority:P1")
 	f.run(t)
@@ -206,6 +215,7 @@ func TestAPriorityLabelOutranksTheTableAndTheDifferenceIsNotedOnce(t *testing.T)
 }
 
 func TestAfterAdmissionTheLabelNotTheTableChangesThePriority(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("Add limits", withTablePriority("P0"), "alex")
 	f.run(t)
@@ -226,6 +236,7 @@ func TestAfterAdmissionTheLabelNotTheTableChangesThePriority(t *testing.T) {
 }
 
 func TestTheNeedsInATicketsTextAreItsNeeds(t *testing.T) {
+	t.Parallel()
 	f := newSync(t)
 	n := f.gh.Seed("t", "## Dependencies\n\n- Needs: #2, acme/api#7\n", "bob")
 	f.run(t)

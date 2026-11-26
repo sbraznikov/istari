@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sbraznikov/istari/internal/pipeline"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
@@ -320,12 +321,14 @@ func (w *Workspaces) reviewDiff(ctx context.Context, ticket, dir string) (review
 
 // ReviewInput is what code prepares for the reviewer (spec section 7.7):
 // the base of the diff, the changed files and those of them outside the
-// plan's change zone, and the standards sources on the main branch.
+// plan's change zone, the standards sources and the checks on the main
+// branch: what the tooling already enforces (spec section 7.6).
 type ReviewInput struct {
 	Base        string
 	Files       []string
 	OutsideZone []string
 	Standards   []string
+	Checks      []pipeline.Check
 }
 
 // standardsFiles are the files about how to write code that the Standards
@@ -357,6 +360,11 @@ func (w *Workspaces) ReviewInput(ctx context.Context, ticket, dir string, zone [
 	if in.Standards, err = w.mainStandards(ctx, ref.Repo); err != nil {
 		return ReviewInput{}, err
 	}
+	checks, err := w.checks(ctx, ref.Repo)
+	if err != nil {
+		return ReviewInput{}, err
+	}
+	in.Checks = checks.List
 	return in, nil
 }
 

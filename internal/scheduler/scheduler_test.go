@@ -65,6 +65,7 @@ func (d *daemon) count(t *testing.T, filter store.Filter) int {
 }
 
 func TestALeaseThatIsNotRenewedExpiresWithinOneTickAfterItsDeadline(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
 	if _, err := d.srv.Tasks().Create(ctx, "system", core.NewTask{ID: "t_1", Ticket: "gh:acme/web#1", Role: "implementer"}); err != nil {
@@ -94,6 +95,7 @@ func cancelRequest(ref string) json.RawMessage {
 }
 
 func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	path := filepath.Join(t.TempDir(), "istari.db")
 	d := start(t, path, c, nil)
@@ -129,6 +131,7 @@ func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
 }
 
 func TestAnInterruptionBetweenTheActionAndItsRecordDoesNotRepeatTheAction(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	calls := 0
 	// The first run performs the action, then fails as if the daemon died
@@ -163,6 +166,7 @@ func TestAnInterruptionBetweenTheActionAndItsRecordDoesNotRepeatTheAction(t *tes
 }
 
 func TestARefusedActionFiresOnceAndRecordsTheRefusal(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
 	timer, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.fire", cancelRequest("gh:acme/web#404"))
@@ -184,6 +188,7 @@ func TestARefusedActionFiresOnceAndRecordsTheRefusal(t *testing.T) {
 }
 
 func TestScheduleRejectsAnUnknownOperationOrAReadOperation(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
 	for _, op := range []string{"task.explode", "task.list"} {
@@ -194,6 +199,7 @@ func TestScheduleRejectsAnUnknownOperationOrAReadOperation(t *testing.T) {
 }
 
 func TestAnActionRefusedForNowIsTriedAgainOnTheNextTick(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
 	if _, err := d.srv.Tasks().Create(ctx, "system", core.NewTask{ID: "t_1", Ticket: "gh:acme/web#1", Role: "implementer"}); err != nil {
@@ -218,6 +224,7 @@ func TestAnActionRefusedForNowIsTriedAgainOnTheNextTick(t *testing.T) {
 }
 
 func TestScheduleChecksTheRequestAndFillsTheActor(t *testing.T) {
+	t.Parallel()
 	c := newClock()
 	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
 	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "ticket.fire", json.RawMessage(`{"ref":"x","colour":"red"}`)); err == nil {
