@@ -491,6 +491,11 @@ func (e *Engine) resumeGap(ctx context.Context, tk core.Ticket, r round) (bool, 
 	if r.n == 0 {
 		return true, nil
 	}
+	for _, t := range r.tasks {
+		if t.Role == "planner" {
+			return false, nil // it started at planning: no pipeline to read
+		}
+	}
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return false, err
