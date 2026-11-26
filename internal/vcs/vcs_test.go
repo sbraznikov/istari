@@ -906,6 +906,33 @@ func TestARedHeadGetsOneCIEntryWithItsFailureOutput(t *testing.T) {
 	}
 }
 
+func TestAHeadIsReadRedOnlyOnceItsRunHasFinished(t *testing.T) {
+	t.Parallel()
+	gh, s, w, j, ref := redHead(t,
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky"},
+		githubtest.Check{Name: "race", Status: "in_progress"},
+	)
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 1 || got[0] != "pending@abc123" {
+		t.Fatalf("vcs.checks events while race runs = %v, want pending only", got)
+	}
+	if entries := storedEntries(t, j, ref); len(entries) != 0 {
+		t.Fatalf("journal while race runs = %+v, want no ci entry", entries)
+	}
+	gh.SetChecks("abc123",
+		githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky"},
+		githubtest.Check{Name: "race", Status: "completed", Conclusion: "success"},
+	)
+	mustPoll(t, w)
+	mustPoll(t, w)
+	if got := checkEvents(t, s, ref); len(got) != 2 || got[1] != "failure@abc123" {
+		t.Fatalf("vcs.checks events = %v, want pending, then the failure once", got)
+	}
+	if entries := storedEntries(t, j, ref); len(entries) != 1 || entries[0].Kind != journal.CI {
+		t.Fatalf("journal = %+v, want one ci entry", entries)
+	}
+}
+
 func TestALogThatCannotBeReadIsSaidSoAndTheFailureStillCounts(t *testing.T) {
 	t.Parallel()
 	_, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no log: 404
