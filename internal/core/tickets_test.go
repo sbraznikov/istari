@@ -246,6 +246,39 @@ func TestHoldReasonsAndHeldTransitions(t *testing.T) {
 	}
 }
 
+func TestAMergedPullRequestFinishesAHeldTicketAndClearsItsHold(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"attempts_exhausted", "budget_exceeded", "paused"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			tickets, s := newTickets(t, nil)
+			bringTo(t, tickets, core.TicketInReview)
+			if _, err := tickets.SetHold(ctx, "system", ref, reason); err != nil {
+				t.Fatal(err)
+			}
+			_, err := tickets.Fire(ctx, "system", ref, "review_passed")
+			assertCode(t, err, core.CodeTicketHeld)
+			got, err := tickets.Fire(ctx, "system", ref, "merged")
+			if err != nil || got.State != core.TicketDone || got.Hold != "" {
+				t.Fatalf("merged while held = %s/%q, %v; want done without a hold", got.State, got.Hold, err)
+			}
+			events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
+			last := events[len(events)-1]
+			var payload map[string]any
+			if err := json.Unmarshal(last.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if last.Type != core.EventTicketTransitioned || payload["hold_cleared"] != reason {
+				t.Fatalf("last event = %s %s, want ticket.transitioned with hold_cleared %s", last.Type, last.Payload, reason)
+			}
+			replayed, err := core.ReplayTicket(events)
+			if err != nil || replayed.State != core.TicketDone || replayed.Hold != "" {
+				t.Fatalf("replay = %s/%q, %v; want done without a hold", replayed.State, replayed.Hold, err)
+			}
+		})
+	}
+}
+
 func TestMissingTicketsAndMissingHolds(t *testing.T) {
 	t.Parallel()
 	tickets, _ := newTickets(t, nil)
