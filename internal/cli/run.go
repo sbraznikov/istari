@@ -150,7 +150,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, res, []string{"OK"}, [][]string{{"the task completes when the run ends"}})
 	})
-	complete.Flags().StringVar(&ciUnrelated, "ci-unrelated", "", "for the implementer: the red CI is not caused by the change, and why; istari reruns the failed jobs once")
+	complete.Flags().StringVar(&ciUnrelated, "ci-unrelated", "", "for the implementer: the red CI is not caused by the change, and why; istari reruns the failed jobs, at most twice per head")
 	checkpoint := writeCommand(opts, &cobra.Command{
 		Use:   "checkpoint \"<done>; <next>\"",
 		Short: "For the implementer: commit, run the checks, push and record the step in the ticket",

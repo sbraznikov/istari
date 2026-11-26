@@ -20,7 +20,7 @@ A ticket is a state machine with eight states. It moves only along the arrows be
 
 - **Verify.** Between the implementer and the reviewer there is a `verify` stage with no agent. Code waits for green CI and then marks the draft pull request ready for review.
 - **Split.** The parent of a split ticket has no tasks of its own. It waits in `in_progress` until every child is `done`.
-- **Rework.** A ticket returns for rework at most `max_review_rounds` times. A round caused by a conflict with the main branch does not count.
+- **Rework.** A ticket returns for rework at most `max_review_rounds` times. A round caused by a conflict with the main branch does not count, nor does a round after a red CI the implementer answered as not caused by the change; one head is rerun at most twice, and the third such answer on it holds the ticket `needs_input`.
 - **Cancel.** A human can cancel a ticket in any unfinished state (T13): its runs are stopped and its pull request is closed. `reopen` returns a canceled ticket to `new` (T14).
 - **No way back from `done`.** A regression is filed as a new ticket that links to the original one.
 - **Edits.** Editing the mandatory sections of a `ready` ticket sends it back to `new` to be checked again (T15).
