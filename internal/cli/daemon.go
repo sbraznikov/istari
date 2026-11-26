@@ -92,7 +92,8 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&paused, "paused", false, "start with the hand-out of tasks paused for all projects, as istari pause --all does; tickets still sync")
 	cmd.Flags().BoolVar(&stepped, "stepped", false, "tests only: run the scheduler, pipeline, sync and watch loops one pass per POST /v1/step")
-	cmd.Flags().MarkHidden("stepped")
+	// MarkHidden fails only for a flag that does not exist; "stepped" is declared on the line above.
+	_ = cmd.Flags().MarkHidden("stepped")
 	cmd.AddCommand(newDaemonInstallCommand(opts))
 	return cmd
 }

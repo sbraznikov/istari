@@ -63,7 +63,7 @@ type Server struct {
 	changed   *notifier
 	clock     func() time.Time
 	keys      keyLocks
-	stepping  sync.Mutex // one POST /v1/step at a time
+	mu        sync.Mutex // one POST /v1/step at a time
 	closing   chan struct{}
 	once      sync.Once
 	mux       *http.ServeMux

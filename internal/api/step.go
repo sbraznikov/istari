@@ -16,13 +16,21 @@ const (
 	LoopWatch     = "watch"     // the PR watch
 )
 
+// passes maps each loop name to its one pass: the one place that names the
+// loops, for both the check of a request and the step itself.
+var passes = map[string]func(*Server, context.Context) error{
+	LoopScheduler: (*Server).stepScheduler,
+	LoopPipeline:  (*Server).stepPipeline,
+	LoopSync:      (*Server).stepSync,
+	LoopWatch:     (*Server).stepWatch,
+}
+
 type stepRequest struct {
 	Loop string `json:"loop"`
 }
 
 func (r stepRequest) validate() error {
-	switch r.Loop {
-	case LoopScheduler, LoopPipeline, LoopSync, LoopWatch:
+	if _, ok := passes[r.Loop]; ok {
 		return nil
 	}
 	return fmt.Errorf("loop %q is not %s, %s, %s or %s", r.Loop, LoopScheduler, LoopPipeline, LoopSync, LoopWatch)
@@ -32,30 +40,38 @@ func (r stepRequest) validate() error {
 // at a time, as each timed loop runs one pass at a time. A loop the daemon
 // has not configured, such as sync without a tracker, is refused.
 func (s *Server) Step(ctx context.Context, loop string) error {
-	s.stepping.Lock()
-	defer s.stepping.Unlock()
-	switch loop {
-	case LoopScheduler:
-		return s.sched.Step(ctx)
-	case LoopPipeline:
-		if len(s.repos) == 0 {
-			return &core.Error{Code: core.CodeInvalidState, Message: "no pipeline to step: no project has a repository"}
-		}
-		s.reconcile(ctx)
-		return nil
-	case LoopSync:
-		if s.syncer == nil {
-			return &core.Error{Code: core.CodeInvalidState, Message: "no ticket sync to step: no tracker is configured"}
-		}
-		_, err := s.syncer.Sync(ctx)
-		return err
-	case LoopWatch:
-		if s.watch == nil {
-			return &core.Error{Code: core.CodeInvalidState, Message: "no PR watch to step: pushes and pull requests are off"}
-		}
-		return s.watch.Poll(ctx)
+	req := stepRequest{Loop: loop}
+	if err := req.validate(); err != nil {
+		return errBadRequest{err}
 	}
-	return errBadRequest{stepRequest{Loop: loop}.validate()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return passes[loop](s, ctx)
+}
+
+func (s *Server) stepScheduler(ctx context.Context) error { return s.sched.Step(ctx) }
+
+func (s *Server) stepPipeline(ctx context.Context) error {
+	if len(s.repos) == 0 {
+		return &core.Error{Code: core.CodeInvalidState, Message: "no pipeline to step: no project has a repository"}
+	}
+	s.reconcile(ctx)
+	return nil
+}
+
+func (s *Server) stepSync(ctx context.Context) error {
+	if s.syncer == nil {
+		return &core.Error{Code: core.CodeInvalidState, Message: "no ticket sync to step: no tracker is configured"}
+	}
+	_, err := s.syncer.Sync(ctx)
+	return err
+}
+
+func (s *Server) stepWatch(ctx context.Context) error {
+	if s.watch == nil {
+		return &core.Error{Code: core.CodeInvalidState, Message: "no PR watch to step: pushes and pull requests are off"}
+	}
+	return s.watch.Poll(ctx)
 }
 
 // stepHandler answers POST /v1/step; only a stepped daemon has the route.
