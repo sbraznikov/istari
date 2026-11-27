@@ -472,17 +472,21 @@ func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
 
 func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	dataDir := newDataDir(t)
+	d := startSteppedDaemon(t, dataDir, writeDaemonConfig(t, dataDir))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
-	var now []struct{ Cursor string }
-	d.mustCLI(t, &now, "tail")
 	var timer struct{ ID, State string }
-	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
+	d.mustCLI(t, &timer, "schedule", "--in", "1ms", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
 	if timer.ID == "" || timer.State != "pending" {
 		t.Fatalf("schedule = %+v", timer)
 	}
-	d.mustCLI(t, nil, "wait", "type=timer.fired", "--after", now[len(now)-1].Cursor, "--timeout", "10s")
+	d.step(t, "scheduler")
+	var fired []struct{ Type string }
+	d.mustCLI(t, &fired, "tail", "--type", "timer.fired")
+	if len(fired) != 1 {
+		t.Fatalf("after the scheduler step %d timers fired, want 1", len(fired))
+	}
 	var tk struct{ State string }
 	d.mustCLI(t, &tk, "ticket", "show", ref)
 	if tk.State != "canceled" {
