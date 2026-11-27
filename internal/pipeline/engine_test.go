@@ -1109,10 +1109,7 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	}
 }
 
-// A later round is never refilled the way a recovered first round is, so
-// only the T11 guard keeps a round cut short before its merge task from
-// merging.
-func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
+func TestALaterRoundWithoutItsMergeTaskGetsItAndDoesNotMerge(t *testing.T) {
 	t.Parallel()
 	twin := newEngine(t, config.Defaults{}, nil)
 	twin.readyTicket(t, ref)
@@ -1143,16 +1140,11 @@ func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
 	}
 	f.reconcile(t)
 	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
-		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: it has no merge task (T11)", st)
+		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: nothing merged it (T11)", st)
 	}
-	after, err := f.tasks.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range after {
-		if pipeline.StageOf(task) == pipeline.StageMerge {
-			t.Fatalf("the reconcile made merge task %s: the test no longer reaches the guard alone", task.ID)
-		}
+	approve := f.stage(t, ref, "approve")
+	if merge := f.stage(t, ref, pipeline.StageMerge); pipeline.RoundOf(merge) != 2 || merge.State != core.TaskWaiting || !slices.Equal(merge.Needs, []string{approve.ID}) {
+		t.Fatalf("merge %s is %s needing %v, want round 2's, waiting on %s", merge.ID, merge.State, merge.Needs, approve.ID)
 	}
 }
 
@@ -1536,5 +1528,68 @@ func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
 		if n := strings.Count(logged.String(), repo+": .istari/pipeline.toml line 5"); n != 1 {
 			t.Errorf("%s: the warning was logged %d times, want once\n%s", repo, n, logged.String())
 		}
+	}
+}
+
+// cutShort gives f the tasks of twin that keep names, under the ID keep
+// returns, completed when done: a round a daemon stopped making between two
+// creates.
+func (f *engineFixture) cutShort(t *testing.T, twin *engineFixture, keep func(core.Task) (id string, ok, done bool)) {
+	t.Helper()
+	all, err := twin.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range all {
+		id, ok, done := keep(task)
+		if !ok {
+			continue
+		}
+		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: task.Ticket, Project: task.Project, Role: task.Role, MaxAttempts: task.MaxAttempts}); err != nil {
+			t.Fatal(err)
+		}
+		if !done {
+			continue
+		}
+		lease, err := f.tasks.Claim(ctx, "human:alex", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.tasks.Complete(ctx, lease); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAPlanningRoundWithoutItsPlanApprovalTaskGetsItAndDoesNotReachT4(t *testing.T) {
+	t.Parallel()
+	gate := config.Defaults{PlanGate: true}
+	twin := newEngine(t, gate, nil)
+	twin.readyTicket(t, ref)
+	twin.reconcile(t)
+	// The daemon stopped after it made the plan task; the plan is done.
+	f := newEngine(t, gate, nil)
+	f.readyTicket(t, ref)
+	if _, err := f.tickets.Fire(ctx, "system", ref, "start"); err != nil {
+		t.Fatal(err)
+	}
+	f.cutShort(t, twin, func(task core.Task) (string, bool, bool) {
+		return task.ID, pipeline.StageOf(task) == "plan", true
+	})
+	plan := f.stage(t, ref, "plan")
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketPlanning {
+		t.Fatalf("the ticket is %s, want planning: no human approved the plan (T4)", st)
+	}
+	if a := f.stage(t, ref, pipeline.PlanApproval); a.State != core.TaskReady || !slices.Equal(a.Needs, []string{plan.ID}) {
+		t.Fatalf("plan_approval is %s needing %v, want ready on %s", a.State, a.Needs, plan.ID)
+	}
+	if impl := f.stage(t, ref, "implement"); impl.State != core.TaskWaiting {
+		t.Fatalf("implement is %s, want waiting for the approval", impl.State)
+	}
+	tasks, _ := f.tasks.List(ctx)
+	f.reconcile(t) // idempotent
+	if again, _ := f.tasks.List(ctx); len(again) != len(tasks) || f.state(t, ref) != core.TicketPlanning {
+		t.Fatalf("a second reconcile: %d tasks (was %d), %s", len(again), len(tasks), f.state(t, ref))
 	}
 }
