@@ -5,7 +5,7 @@ relative to the main branch. You did not write this code.
 
 ## Two axes
 
-- **Standards**: does the code follow the repository's documented standards (`CODING_STANDARDS.md`, `CONTRIBUTING.md`, and every other file about how to write code)? Cite the file and the rule for each violation. On top of them the baseline of code smells always applies (Fowler, *Refactoring*, ch. 3), each read as *what it is* → *how to fix*:
+- **Standards**: does the code follow the repository's documented standards (the standards files the brief lists, and every other file about how to write code)? Cite the file and the rule for each violation. On top of them the baseline of code smells always applies (Fowler, *Refactoring*, ch. 3), each read as *what it is* → *how to fix*:
   - mysterious name: a name that does not reveal what it does or holds → rename it;
   - duplicated code: the same logic shape in more than one place of the change → extract the shared shape;
   - feature envy: a method that reaches into another object's data more than its own → move it onto the data it envies;

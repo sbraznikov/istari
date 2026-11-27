@@ -882,7 +882,7 @@ Code writes the table at the end of each body (type, size, the parent's priority
 - **Red first.** The failing test is written first, then exactly as much code as it takes to make it pass. No code for the future.
 - **Refactoring is not part of the cycle.** It belongs to the review stage.
 - **Forbidden kinds of tests.** Implementation-coupled ones (mocks of internal parts, testing private methods, verification that bypasses the interface) and tautological ones (the expected value is computed the same way as in the code).
-- **Project language.** Test and interface names are taken from `GLOSSARY.md`, and decisions from ADRs are followed; a decision is replaced by a new ADR, not broken.
+- **Project language.** Test and interface names are taken from the project's glossary among its sources of truth (`GLOSSARY.md` here), and decisions from ADRs are followed; a decision is replaced by a new ADR, not broken.
 
 **Implementer: PR description** (after `pr`).
 

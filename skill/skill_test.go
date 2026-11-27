@@ -36,12 +36,12 @@ var roleRules = map[string]map[string][]string{
 		"red first":               {"Red first"},
 		"refactoring outside":     {"Refactoring is not part of the cycle"},
 		"forbidden tests":         {"Implementation-coupled tests", "tautological tests"},
-		"project language":        {"GLOSSARY.md", "ADRs"},
+		"project language":        {"the project's glossary", "ADRs"},
 		"PR description":          {"**Summary**", "**Evidence**", "**Merge Danger**", "one-way or a two-way door", "blast radius"},
 		"self-review, two axes":   {"review your own work along two axes", "Standards and Spec"},
 		"answering a smell":       {"either fix the code or reply in the pull request why it is not a flaw here"},
 		"a larger size":           {"the size turned out larger"},
-		"brief PR prose":          {"keep the prose brief", "domain language from `GLOSSARY.md`"},
+		"brief PR prose":          {"keep the prose brief", "domain language from its glossary"},
 		"ADRs are replaced":       {"replaced by a new ADR"},
 	},
 	"reviewer": {
@@ -81,6 +81,10 @@ var everyRoleRules = map[string][]string{
 	"a document-fix ticket": {"a ticket of its own", "section 4.5", "this ticket needs it"},
 }
 
+// repositoryDocuments are the sources of truth this repository's AGENTS.md
+// lists, and the standards files istari looks for: a role names none of them.
+var repositoryDocuments = []string{"docs/design.md", "docs/tui", "CODING_STANDARDS.md", "CONTRIBUTING.md", "GLOSSARY.md"}
+
 func TestEveryRoleWorksByTheRepositorysSourcesOfTruth(t *testing.T) {
 	t.Parallel()
 	for role := range roleRules {
@@ -92,8 +96,10 @@ func TestEveryRoleWorksByTheRepositorysSourcesOfTruth(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(text, "docs/design.md") {
-			t.Errorf("%s: the instruction names docs/design.md, a document of this repository", role)
+		for _, doc := range repositoryDocuments {
+			if strings.Contains(text, doc) {
+				t.Errorf("%s: the instruction names %s, a document of this repository", role, doc)
+			}
 		}
 	}
 }

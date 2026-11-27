@@ -42,11 +42,11 @@ standard (spec section 4.5) and say in your question that this ticket needs it.
 - **Red first.** Write the failing test first, then exactly as much code as it takes to pass. No code for the future.
 - **Refactoring is not part of the cycle.** It belongs to the review stage.
 - **Forbidden tests.** Implementation-coupled tests (mocks of internal collaborators, tests of private functions, verification that bypasses the interface) and tautological tests (the expected value computed the same way the code computes it). Expected values come from an independent source: a literal, a worked example, the spec.
-- **The project's language.** Take test and interface names from `GLOSSARY.md`, and follow the decisions in the ADRs.
+- **The project's language.** Take test and interface names from the project's glossary among its sources of truth, and follow the decisions in the ADRs.
 
 ## Pull request description
 
-No preamble; keep the prose brief and use the project's domain language from `GLOSSARY.md`. Three sections:
+No preamble; keep the prose brief and use the project's domain language from its glossary. Three sections:
 
 - **Summary**: the smallest view that makes the change clear: pseudocode, a call tree, a file tree, a diagram or a diff sketch.
 - **Evidence**: before and after: output, a screenshot, a failing and then a passing test run.
