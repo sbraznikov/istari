@@ -231,6 +231,56 @@ func TestReviewRoundsAreCountedUpToTheLimit(t *testing.T) {
 	}
 }
 
+func TestAHumanGrantsOneMoreReviewRoundAfterTheLimit(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{}, files{"acme/web": "[limits]\nmax_review_rounds = 2\n\n[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\", \"verify\"]\n"})
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	if _, granted, err := f.engine.GrantRound(ctx, ref, "human:alex", "too early"); err != nil || granted {
+		t.Fatalf("GrantRound with rounds left = granted %v, %v; want nothing granted", granted, err)
+	}
+	if err := f.engine.RequestChanges(ctx, ref, "agent:reviewer-1"); err != nil {
+		t.Fatalf("round 2: %v", err)
+	}
+	if err := f.engine.RequestChanges(ctx, ref, "agent:reviewer-1"); err == nil {
+		t.Fatal("a third round was opened, want the ticket held")
+	}
+	if _, err := f.tickets.ClearHold(ctx, "human:alex", ref, "attempts_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, granted, err := f.engine.GrantRound(ctx, ref, "human:alex", "not held"); err != nil || granted {
+		t.Fatalf("GrantRound on a ticket without a hold = granted %v, %v; want nothing granted", granted, err)
+	}
+	if _, err := f.tickets.SetHold(ctx, "system", ref, "attempts_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	next, granted, err := f.engine.GrantRound(ctx, ref, "human:alex", "the decision is in the ticket")
+	if err != nil || !granted || next != 3 {
+		t.Fatalf("GrantRound after the limit = round %d, granted %v, %v; want round 3 granted", next, granted, err)
+	}
+	if _, err := f.tickets.ClearHold(ctx, "human:alex", ref, "attempts_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.RequestChanges(ctx, ref, "agent:reviewer-1"); err != nil {
+		t.Fatalf("the granted round 3: %v", err)
+	}
+	if impl := f.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 3 || impl.State != core.TaskReady {
+		t.Fatalf("implement after the grant is %s (round %d), want a ready round-3 task", impl.State, pipeline.RoundOf(impl))
+	}
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "" {
+		t.Fatalf("hold = %q after the granted round opened, want none", tk.Hold)
+	}
+	err = f.engine.RequestChanges(ctx, ref, "agent:reviewer-1")
+	if err == nil || !strings.Contains(err.Error(), "max_review_rounds") {
+		t.Fatalf("findings in the granted round: %v, want refused by the raised limit", err)
+	}
+	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after the granted round, want attempts_exhausted", tk.Hold)
+	}
+}
+
 func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
 	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n"})
