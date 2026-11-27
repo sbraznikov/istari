@@ -79,7 +79,9 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the killed runner's lease did not expire")
+			got, err := f.tasks.Get(ctx, task.ID)
+			t.Fatalf("the killed runner's lease did not expire: the task is %s by %s, lease until %s (now %s, %v); last ExpireLeases = %v",
+				got.State, got.Owner, got.LeaseUntil.Format("15:04:05.000"), time.Now().Format("15:04:05.000"), err, expired)
 		}
 	}
 	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),

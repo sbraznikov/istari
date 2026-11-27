@@ -672,6 +672,11 @@ const stopLease = 5 * time.Second
 // second unloaded; #278 saw them use 6s): the limit is reached only while
 // that blocks. A test that reaches it takes as long, so it is no longer:
 // twenty rounds of the tests that reach it fit the checkpoint's flaky check.
+//
+// This is the one wall-clock margin left (#278): MakeWithin's limit is a
+// real context timeout, so a machine that spends 15s before the gate still
+// reaches it early. Removing it needs a seam in production code that lets
+// the test end the limit; that is a choice for a human, not this test.
 const stopLimit = 15 * time.Second
 
 // blocks is a shell script that touches started and then blocks past
@@ -917,9 +922,24 @@ func (f *runFixture) waitRenewedPastTheClaim(t *testing.T, lease time.Duration) 
 	t.Helper()
 	for deadline := time.Now().Add(waitFor); !renewedPastTheClaim(ctx, f, lease); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("the lease was not renewed past the lease of the claim")
+			t.Fatalf("the lease was not renewed past the lease of the claim: claimed at %v, renewed at %v, want a renewal after claim+%s",
+				eventTimes(f, "task.claimed"), eventTimes(f, "task.renewed"), lease)
 		}
 	}
+}
+
+// eventTimes lists when the events of type typ happened, for a failure
+// message.
+func eventTimes(f *runFixture, typ string) []string {
+	events, err := f.store.Read(ctx, "", store.Filter{TypePrefix: typ}, 0)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	times := make([]string, 0, len(events))
+	for _, e := range events {
+		times = append(times, e.At.Format("15:04:05.000"))
+	}
+	return times
 }
 
 // renewedAfter tells whether a task.renewed event is dated after at.
