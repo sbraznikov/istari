@@ -363,3 +363,65 @@ func TestAPullRequestAHumanMergesFinishesItsTicketWhenSyncSeesTheClosedIssueFirs
 	h.d.mustCLI(t, nil, "sync")
 	h.finished(t)
 }
+
+// neededTicket is a paused ready ticket and a ready one that needs it, held
+// on waiting_dependency, served by a fake GitHub. Its daemon is stepped, and
+// neither ticket is started.
+type neededTicket struct {
+	gh              *githubtest.Server
+	d               *daemon
+	need            int
+	needRef, depRef string
+}
+
+func newNeededTicket(t *testing.T) *neededTicket {
+	t.Helper()
+	n := &neededTicket{gh: githubtest.New(t)}
+	body := strings.SplitN(conforming, "\n", 2)[1]
+	n.need = n.gh.Seed("Add limits", body, "alex")
+	dependent := n.gh.Seed("Use limits", strings.Replace(body, "- Needs: none", fmt.Sprintf("- Needs: #%d", n.need), 1), "alex")
+	n.needRef = fmt.Sprintf("gh:%s#%d", githubtest.Repo, n.need)
+	n.depRef = fmt.Sprintf("gh:%s#%d", githubtest.Repo, dependent)
+	dataDir := newDataDir(t)
+	config := filepath.Join(t.TempDir(), "config.toml")
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.d = startSteppedDaemon(t, dataDir, config, "PATH="+fakeGH(t, n.gh.Token), "GITHUB_API_URL="+n.gh.URL)
+	n.d.mustCLI(t, nil, "sync")
+	n.d.mustCLI(t, nil, "ticket", "pause", n.needRef) // stays ready: the pipeline does not start it
+	n.d.step(t, "pipeline")
+	if st, hold := n.show(t, n.needRef); st != "ready" || hold != "paused" {
+		t.Fatalf("the needed ticket is %s, hold %q; want ready, paused", st, hold)
+	}
+	if st, hold := n.show(t, n.depRef); st != "ready" || hold != "waiting_dependency" {
+		t.Fatalf("the dependent ticket is %s, hold %q; want ready on waiting_dependency", st, hold)
+	}
+	return n
+}
+
+func (n *neededTicket) show(t *testing.T, ref string) (state, hold string) {
+	t.Helper()
+	var tk struct{ State, Hold string }
+	n.d.mustCLI(t, &tk, "ticket", "show", ref)
+	return tk.State, tk.Hold
+}
+
+func TestAHumanClosingAnIssueAsCompletedFinishesItsTicket(t *testing.T) {
+	t.Parallel()
+	n := newNeededTicket(t)
+	n.gh.HumanClose(n.need, "alex", "completed")
+	n.d.mustCLI(t, nil, "sync")
+	if st, _ := n.show(t, n.needRef); st != "done" {
+		t.Fatalf("the ticket of an issue a human closed as completed is %s, want done\n%s", st, n.d.stderr)
+	}
+	if i := n.gh.Issue(n.need); i.StateReason != "completed" || !slices.Contains(i.Labels, "istari:done") {
+		t.Fatalf("the issue is %s with %v, want completed with istari:done", i.StateReason, i.Labels)
+	}
+	n.d.step(t, "pipeline")
+	// Its need done, the pipeline may start it at once (T3).
+	if st, hold := n.show(t, n.depRef); st != "ready" && st != "planning" || hold != "" {
+		t.Fatalf("the ticket that needs it is %s, hold %q; want ready or planning without a hold", st, hold)
+	}
+}

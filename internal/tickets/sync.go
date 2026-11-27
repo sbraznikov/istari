@@ -675,7 +675,7 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 	case tracker.State == "" && x.version > 0:
 		return s.revert(ctx, x, change{what: "removing the state label"}, "istari keeps exactly one state label on its tickets")
 	case tracker.State == "" && tracker.Closed && !local.Closed:
-		// Closed before istari labelled it: a request to cancel.
+		// Closed before istari labelled it: a request to finish or cancel.
 		return s.request(ctx, x, tracker)
 	case tracker == x.base.side || tracker.State == "" || tracker == local,
 		tracker.Closed && local.State == core.TicketDone && tracker.State == x.base.State:
@@ -823,8 +823,10 @@ func (s *Syncer) push(ctx context.Context, x *syncing, tk core.Ticket) error {
 }
 
 // humanTriggers are the transitions a human may request by editing the
-// tracker: the ones spec 4.1 has a human initiate (accept is the manual
-// admission of spec 4.5). The others are made by istari itself.
+// tracker's labels or reopening the issue: the ones spec 4.1 has a human
+// initiate (accept is the manual admission of spec 4.5). The others are made
+// by istari itself. Closing the issue names its own trigger, cancel or
+// complete (T13, T16), from how it was closed.
 var humanTriggers = []string{"accept", "cancel", "reopen"}
 
 // change is a human's edit in the tracker.
@@ -836,14 +838,19 @@ type change struct {
 // request treats the tracker's differing state as a human's request.
 func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	var target core.TicketState
-	var kind, label string
+	var kind, label, trigger string
 	var c change
 	switch local := x.tk.State; {
 	case tracker.State != "" && tracker.State != local:
 		target, kind, label = tracker.State, "labeled", "istari:"+string(tracker.State)
 		c.what = "the label `" + label + "`"
 	case tracker.Closed && !finished(local):
-		target, kind, c.what = core.TicketCanceled, "closed", "closing the issue"
+		// Closed as completed finishes the ticket (T16), as not planned or a
+		// duplicate cancels it (T13).
+		target, kind, trigger, c.what = core.TicketCanceled, "closed", "cancel", "closing the issue"
+		if closedState(x.t.ClosedAs) == core.TicketDone {
+			target, trigger = core.TicketDone, "complete"
+		}
 	case !tracker.Closed && local == core.TicketCanceled:
 		target, kind, c.what = core.TicketNew, "reopened", "reopening the issue"
 	case !tracker.Closed && local == core.TicketDone:
@@ -871,12 +878,14 @@ func (s *Syncer) request(ctx context.Context, x *syncing, tracker side) error {
 	case target == x.tk.State:
 		return s.revert(ctx, x, c, "holds are set by istari; use istari ticket pause, resume or retry")
 	}
-	trigger, ok := core.TriggerTo(x.tk.State, target)
-	if !ok {
-		return s.revert(ctx, x, c, fmt.Sprintf("a ticket in `%s` cannot go to `%s`", x.tk.State, target))
-	}
-	if !slices.Contains(humanTriggers, trigger) {
-		return s.revert(ctx, x, c, fmt.Sprintf("`%s` → `%s` is %s, and istari makes this transition itself", x.tk.State, target, trigger))
+	if trigger == "" { // a label or a reopen: the table names the trigger
+		var ok bool
+		if trigger, ok = core.TriggerTo(x.tk.State, target); !ok {
+			return s.revert(ctx, x, c, fmt.Sprintf("a ticket in `%s` cannot go to `%s`", x.tk.State, target))
+		}
+		if !slices.Contains(humanTriggers, trigger) {
+			return s.revert(ctx, x, c, fmt.Sprintf("`%s` → `%s` is %s, and istari makes this transition itself", x.tk.State, target, trigger))
+		}
 	}
 	if who == "" {
 		return s.revert(ctx, x, c, "who made the change is unknown, so its right to make it cannot be checked")
