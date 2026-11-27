@@ -627,11 +627,9 @@ func TestTwoConcurrentClaimsOfTasksOfOneTicketGiveOneRun(t *testing.T) {
 		errs := make([]error, 2)
 		var wg sync.WaitGroup
 		for i := range errs {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				leases[i], errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), ids[i])
-			}()
+			})
 		}
 		wg.Wait()
 		winner, loser := -1, -1
@@ -669,19 +667,18 @@ func TestConcurrentClaimsOfTasksOfDifferentTicketsAllWin(t *testing.T) {
 	t.Parallel()
 	for round := range 20 {
 		f := newFixture(t)
-		for _, ref := range []string{"gh:acme/web#1", "gh:acme/web#2"} {
-			if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_" + ref[len(ref)-1:], Ticket: ref, Project: "web", Role: "implementer"}); err != nil {
+		ids := map[string]string{"t_1": "gh:acme/web#1", "t_2": "gh:acme/web#2"}
+		for id, ref := range ids {
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: ref, Project: "web", Role: "implementer"}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		errs := make([]error, 2)
 		var wg sync.WaitGroup
 		for i, id := range []string{"t_1", "t_2"} {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_, errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), id)
-			}()
+			})
 		}
 		wg.Wait()
 		if errs[0] != nil || errs[1] != nil {

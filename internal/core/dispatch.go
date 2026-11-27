@@ -93,7 +93,7 @@ func (t *Tasks) admit(ctx context.Context, actor string, task Task) (store.Chang
 			continue
 		}
 		if agent && other.Ticket == task.Ticket && strings.HasPrefix(other.Owner, agentActor) {
-			return store.Change{}, errorf(CodeTicketBusy, "ticket %s has a run of task %s in its worktree", task.Ticket, other.ID)
+			return store.Change{}, errorf(CodeTicketBusy, "ticket %s has a run of task %s in its worktree; task %s stays ready and is handed out after that run ends", task.Ticket, other.ID, task.ID)
 		}
 		total++
 		if other.Project == task.Project {
