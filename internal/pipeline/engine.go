@@ -337,20 +337,12 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && r.kind == reviewRound) && r.others == 0 && len(tk.Children) == 0 {
-		// A ticket past planning without tasks was recovered from the
-		// tracker (istari recover): it gets the stages of its state on.
-		// Its first round is expanded again, as expand skips the tasks that
-		// exist: a daemon stopped while it made them left out the rest, and
-		// round.done reads a stage without a task as completed.
-		if err := e.expand(ctx, tk, 1, reviewRound, from); err != nil {
-			return err
-		}
-		tasks, err := e.tasks.List(ctx)
-		if err != nil {
-			return err
-		}
-		r = roundOf(tk.Ref, tasks)
+	if tk.State == core.TicketPlanning && r.n == 0 && r.others > 0 {
+		return nil // someone made this ticket's tasks by hand: they are theirs
+	}
+	r, err := e.refill(ctx, tk, r)
+	if err != nil {
+		return err
 	}
 	fire := func(trigger string) error {
 		_, err := e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, trigger)
@@ -420,19 +412,6 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		tk.State = core.TicketPlanning
 		return e.reconcile(ctx, tk, all)
 	case core.TicketPlanning:
-		if r.n == 0 && r.others > 0 {
-			return nil // someone made this ticket's tasks by hand: they are theirs
-		}
-		if r.n == 0 {
-			if err := e.expand(ctx, tk, 1, reviewRound, nil); err != nil {
-				return err
-			}
-			tasks, err := e.tasks.List(ctx)
-			if err != nil {
-				return err
-			}
-			r = roundOf(tk.Ref, tasks)
-		}
 		if r.done("plan", PlanApproval) {
 			// T4 needs a published plan, and a ticket above max_size reaches
 			// in_progress only by a split (T5). Otherwise a human looks.
@@ -594,6 +573,52 @@ func (e *Engine) childCanceled(ctx context.Context, tk core.Ticket) bool {
 // review yet: an open need holds it (spec 4.1).
 func beforeReview(state core.TicketState) bool {
 	return state == core.TicketReady || state == core.TicketPlanning || state == core.TicketInProgress
+}
+
+// refill expands the ticket's latest round again with the stages it was made
+// with and returns it read anew. expand skips the tasks that exist, so a whole
+// round stays as it is; a round a daemon stopped making between two creates
+// gets its missing stages, which round.done would read as completed. A ticket
+// in planning gets its first round so; one past planning without tasks was
+// recovered from the tracker (istari recover) and gets the stages of its
+// state on. A ticket with tasks made by hand in its first round, or with
+// children, is not filled.
+func (e *Engine) refill(ctx context.Context, tk core.Ticket, r round) (round, error) {
+	if len(tk.Children) > 0 {
+		return r, nil
+	}
+	n, kind := 1, reviewRound
+	var from func(TaskSpec) bool
+	switch {
+	case tk.State == core.TicketPlanning && r.n <= 1 && r.kind == reviewRound && r.others == 0:
+		// the whole pipeline
+	case resumeFrom(tk.State) == nil:
+		return r, nil
+	case r.n > 1 || r.kind != reviewRound:
+		// A later round runs from implement on, as nextRound made it.
+		n, kind, from = r.n, r.kind, fromImplement()
+	case r.others == 0:
+		from = resumeFrom(tk.State)
+	default:
+		return r, nil
+	}
+	if err := e.expand(ctx, tk, n, kind, from); err != nil {
+		return r, err
+	}
+	tasks, err := e.tasks.List(ctx)
+	if err != nil {
+		return r, err
+	}
+	return roundOf(tk.Ref, tasks), nil
+}
+
+// fromImplement keeps the stages from implement on, in pipeline order.
+func fromImplement() func(TaskSpec) bool {
+	started := false
+	return func(spec TaskSpec) bool {
+		started = started || spec.Stage == "implement"
+		return started
+	}
 }
 
 // resumeFrom tells, for a ticket past planning, the stages its state still
@@ -905,9 +930,5 @@ func (e *Engine) nextRound(ctx context.Context, refText, actor string, r round, 
 	if impl, ok := r.tasks["implement"]; ok && impl.State == core.TaskCompleted {
 		after = []string{impl.ID}
 	}
-	started := false
-	return e.expand(ctx, tk, r.n+1, kind, func(spec TaskSpec) bool {
-		started = started || spec.Stage == "implement"
-		return started
-	}, after...)
+	return e.expand(ctx, tk, r.n+1, kind, fromImplement(), after...)
 }
