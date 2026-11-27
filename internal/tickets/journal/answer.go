@@ -25,7 +25,8 @@ type Reply struct {
 var ErrNoOpenQuestion = errors.New("journal: the ticket has no open question")
 
 // Answer records r as the answer entry of one of the ticket's open
-// questions and returns the entry.
+// questions and returns the entry. The answer to the last open question
+// lifts a needs_input hold in holds.
 func (j *Journal) Answer(ctx context.Context, holds *core.Tickets, ref tickets.Ref, r Reply) (Entry, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -56,8 +57,29 @@ func (j *Journal) Answer(ctx context.Context, holds *core.Tickets, ref tickets.R
 	if err := j.append(ctx, ref, e); err != nil {
 		return Entry{}, err
 	}
-	return e, nil
+	if len(open) > 1 {
+		return e, nil
+	}
+	return e, liftNeedsInput(ctx, holds, r.Actor, ref.String())
 }
+
+// liftNeedsInput clears the ticket's hold when it is needs_input: the last
+// open question has its answer (spec section 4.6). A hold of another reason
+// stays.
+func liftNeedsInput(ctx context.Context, holds *core.Tickets, actor, ref string) error {
+	tk, err := holds.Get(ctx, ref)
+	if err != nil || tk.Hold != needsInput {
+		return err
+	}
+	_, err = holds.ClearHold(ctx, actor, ref, needsInput)
+	var ce *core.Error
+	if errors.As(err, &ce) && ce.Code == core.CodeInvalidState {
+		return nil // lifted, or held for another reason, since it was read
+	}
+	return err
+}
+
+const needsInput = "needs_input"
 
 // openQuestions returns the ids of the questions without an answer, oldest
 // first.

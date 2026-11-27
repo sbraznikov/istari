@@ -115,6 +115,42 @@ func TestAnAnswerGoesToTheQuestionItsTextNamesElseToTheOldestOpenOne(t *testing.
 	}
 }
 
+func TestNeedsInputIsLiftedOnceEveryQuestionHasAnAnswer(t *testing.T) {
+	t.Parallel()
+	a := askTwo(t)
+	if err := a.answer(t, journal.Reply{Actor: "human:alex", Text: "Yes, chore."}); err != nil {
+		t.Fatal(err)
+	}
+	if h := a.hold(t); h != "needs_input" {
+		t.Fatalf("after one of two answers the hold is %q, want needs_input", h)
+	}
+	if err := a.answer(t, journal.Reply{Actor: "human:alex", Text: "S."}); err != nil {
+		t.Fatal(err)
+	}
+	if h := a.hold(t); h != "" {
+		t.Fatalf("after both answers the hold is %q, want none", h)
+	}
+}
+
+func TestAnAnswerKeepsAHoldOfAnotherReason(t *testing.T) {
+	t.Parallel()
+	a := askTwo(t)
+	if _, err := a.tickets.ClearHold(ctx, "human:alex", a.ref.String(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tickets.SetHold(ctx, "human:alex", a.ref.String(), "paused"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Yes, chore.", "S."} {
+		if err := a.answer(t, journal.Reply{Actor: "human:alex", Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h := a.hold(t); h != "paused" {
+		t.Fatalf("the hold is %q, want paused", h)
+	}
+}
+
 func TestAnAnswerToAQuestionThatIsNotOpenIsRefused(t *testing.T) {
 	t.Parallel()
 	a := askTwo(t)
