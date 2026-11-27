@@ -100,11 +100,11 @@ func TestAnIncompleteEntryIsRefused(t *testing.T) {
 		{Kind: journal.Checkpoint, Actor: "agent:a"}, // no checkpoint
 		{Kind: journal.Decision, Actor: "agent:a", Decision: &journal.DecisionEntry{Problem: "p", State: "s", Recommendation: "r", Recommended: "A", Status: "proposed", Options: []journal.Option{{Letter: "A", Gist: "g", Consequences: "c", Size: "S", Risks: "r", Changes: "x"}}}}, // one option
 		{Kind: "gossip", Actor: "agent:a", Text: "x"},
-		{Kind: journal.FindingReply, Actor: "agent:a", Reply: &journal.ReplyEntry{Review: "t", Finding: 1}},          // no text
-		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Finding: 1}},            // no review task
-		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Review: "t"}},           // no finding
+		{Kind: journal.FindingReply, Actor: "agent:a", Reply: &journal.ReplyEntry{Review: "t", Finding: 1}},             // no text
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Finding: 1}},               // no review task
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Review: "t"}},              // no finding
 		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Review: "t", Finding: -1}}, // no finding
-		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x"},                                                    // no reply part
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x"},                                                       // no reply part
 	} {
 		if _, err := journal.Render(e); err == nil {
 			t.Errorf("%s entry %+v was rendered", e.Kind, e)

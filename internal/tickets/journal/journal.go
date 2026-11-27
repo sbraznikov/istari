@@ -416,6 +416,17 @@ func bullets(items []string) string {
 	return b.String()
 }
 
+// LatestReview returns the last review entry of the entries; ok is false
+// when they have none.
+func LatestReview(entries []Entry) (r ReviewEntry, ok bool) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == Review {
+			return *entries[i].Review, true
+		}
+	}
+	return ReviewEntry{}, false
+}
+
 // WorkState is the "Work state" summary (spec section 4.6).
 type WorkState struct {
 	Stage          string

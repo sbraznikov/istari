@@ -422,3 +422,54 @@ func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
 		t.Fatalf("the review task has %d attempts after a YAML error, want the failed one counted", task.Attempts)
 	}
 }
+
+// replyingAgent is a reviewer that tries to reply to a finding, then submits
+// one; and an implementer that replies to a finding the review does not
+// have, then to the one it has.
+const replyingAgent = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+case "$ISTARI_ROLE" in
+reviewer)
+  "$istari" review reply --finding 1 "a reviewer's reply" >> "$log" 2>&1
+  "$istari" review submit --file - >> "$log" 2>&1 <<'REPORT'
+standards: 0 findings
+spec: 1 finding, a burst is not refused
+findings:
+  - {axis: spec, kind: missing, file: feature.txt, line: 1, source: ticket, quote: A burst is refused., text: nothing refuses a burst}
+REPORT
+  "$istari" complete "reviewed" >> "$log" 2>&1
+  ;;
+implementer)
+  "$istari" review reply --finding 2 "no such finding" >> "$log" 2>&1
+  "$istari" review reply --finding 1 "The proxy in front refuses a burst already." >> "$log" 2>&1
+  "$istari" complete "replied" >> "$log" 2>&1
+  ;;
+esac
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestTheImplementerRepliesToAFindingOfTheLatestReview(t *testing.T) {
+	t.Parallel()
+	r := newReviewed(t, replyingAgent)
+	review := endedReviews(t, r.d, r.log, 1)[0].Task
+	endedRuns(t, r.d, r.log, "implementer", 1)
+	out, _ := os.ReadFile(r.log)
+	if !strings.Contains(string(out), "token_forbidden") {
+		t.Fatalf("a reviewer's reply was not refused:\n%s", out)
+	}
+	if !strings.Contains(string(out), "finding 2 is not in the latest review") {
+		t.Fatalf("a reply to finding 2 of a review with one finding was not refused:\n%s", out)
+	}
+	var replies []string
+	for _, c := range r.gh.Issue(r.ref.Number).Comments {
+		if strings.Contains(c.Body, "**Reply**") {
+			replies = append(replies, c.Body)
+		}
+	}
+	want := "**Reply** to finding 1 of review " + review + " — agent:"
+	if len(replies) == 0 || !strings.HasPrefix(replies[0], want) || !strings.Contains(replies[0], "The proxy in front refuses a burst already.") {
+		t.Fatalf("reply entries = %q, want one starting %q with the text\nagent log:\n%s", replies, want, out)
+	}
+}

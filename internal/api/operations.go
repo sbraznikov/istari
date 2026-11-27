@@ -93,6 +93,11 @@ type (
 		Actor  string `json:"actor"`
 		Report string `json:"report"` // the YAML the reviewer wrote: code parses it
 	}
+	ReviewReplyRequest struct {
+		Actor   string `json:"actor"`
+		Finding int    `json:"finding"` // the finding's number in the latest review, from 1
+		Text    string `json:"text"`    // why it is not a flaw in this place
+	}
 	RefineSubmitRequest struct {
 		Actor  string `json:"actor"`
 		Result string `json:"result"` // the YAML the refiner wrote, as written: code parses it
@@ -174,6 +179,15 @@ func (r *PlanSubmitRequest) validate() error   { return needActor(r.Actor) }
 func (r *ReviewSubmitRequest) validate() error { return needActor(r.Actor) }
 func (r *PROpenRequest) validate() error       { return needActor(r.Actor) }
 func (r *TicketPlanRequest) validate() error   { return needActor(r.Actor) }
+func (r *ReviewReplyRequest) validate() error {
+	switch {
+	case r.Finding < 1:
+		return errors.New("a reply names a finding by its number, from 1")
+	case strings.TrimSpace(r.Text) == "":
+		return errors.New("a reply needs its text: why the finding is not a flaw here")
+	}
+	return needActor(r.Actor)
+}
 func (r *TimerScheduleRequest) validate() error {
 	if r.In != "" {
 		d, err := time.ParseDuration(r.In)
@@ -416,6 +430,9 @@ func (s *Server) operations() map[string]operation {
 		// review.submit is istari review submit (spec 7.6): code checks the
 		// findings and records the report; the verdict is the pipeline's.
 		"review.submit": write(okAgain, func(ctx context.Context, r ReviewSubmitRequest) (any, error) { return s.submitReview(ctx, r) }),
+		// review.reply is istari review reply (spec 7.6): the implementer's
+		// answer to a finding of the latest review, in the ticket journal.
+		"review.reply": write(okAgain, func(ctx context.Context, r ReviewReplyRequest) (any, error) { return s.replyToFinding(ctx, r) }),
 		// refine.submit is the refiner's structured result (spec 4.5): code
 		// checks and applies it; what it rejects fails the run, unless a later
 		// result of the run is accepted.
