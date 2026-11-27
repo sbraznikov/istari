@@ -168,6 +168,8 @@ func needActor(actor string) error {
 	return nil
 }
 
+func (r *TicketGrantRoundRequest) validate() error { return needActor(r.Actor) }
+
 func (r *TaskCreateRequest) validate() error   { return needActor(r.Actor) }
 func (r *TaskActRequest) validate() error      { return needActor(r.Actor) }
 func (r *TaskClaimRequest) validate() error    { return needActor(r.Actor) }
@@ -176,9 +178,6 @@ func (r *TicketCreateRequest) validate() error { return needActor(r.Actor) }
 func (r *TicketFireRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketHoldRequest) validate() error   { return needActor(r.Actor) }
 func (r *TicketReadyRequest) validate() error  { return needActor(r.Actor) }
-func (r *TicketGrantRoundRequest) validate() error {
-	return needActor(r.Actor)
-}
 func (r *DispatchRequest) validate() error     { return needActor(r.Actor) }
 func (r *ActorRequest) validate() error        { return needActor(r.Actor) }
 func (r *RunActRequest) validate() error       { return needActor(r.Actor) }
