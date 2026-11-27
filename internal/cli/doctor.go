@@ -102,19 +102,28 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				checks = append(checks, standardsCheck(root))
 			}
 			// Worktrees without a ticket or of a finished ticket (spec 7.2),
-			// as the running daemon sees them.
+			// as the running daemon sees them. One kept for unsaved work
+			// only warns: prune would keep it too.
 			var orphans []runner.Workspace
 			if err := opts.call(cmd, "workspace.orphans", "", api.Empty{}, &orphans); err == nil {
-				c := check{Name: "workspaces", OK: len(orphans) == 0}
-				if !c.OK {
-					var names []string
-					for _, o := range orphans {
-						names = append(names, orDash(o.Ticket)+" "+o.Dir)
+				var removable, kept []string
+				for _, o := range orphans {
+					if o.State == runner.WorkspaceKept {
+						kept = append(kept, orDash(o.Ticket)+" "+o.Dir+": "+o.Reason)
+					} else {
+						removable = append(removable, orDash(o.Ticket)+" "+o.Dir)
 					}
-					c.Detail = fmt.Sprintf("%d orphan(s), remove with istari workspace prune: %s", len(orphans), strings.Join(names, "; "))
+				}
+				c := check{Name: "workspaces", OK: len(removable) == 0}
+				if !c.OK {
+					c.Detail = fmt.Sprintf("%d orphan(s), remove with istari workspace prune: %s", len(removable), strings.Join(removable, "; "))
 					failed++
 				}
 				checks = append(checks, c)
+				if len(kept) > 0 {
+					checks = append(checks, check{Name: "workspaces kept", Warn: true,
+						Detail: fmt.Sprintf("%d kept for unsaved work: %s", len(kept), strings.Join(kept, "; "))})
+				}
 			}
 			// Slots whose harness did not start three times in a row
 			// (spec 7.3), as the running daemon sees them.

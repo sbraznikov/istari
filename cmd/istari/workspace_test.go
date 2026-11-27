@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -124,6 +125,118 @@ func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
 	d.mustCLI(t, &pruned, "workspace", "prune")
 	if len(pruned) != 1 || pruned[0].Ticket != "gh:acme/web#99" || exists(orphan.Dir) || !exists(want) {
 		t.Fatalf("prune = %+v; orphan exists %v, #5 exists %v", pruned, exists(orphan.Dir), exists(want))
+	}
+}
+
+// doctorRow returns doctor's check of that name from its --json output.
+func doctorRow(t *testing.T, out, name string) (row struct {
+	Name, Detail string
+	OK, Warn     bool
+}, found bool) {
+	t.Helper()
+	var checks []struct {
+		Name, Detail string
+		OK, Warn     bool
+	}
+	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+		t.Fatalf("doctor --json: %v in %q", err, out)
+	}
+	for _, c := range checks {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return row, false
+}
+
+func TestPruneAndDoctorSayWhyAWorktreeWithUnsavedWorkIsKept(t *testing.T) {
+	t.Parallel()
+	// Before the daemon starts: a worktree whose ticket istari does not know,
+	// and two done tickets whose removal kept their worktree.
+	var orphan, unpushed, uncommitted runner.Workspace
+	d := startPipelineDaemon(t, "gh:acme/web#5", func(s store.Store, server, dataDir string) {
+		ctx := context.Background()
+		remote := func(repo string) string { return "file://" + filepath.Join(server, repo+".git") }
+		spaces := runner.NewWorkspaces(s, runner.WorkspaceOptions{DataDir: dataDir, Remote: remote})
+		k := core.NewTickets(s, core.TicketOptions{})
+		var err error
+		if orphan, err = spaces.Ensure(ctx, core.Ticket{Ref: "gh:acme/web#99", Project: "web", Title: "Gone"}); err != nil {
+			t.Fatal(err)
+		}
+		done := func(n int, unsaved func(dir string)) runner.Workspace {
+			ref := fmt.Sprintf("gh:acme/web#%d", n)
+			tk, err := k.CreateWith(ctx, "human:alex", core.NewTicket{Ref: ref, Project: "web", Title: "Done"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := spaces.Ensure(ctx, tk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unsaved(w.Dir)
+			for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
+				if _, err := k.Fire(ctx, "system", ref, tr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if w, err = spaces.Remove(ctx, tk); err != nil || w.State != runner.WorkspaceKept {
+				t.Fatalf("Remove %s = %+v, %v; want kept", ref, w, err)
+			}
+			return w
+		}
+		unpushed = done(164, func(dir string) { git(t, dir, "commit", "-q", "--allow-empty", "-m", "Not pushed") })
+		uncommitted = done(259, func(dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+
+	out, _, _ := d.cli(t, "--json", "doctor")
+	fail, ok := doctorRow(t, out, "workspaces")
+	if !ok || fail.OK || fail.Warn || !strings.Contains(fail.Detail, "gh:acme/web#99") || !strings.Contains(fail.Detail, "istari workspace prune") || strings.Contains(fail.Detail, "#164") || strings.Contains(fail.Detail, "#259") {
+		t.Fatalf("doctor workspaces = %+v; want a failure for #99 alone, with the prune advice\n%s", fail, out)
+	}
+	kept, ok := doctorRow(t, out, "workspaces kept")
+	if !ok || kept.OK || !kept.Warn || strings.Contains(kept.Detail, "prune") {
+		t.Fatalf("doctor workspaces kept = %+v; want a warning without the prune advice\n%s", kept, out)
+	}
+	for _, w := range []string{"gh:acme/web#164 " + unpushed.Dir + ": 1 commits not on the remote", "gh:acme/web#259 " + uncommitted.Dir + ": uncommitted changes"} {
+		if !strings.Contains(kept.Detail, w) {
+			t.Fatalf("doctor workspaces kept = %q; want %q", kept.Detail, w)
+		}
+	}
+
+	var pruned []runner.Workspace
+	d.mustCLI(t, &pruned, "workspace", "prune")
+	got := map[string]runner.Workspace{}
+	for _, w := range pruned {
+		got[w.Ticket] = w
+	}
+	if w := got["gh:acme/web#99"]; len(pruned) != 3 || w.State != runner.WorkspaceRemoved || exists(orphan.Dir) {
+		t.Fatalf("prune = %+v; want #99 removed and #164, #259 kept", pruned)
+	}
+	for ref, want := range map[string]runner.Workspace{"gh:acme/web#164": unpushed, "gh:acme/web#259": uncommitted} {
+		if w := got[ref]; w.State != runner.WorkspaceKept || w.Dir != want.Dir || w.Reason != want.Reason || !exists(want.Dir) {
+			t.Fatalf("prune %s = %+v; want kept in %s for %q", ref, w, want.Dir, want.Reason)
+		}
+	}
+	table, stderr, code := d.cli(t, "workspace", "prune")
+	if code != 0 {
+		t.Fatalf("workspace prune: exit %d: %s", code, stderr)
+	}
+	for _, w := range []runner.Workspace{unpushed, uncommitted} {
+		if !strings.Contains(table, w.Ticket) || !strings.Contains(table, w.Dir) || !strings.Contains(table, w.Reason) {
+			t.Fatalf("workspace prune shows no ticket, dir and reason of %s:\n%s", w.Ticket, table)
+		}
+	}
+
+	out, _, _ = d.cli(t, "--json", "doctor")
+	if fail, ok := doctorRow(t, out, "workspaces"); !ok || !fail.OK {
+		t.Fatalf("doctor workspaces after prune = %+v; want ok\n%s", fail, out)
+	}
+	if kept, ok := doctorRow(t, out, "workspaces kept"); !ok || !kept.Warn {
+		t.Fatalf("doctor workspaces kept after prune = %+v; want still a warning\n%s", kept, out)
 	}
 }
 

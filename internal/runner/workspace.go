@@ -389,8 +389,9 @@ func (w *Workspaces) orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 	return out, nil
 }
 
-// Prune removes the orphans and returns the ones it removed. An orphan that
-// holds unsaved work is kept, as at any removal.
+// Prune removes the orphans and returns the ones it removed and the ones it
+// kept: an orphan that holds unsaved work is kept, as at any removal, with
+// the reason (spec section 7.2).
 func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -398,7 +399,7 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 	if err != nil {
 		return nil, err
 	}
-	var pruned []Workspace
+	var out []Workspace
 	var errs []error
 	for _, o := range orphans {
 		var ws Workspace
@@ -411,11 +412,11 @@ func (w *Workspaces) Prune(ctx context.Context, all []core.Ticket) ([]Workspace,
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("%s: %w", o.Ticket, err))
-		case ws.State == WorkspaceRemoved:
-			pruned = append(pruned, ws)
+		case ws.State == WorkspaceRemoved, ws.State == WorkspaceKept:
+			out = append(out, ws)
 		}
 	}
-	return pruned, errors.Join(errs...)
+	return out, errors.Join(errs...)
 }
 
 // removeUnrecorded removes a worktree directory istari has no record of,
