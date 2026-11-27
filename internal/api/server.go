@@ -44,6 +44,7 @@ type Server struct {
 	tickets   *core.Tickets
 	sched     *scheduler.Scheduler
 	syncer    *tickets.Syncer
+	journal   *journal.Journal // the one of the syncer and the runner
 	spaces    *runner.Workspaces
 	runs      *runner.Runs
 	runner    *runner.Runner
@@ -125,6 +126,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		jt = t
 	}
 	j := journal.New(jt, ns, opts.Clock)
+	srv.journal = j
 	if opts.Tracker != nil {
 		note := func(ctx context.Context, ref tickets.Ref, text string) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
@@ -132,7 +134,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
 		}
-		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged}
+		answer := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) (bool, error) {
+			return j.AnswerComment(ctx, srv.tickets, ref, c)
+		}
+		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Answer: answer, Merged: srv.merged}
 		if opts.GitHub != nil {
 			syncOpts.Hold = opts.GitHub.Hold
 		}

@@ -188,15 +188,15 @@ func newestFailure(entries []journal.Entry) int {
 	return -1
 }
 
-// selectEntries marks the entries a brief always keeps: every decision and
-// assumption, the latest plan and review, the latest checkpoints, and the
+// selectEntries marks the entries a brief always keeps: every decision,
+// assumption, question and answer, the latest plan and review, the latest checkpoints, and the
 // comments newer than the latest checkpoint.
 func selectEntries(entries []journal.Entry) []bool {
 	keep := make([]bool, len(entries))
 	lastPlan, lastReview, checkpoints := -1, -1, 0
 	for i := len(entries) - 1; i >= 0; i-- {
 		switch entries[i].Kind {
-		case journal.Decision, journal.Assumption:
+		case journal.Decision, journal.Assumption, journal.Question, journal.Answer:
 			keep[i] = true
 		case journal.Comment:
 			keep[i] = checkpoints == 0

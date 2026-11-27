@@ -13,6 +13,8 @@ self_review = true
 typecheck = "go vet ./..."
 test      = "go test -short {dirs}"          # a checkpoint runs the packages whose tests the slice changed (#145); full runs before istari pr open
 full      = "go test ./..."
+format    = "test -z \"$(gofmt -l .)\""   # S0.1
+tidy      = { run = "go mod tidy -diff", at = ["pr"] }
 lint      = { run = "golangci-lint run ./...", at = ["pr"] }   # the linters of .golangci.yml, as in CI (#228)
 flaky     = { run = "sh scripts/flaky.sh {files}", at = ["checkpoint"] }   # the slice's new and changed tests, twenty times under -race (#265)
 verify_red = true                     # a new test must fail on the code of the previous checkpoint
