@@ -90,7 +90,7 @@ func TestDoctorJSONShowsTheEarlyReviewAsAWarningThatIsNotOK(t *testing.T) {
 
 func TestAHumanApprovesThePlanGate(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "gate_1", "ticket": "gh:acme/web#1", "project": "web", "role": "human"}, nil)
 	var gates []struct{ ID string }
 	d.mustCLI(t, &gates, "gate", "list")

@@ -8,7 +8,15 @@ linters:
     - unused # staticcheck's U1000 (unused code), a linter of its own in golangci-lint
     - errcheck
     - nolintlint
+    - forbidigo
   settings:
+    forbidigo:
+      # A cmd/istari test whose outcome depends on a pass of the daemon's
+      # loops steps them (CODING_STANDARDS S7.10); exclusions keep the rule
+      # to those tests.
+      forbid:
+        - pattern: ^startDaemon$
+          msg: "start the daemon stepped (CODING_STANDARDS S7.10), or say why it may run free with //nolint:forbidigo // <why>"
     nolintlint:
       # Every //nolint names its linter and says why: //nolint:errcheck // <why>.
       require-explanation: true
@@ -33,3 +41,9 @@ linters:
         - (*database/sql.Tx).Rollback
         # rows.Err reports what went wrong while iterating; Close adds nothing.
         - (*database/sql.Rows).Close
+  exclusions:
+    rules:
+      # forbidigo's startDaemon rule is for the tests of cmd/istari only.
+      - path-except: ^cmd/istari/.*_test\.go$
+        linters:
+          - forbidigo

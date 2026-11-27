@@ -78,7 +78,7 @@ func trackerOK(doctor string) bool {
 
 func TestIstariSyncWithoutATrackerIsRefused(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	if _, stderr, code := d.cli(t, "sync"); code != 1 || !strings.Contains(stderr, "sync_disabled") {
 		t.Fatalf("istari sync without a tracker: exit %d %q", code, stderr)
 	}
