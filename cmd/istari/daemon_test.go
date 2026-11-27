@@ -81,14 +81,14 @@ func socketClient(socket string) *http.Client {
 // daemonKeys are extra lines of the [daemon] table of its config.
 func startDaemon(t *testing.T, dataDir string, daemonKeys ...string) *daemon {
 	t.Helper()
-	return startDaemonWithConfig(t, dataDir, writeDaemonConfig(t, dataDir, daemonKeys...))
+	return startDaemonWithConfig(t, dataDir, writeDaemonConfig(t, dataDir, daemonKeys...)) //nolint:forbidigo // forwards: the caller of startDaemon is checked
 }
 
 // startDaemonWithConfig starts `istari daemon` with a config file whose
 // data_dir is dataDir; env are extra environment variables of the daemon.
 func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) *daemon {
 	t.Helper()
-	return startDaemonWithArgs(t, dataDir, config, nil, env...)
+	return startDaemonWithArgs(t, dataDir, config, nil, env...) //nolint:forbidigo // forwards: the caller of startDaemonWithConfig is checked
 }
 
 // startDaemonWithArgs is startDaemonWithConfig with extra arguments of
@@ -174,7 +174,7 @@ func TestASecondDaemonOnTheSameDataDirRefusesToStart(t *testing.T) {
 func TestADaemonStartedPausedHandsOutNoTaskUntilResume(t *testing.T) {
 	t.Parallel()
 	dataDir := newDataDir(t)
-	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused"})
+	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused"}) //nolint:forbidigo // no project: the paused hand-out refuses the claim, no loop pass decides it
 	d.createTask(t, "t_1", "implementer")
 	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
 		t.Fatalf("claim on a daemon started paused: exit %d %q, want paused", code, stderr)
@@ -186,7 +186,7 @@ func TestADaemonStartedPausedHandsOutNoTaskUntilResume(t *testing.T) {
 func TestTheStartPauseShowsInTailLikePauseAll(t *testing.T) {
 	t.Parallel()
 	dataDir := newDataDir(t)
-	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused", "--actor", "human:ops"})
+	d := startDaemonWithArgs(t, dataDir, writeDaemonConfig(t, dataDir), []string{"--paused", "--actor", "human:ops"}) //nolint:forbidigo // no project: the start and the CLI write the dispatch.paused events, no loop pass
 	d.mustCLI(t, nil, "resume", "--all", "--actor", "human:ops")
 	d.mustCLI(t, nil, "pause", "--all", "--actor", "human:ops")
 	type event struct {
@@ -208,14 +208,14 @@ func TestADaemonRestartedPausedOnAPausedHandOutStarts(t *testing.T) {
 	t.Parallel()
 	dataDir := newDataDir(t)
 	config := writeDaemonConfig(t, dataDir)
-	first := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
+	first := startDaemonWithArgs(t, dataDir, config, []string{"--paused"}) //nolint:forbidigo // the test is of the daemon process: the pause it keeps across a restart
 	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.cmd.Wait(); err != nil {
 		t.Fatalf("the first daemon did not stop cleanly: %v", err)
 	}
-	d := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
+	d := startDaemonWithArgs(t, dataDir, config, []string{"--paused"}) //nolint:forbidigo // no project: the paused hand-out refuses the claim, no loop pass decides it
 	d.createTask(t, "t_1", "implementer")
 	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
 		t.Fatalf("claim after a paused restart: exit %d %q, want paused", code, stderr)
@@ -427,7 +427,7 @@ func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
 	}
 	d.cmd.Wait() //nolint:errcheck // Wait reports the kill
 
-	again := startDaemonWithConfig(t, d.dataDir, d.config, d.env...)
+	again := startSteppedDaemon(t, d.dataDir, d.config, d.env...) // the start ends the run; no loop pass reacts to it
 	again.mustCLI(t, &runs, "run", "list")
 	if len(runs) != 1 || runs[0].ID != left || runs[0].State != "ended" || runs[0].Reason != "the daemon restarted" {
 		t.Fatalf("runs after the restart = %+v, want %s ended because the daemon restarted", runs, left)

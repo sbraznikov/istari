@@ -47,29 +47,20 @@ type reviewed struct {
 	log string
 }
 
+// newReviewed is newSteppedRecovered in in_review, stepped once more: the
+// pipeline has opened the review task.
 func newReviewed(t *testing.T, agent string) reviewed {
 	t.Helper()
-	return newRecovered(t, agent, "in_review", nil)
+	r := newSteppedRecovered(t, agent, "in_review", nil)
+	r.d.step(t, "pipeline") // the review task of the recovered ticket
+	return r
 }
 
-// newRecovered is a ticket recovered in state, with its branch, its pull
-// request, the fake GitHub set up by before ahead of the recover, and a
-// daemon whose claude is agent.
-func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
-	t.Helper()
-	return recoverWith(t, startDaemonWithConfig, agent, state, before)
-}
-
-// newSteppedRecovered is newRecovered on a stepped daemon: its PR watch and
-// pipeline run one pass per step.
+// newSteppedRecovered is a ticket recovered in state, with its branch, its
+// pull request, the fake GitHub set up by before ahead of the recover, and a
+// stepped daemon whose claude is agent: its PR watch and pipeline run one
+// pass per step.
 func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
-	t.Helper()
-	return recoverWith(t, startSteppedDaemon, agent, state, before)
-}
-
-// recoverWith seeds a ticket with an open pull request, starts a daemon
-// with start and recovers the ticket.
-func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
@@ -109,7 +100,7 @@ func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, 
 		t.Fatal(err)
 	}
 	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := start(t, dataDir, config, env...)
+	d := startSteppedDaemon(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "recover")
 	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log}
 }
@@ -119,18 +110,14 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	r := newReviewed(t, reviewAgent)
 	d, gh, ref, pr, log := r.d, r.gh, r.ref, r.pr, r.log
 
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var tk struct{ State string }
-		d.mustCLI(t, &tk, "ticket", "show", ref.String())
-		if tk.State == "in_progress" {
-			break
-		}
-		if time.Now().After(deadline) {
-			out, _ := os.ReadFile(log)
-			t.Fatalf("the ticket is %s after a minute, want in_progress (T7)\nagent log:\n%s\ndaemon:\n%s", tk.State, out, d.stderr)
-		}
-	}
+	d.waitForEvents(t, ref.String(), "task.completed", 1) // the review task
+	d.step(t, "pipeline")                                  // the finding returns the ticket for rework
 	out, _ := os.ReadFile(log)
+	var tk struct{ State string }
+	d.mustCLI(t, &tk, "ticket", "show", ref.String())
+	if tk.State != "in_progress" {
+		t.Fatalf("the ticket is %s, want in_progress (T7)\nagent log:\n%s\ndaemon:\n%s", tk.State, out, d.stderr)
+	}
 	if !strings.Contains(string(out), "token_forbidden") {
 		t.Fatalf("the reviewer's own transition was not refused:\n%s", out)
 	}
@@ -223,8 +210,9 @@ func TestAReviewerCannotCompleteWithoutAReport(t *testing.T) {
 	}
 }
 
-// earlyReviewAgent plays the planner and the implementer like stageAgent, and
-// as the reviewer submits the report given as %[3]s and ends its run
+// earlyReviewAgent plays the planner and the implementer like stageAgent,
+// the implementer once the test lets it (the file $log.go), and as the
+// reviewer submits the report given as %[3]s and ends its run
 // without istari complete, as a refused submit tells it to.
 const earlyReviewAgent = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
@@ -242,6 +230,7 @@ PLAN
   "$istari" complete "planned" >> "$log" 2>&1
   ;;
 implementer)
+  while [ ! -e "$log.go" ]; do sleep 0.05; done
   echo "the feature" > feature.txt
   "$istari" checkpoint "The feature file; next the pull request" >> "$log" 2>&1
   "$istari" pr open --title "Add the feature" --body-file - >> "$log" 2>&1 <<'BODY'
@@ -295,14 +284,23 @@ needs = ["implement"]
 `
 
 // earlyReview starts a daemon on a ready ticket of a project with
-// earlyReviewPipeline, whose reviewer submits report.
+// earlyReviewPipeline, whose reviewer submits report. It returns once the
+// ticket is in_progress and its implementer may run.
 func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
-	return pipelineDaemon(t, earlyReviewPipeline, func(log string) string { return fmt.Sprintf(earlyReviewAgent, binary, log, report) })
+	d, gh, ticket, log = pipelineDaemon(t, earlyReviewPipeline, func(log string) string { return fmt.Sprintf(earlyReviewAgent, binary, log, report) })
+	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, ticket), "task.completed", 1) // the plan task
+	d.step(t, "pipeline") // the accepted plan moves the ticket to in_progress
+	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return d, gh, ticket, log
 }
 
-// pipelineDaemon starts a daemon on a ready ticket of a project with
-// pipeline, whose claude is the script agent writes for the agent log.
+// pipelineDaemon starts a stepped daemon on a ready ticket of a project with
+// pipeline, whose claude is the script agent writes for the agent log. It
+// steps sync and pipeline once: the task of the first stage is open; any
+// later pass is the caller's.
 func pipelineDaemon(t *testing.T, pipeline string, agent func(log string) string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
 	server := gitServer(t)
@@ -330,8 +328,10 @@ func pipelineDaemon(t *testing.T, pipeline string, agent func(log string) string
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d = startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+	d = startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the ticket, admitted
+	d.step(t, "pipeline") // the task of its first stage
 	return d, gh, ticket, log
 }
 

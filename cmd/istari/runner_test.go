@@ -96,7 +96,9 @@ func startAgentDaemon(t *testing.T, agent string) *agentDaemon {
 		t.Fatal(err)
 	}
 	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	return &agentDaemon{daemon: startDaemonWithConfig(t, dataDir, config, env...), server: server, gh: gh, task: task, env: env}
+	// Stepped, and never stepped by its callers: only the runner acts, and
+	// no pipeline pass reacts to the run's end while the test reads it.
+	return &agentDaemon{daemon: startSteppedDaemon(t, dataDir, config, env...), server: server, gh: gh, task: task, env: env}
 }
 
 func TestTheRunnerRunsAnAgentInTheTicketWorktreeWithItsToken(t *testing.T) {

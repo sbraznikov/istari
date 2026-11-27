@@ -33,7 +33,8 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-// refineDuringOutage starts a daemon whose refiner's "Refined" comment is
+// refineDuringOutage starts a stepped daemon, stepped until the raw ticket's
+// refine task is open, whose refiner's "Refined" comment is
 // answered status n times, and returns the daemon, the issue and the agent log.
 func refineDuringOutage(t *testing.T, n, status int) (*daemon, *githubtest.Server, int, string) {
 	t.Helper()
@@ -51,8 +52,9 @@ func refineDuringOutage(t *testing.T, n, status int) (*daemon, *githubtest.Serve
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	d.mustCLI(t, nil, "sync")
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the raw ticket
+	d.step(t, "pipeline") // its refine task
 	return d, gh, issue, log
 }
 

@@ -15,10 +15,10 @@ linters:
       # loops steps them (CODING_STANDARDS S7.10); exclusions keep the rule
       # to those tests.
       forbid:
-        # Every helper that starts a daemon free: startDaemon has no project,
-        # the others have one, so their pipeline, sync and PR watch run on
-        # free timers.
-        - pattern: ^(startDaemon|startDaemonWithConfig|startDaemonWithArgs|startPipelineDaemon|startAgentDaemon|recoverWith)$
+        # Every helper that starts a daemon free. The helpers that start one
+        # with a project (startPipelineDaemon, startAgentDaemon,
+        # pipelineDaemon, newSteppedRecovered) start it stepped.
+        - pattern: ^(startDaemon|startDaemonWithConfig|startDaemonWithArgs)$
           msg: "start the daemon stepped (CODING_STANDARDS S7.10), or say why it may run free with //nolint:forbidigo // <why>"
     nolintlint:
       # Every //nolint names its linter and says why: //nolint:errcheck // <why>.
