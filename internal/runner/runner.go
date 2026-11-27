@@ -231,26 +231,29 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full flo
 	for _, t := range all {
 		byRef[t.Ref] = t
 	}
-	// The budget is the first ticket's of a chain of budget_of. The chain
-	// stops at a child of a split: it has a budget of its own (spec section
-	// 4.5).
-	root := func(t core.Ticket) core.Ticket {
+	// The budget of a run started at a time is the first ticket's of a chain
+	// of budget_of. The chain stops at a child of a split, and at a filed
+	// ticket a human had admitted by then: each has a budget of its own
+	// (spec section 4.5).
+	root := func(t core.Ticket, at time.Time) core.Ticket {
 		for range len(all) + 1 {
 			parent, ok := byRef[t.BudgetOf]
 			if t.BudgetOf == "" || !ok || slices.Contains(parent.Children, t.Ref) {
+				break
+			}
+			if own := t.OwnBudgetSince; !own.IsZero() && !own.After(at) {
 				break
 			}
 			t = parent
 		}
 		return t
 	}
-	owner := root(tk)
-	sharing := map[string]bool{tk.Ref: true}
-	for _, t := range all {
-		if root(t).Ref == owner.Ref {
-			sharing[t.Ref] = true
-		}
+	if fresh, ok := byRef[tk.Ref]; ok {
+		tk = fresh // its own budget may have started since tk was read
+	} else {
+		byRef[tk.Ref] = tk
 	}
+	owner := root(tk, r.opts.Clock())
 	// A ticket that shares a budget has the budget of the one it shares
 	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
@@ -264,7 +267,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full flo
 	full = r.opts.Budgets[size]
 	left = full
 	for _, run := range runs {
-		if sharing[run.Ticket] {
+		if t, ok := byRef[run.Ticket]; ok && root(t, run.Started).Ref == owner.Ref {
 			left -= run.Usage.CostUSD
 		}
 	}

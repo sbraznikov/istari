@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,6 +407,71 @@ func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
 	case s := <-f.h.started:
 		t.Fatalf("a second run started after one unhold --anyway: capped at $%v", s.spec.MaxBudgetUSD)
 	default:
+	}
+}
+
+// filedBudgets are budgets in which every $4 run fits its cap: a run that
+// spends more than its cap is stopped for budget, so B's first run must not
+// outspend what A left.
+var filedBudgets = map[string]float64{"S": 8, "M": 12}
+
+// fileAndSpend lets ticket A (S, $8) spend $4, then files ticket B from it, as
+// an implementer does, with size M, and lets B spend $4: the shared $8 is
+// spent.
+func fileAndSpend(t *testing.T, f *runFixture, n int) (a, b core.Ticket) {
+	t.Helper()
+	a, task := f.readyTask(t, n)
+	sized(t, f, a.Ref, "S")
+	f.start(t)
+	spendAndFinish(t, f, task.ID)
+	b, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", n+1), Project: "web", Title: "Found", BudgetOf: a.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, b.Ref, "M")
+	f.fire(t, b.Ref, "accept", "start")
+	spendAndFinish(t, f, implement(t, f, b.Ref).ID)
+	return a, b
+}
+
+func TestAnAdmittedFiledTicketCountsAgainstABudgetOfItsOwnSize(t *testing.T) {
+	t.Parallel()
+	// The runner's and the admission's clock, in Unix nanoseconds. It starts
+	// two hours back, so that an hour on it stays behind the task leases,
+	// which run on the wall clock.
+	var now atomic.Int64
+	now.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	clock := func() time.Time { return time.Unix(0, now.Load()).UTC() }
+	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets, Clock: clock}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	a, b := fileAndSpend(t, f, 80)
+	// A human admits B an hour after B's first run started.
+	now.Add(int64(time.Hour))
+	admit := core.NewTickets(f.store, core.TicketOptions{Clock: clock})
+	if _, err := admit.OwnBudget(ctx, "human:alex", b.Ref); err != nil {
+		t.Fatal(err)
+	}
+	next := implement(t, f, b.Ref)
+	s := f.session(t)
+	if s.spec.MaxBudgetUSD != 12 {
+		t.Fatalf("B's run after the admission is capped at $%v, want its own M budget of $12", s.spec.MaxBudgetUSD)
+	}
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, next.ID, core.TaskCompleted)
+	// B's earlier $4 stays on A's budget: A's $8 is still spent.
+	if blocked := f.waitTask(t, implement(t, f, a.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("A's task block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+}
+
+func TestAFiledTicketNoHumanAdmittedIsBlockedByTheSharedBudget(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	_, b := fileAndSpend(t, f, 90)
+	if blocked := f.waitTask(t, implement(t, f, b.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("B's task block kind = %q, want budget_exceeded", blocked.BlockKind)
 	}
 }
 

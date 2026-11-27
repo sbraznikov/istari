@@ -132,6 +132,40 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	}
 }
 
+func TestTicketReadyGivesAFiledTicketItsOwnBudgetInItsJournal(t *testing.T) {
+	t.Parallel()
+	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(filingPlanner, binary, log) })
+	endedRuns(t, d, log, "planner", 1)
+	filed := "gh:" + githubtest.Repo + "#2" // the planner filed it while planning #1
+	var tk struct {
+		BudgetOf string `json:"budget_of"`
+	}
+	d.mustCLI(t, &tk, "ticket", "show", filed)
+	if tk.BudgetOf != "gh:"+githubtest.Repo+"#1" {
+		t.Fatalf("the filed ticket shares the budget of %q, want #1's", tk.BudgetOf)
+	}
+	asAlex := []string{"PATH=" + fakeGH(t, gh.Token)}
+	if out, stderr, code := istariEnv(t, t.TempDir(), d.config, asAlex, "ticket", "ready", filed); code != 0 {
+		t.Fatalf("ticket ready as alex: exit %d %s %s", code, out, stderr)
+	}
+	var owned struct {
+		OwnBudgetSince string `json:"own_budget_since"`
+	}
+	d.mustCLI(t, &owned, "ticket", "show", filed)
+	if owned.OwnBudgetSince == "" {
+		t.Fatal("the filed ticket has no budget of its own after ticket ready")
+	}
+	var notes []string
+	for _, c := range gh.Issue(2).Comments {
+		if strings.Contains(c.Body, "budget of its own") {
+			notes = append(notes, c.Body)
+		}
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "human:alex") || !strings.Contains(notes[0], "#1") {
+		t.Fatalf("journal notes on the own budget = %q, want one naming human:alex and #1", notes)
+	}
+}
+
 func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)
