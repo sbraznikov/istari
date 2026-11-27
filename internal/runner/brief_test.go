@@ -315,6 +315,54 @@ func TestTheReviewersSchemaShowsTheSummaryLinesQuotedOneWithAColon(t *testing.T)
 	}
 }
 
+// reviewRounds is a journal of two reviews, each with a reply of the
+// implementer to one of its findings.
+func reviewRounds() []journal.Entry {
+	reply := func(review string, finding int, text string) journal.Entry {
+		return journal.Entry{Kind: journal.FindingReply, Actor: "agent:implementer-1", Text: text, Reply: &journal.ReplyEntry{Review: review, Finding: finding}}
+	}
+	return []journal.Entry{
+		{Kind: journal.Review, Actor: "agent:reviewer-1", Review: &journal.ReviewEntry{Verdict: "rework", Task: "t_r1", Findings: []string{"OLD FINDING"}}},
+		reply("t_r1", 1, "OLD REPLY"),
+		{Kind: journal.Review, Actor: "agent:reviewer-1", Review: &journal.ReviewEntry{Verdict: "rework", Task: "t_r2", Findings: []string{"FINDING ONE", "FINDING TWO"}}},
+		reply("t_r2", 2, "REPLY TWO"),
+	}
+}
+
+func TestTheReviewerSeesEachReplyNextToTheFindingItAnswers(t *testing.T) {
+	t.Parallel()
+	in := briefInput()
+	in.Role = "reviewer"
+	in.Journal = reviewRounds()
+	b := runner.Brief(in)
+	start := strings.Index(b, "## The previous review")
+	if start < 0 {
+		t.Fatalf("the reviewer's brief has no previous review:\n%s", b)
+	}
+	section := b[start:]
+	section = section[:strings.Index(section[3:], "\n## ")+3]
+	one, two := strings.Index(section, "FINDING ONE"), strings.Index(section, "FINDING TWO")
+	reply := strings.Index(section, "<untrusted source=\"reply to finding 2 by agent:implementer-1\">\nREPLY TWO\n</untrusted>")
+	if one < 0 || two < one || reply < two {
+		t.Fatalf("want finding 1, then finding 2 followed by its reply, untrusted:\n%s", section)
+	}
+	if strings.Contains(section, "OLD REPLY") || strings.Contains(section, "OLD FINDING") || strings.Count(section, "<untrusted source=\"reply") != 1 {
+		t.Fatalf("the previous review shows more than the latest review's findings and their replies:\n%s", section)
+	}
+}
+
+func TestALongJournalsBriefKeepsTheRepliesToTheLatestReview(t *testing.T) {
+	t.Parallel()
+	in := briefInput()
+	rounds := reviewRounds()
+	rounds[3].Text = "REPLY TWO " + strings.Repeat("r", 3000)
+	in.Journal = append(rounds, in.Journal...)
+	b := runner.Brief(in)
+	if !strings.Contains(b, "REPLY TWO") {
+		t.Fatal("the reply to the latest review is left out of a long journal's brief")
+	}
+}
+
 func TestAnImplementerBriefShowsTheCIFailureFirst(t *testing.T) {
 	t.Parallel()
 	in := briefInput()

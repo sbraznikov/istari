@@ -360,6 +360,7 @@ The project key `admission` (section 12) says whether the first condition applie
 
 - A child of a split has a budget of its own, by its own size from `budget_usd` (section 4.7). The parent was split because it is too large to work on, and `XL` has no budget. What the planner spent on the parent stays on the parent and does not count against the children.
 - A ticket an agent files while working on another ticket (a dependency, a problem found on the way) shares the budget of the ticket it was filed from: the runs of both count against one budget, of that ticket's size. An agent cannot escape its budget by filing tickets. A ticket filed while working on a child of a split shares that child's budget.
+- A ticket an agent filed gets a budget of its own, by its own size, once a trusted member admits it with `istari ticket ready`: the member has judged it a piece of work of its own. The command does this in `new` and in any later unfinished state, since the ticket was usually admitted by inheritance already; past `new` it changes no state. Each run counts against the budget its ticket spent from when the run started: the runs before the admission stay on the budget of the ticket it was filed from, the runs after it count against its own. The ticket's journal says so, naming the member, and the event `ticket.budget_owned` records it with the actor. A second `istari ticket ready` changes nothing. Until a human admits it this way, the ticket keeps sharing the budget; the label `istari:ready` and `/istari ready` do not change it. The children of a split are not affected.
 
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
@@ -392,6 +393,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Plan | the plan stage is complete | planner |
 | Checkpoint | a meaningful step of work is complete | implementer — `istari checkpoint`: what is done and what is next. The commit, check results and the list of changed files are added by code |
 | Review result | the review stage is complete | reviewer; details stay in the PR |
+| Reply | the implementer answers a finding of the latest review: why it is not a flaw in this place (section 7.6) | implementer — `istari review reply --finding <n> "<why>"`; code adds the review task, and refuses a number that is not a finding of the latest review |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
 | CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
@@ -830,6 +832,7 @@ istari decide --propose --file card.yaml   # decision card: problem, state, opti
 istari assume "Taking the cache size from the current config"
 istari checkpoint "Cache layer rewritten; next is the race test"   # commit, push, entry in the ticket
 istari pr open --title "..."            # creates a PR with a link to the ticket
+istari review reply --finding 2 "the duplicate is the spec's own wording"   # implementer: why finding 2 of the latest review is not a flaw here (section 7.6)
 istari schedule --in 5m "check CI"
 istari complete "PR #482 is ready for review"
 istari complete --ci-unrelated "red only in the known flaky TestX, not this change"   # implementer: rerun the failed jobs, at most twice per head (section 4.3)
@@ -840,7 +843,7 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 ### 7.5 Budgets and loop protection
 
 - Per-run limits: time, tokens, cost. Per ticket: total cost (budget by size, section 4.7), number of attempts, number of review rounds.
-- Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
+- Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it, until a trusted member admits it with `istari ticket ready`; from then on its runs spend a budget of its own size, and its earlier runs stay counted on the budget it shared (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
 - The decision on an exceeded budget: a trusted member raises the ticket's size label, which raises its budget (section 4.7), then runs `istari ticket unhold <ref>`. The command unblocks the ticket's tasks blocked `budget_exceeded` and then clears the hold, so an interrupted call leaves the ticket held and a repeat finishes it. While the budget is still spent, the command refuses and names the size label and `--anyway`; `--anyway` lifts the hold without raising the size. On any other hold the command refuses and names the command that lifts it (`istari ticket resume` for `paused`, `istari ticket retry` for `attempts_exhausted`).
 - How far `--anyway` reaches: exactly one more run of the ticket. The next claim of one of its tasks starts that run although the budget is spent, capped at the full budget of the ticket's size (of the ticket whose budget it shares), never uncapped. The grant is recorded with the unhold, so it survives a daemon restart, and the start of the ticket's next run uses it up, even of a run that finds budget left because the size was raised meanwhile. After that run the budget is checked as before: a budget still spent blocks the task `budget_exceeded` and holds the ticket again, and a further run needs another `unhold --anyway` or a larger size. Spending past the budget stays a decision per run.
@@ -930,7 +933,7 @@ Review rules:
 | Standards axis: a documented repository standard is violated | return for rework (T7) |
 | Standards axis: a code smell from the baseline set | return for rework (T7) |
 
-Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets the hold `attempts_exhausted` and waits for a human. A human's `istari ticket retry` grants it one more round, recorded in the journal with who granted it and why (section 4.3); findings in that round hold it again.
+Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies why it is not a flaw in this place, with `istari review reply --finding <n>`: the reply is an entry in the ticket journal (section 4.6), not a comment on the PR. In the second case the reviewer, in the next round, accepts the explanation or insists: its brief shows each finding of the latest review with the replies to it next to it, and keeps those replies however long the journal is. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets the hold `attempts_exhausted` and waits for a human. A human's `istari ticket retry` grants it one more round, recorded in the journal with who granted it and why (section 4.3); findings in that round hold it again.
 
 **How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
 
@@ -1057,6 +1060,7 @@ istari run list|show|logs [-f]|attach|stop
 istari gate list|approve|reject
 istari plan submit --file plan.yaml  # plan: slices, seams, change zone
 istari review submit --file r.yaml   # review report: findings on two axes
+istari review reply --finding <n> "<why>"  # implementer: reply to a finding of the latest review
 istari report                        # report: PRs in review, holds, spend
 
 istari post|reply|schedule           # messages to the ticket thread

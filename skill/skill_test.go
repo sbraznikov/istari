@@ -39,7 +39,7 @@ var roleRules = map[string]map[string][]string{
 		"project language":        {"the project's glossary", "ADRs"},
 		"PR description":          {"**Summary**", "**Evidence**", "**Merge Danger**", "one-way or a two-way door", "blast radius"},
 		"self-review, two axes":   {"review your own work along two axes", "Standards and Spec"},
-		"answering a smell":       {"either fix the code or reply in the pull request why it is not a flaw here"},
+		"answering a smell":       {"either fix the code or reply why it is not a flaw here with `istari review reply --finding <n>"},
 		"a larger size":           {"the size turned out larger"},
 		"brief PR prose":          {"keep the prose brief", "domain language from its glossary"},
 		"ADRs are replaced":       {"replaced by a new ADR"},
