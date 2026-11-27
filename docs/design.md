@@ -261,7 +261,7 @@ canceled — from any open state
 | 2 | implement | implementer | `in_progress` | branch, commits, draft PR | — |
 | 3 | verify | (no agent) | `in_progress` | CI status; on green CI the PR is marked ready for review, which ends the draft | CI is green |
 | 4 | review | reviewer | `in_review` | a review with comments, or an approval | — |
-| 5 | approve | human; skipped in `auto` mode | `awaiting_approval` | GitHub review | depending on the merge mode (section 4.8) |
+| 5 | approve | human; skipped in `auto` mode | `awaiting_approval` | GitHub review; `istari gate approve` only when GitHub refuses the author's own review (rules below) | depending on the merge mode (section 4.8) |
 | 6 | merge | (no agent) | `awaiting_approval` → `done` | merge, closing the ticket, removing the worktree | — |
 
 Rules:
@@ -276,6 +276,11 @@ Rules:
 - A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first; its task IDs carry the marker `c` after the round number (`rNc`). A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
 - The rework round that starts after a red CI the implementer answered `--ci-unrelated`, because the rerun was red too or GitHub refused it, is an unrelated round: its task IDs carry the marker `u` (`rNu`). An unrelated round does not count against `max_review_rounds`: it follows CI the change did not break, not review findings. Its limit is the head's: two reruns, then the hold `needs_input` above. A red CI the implementer did not answer starts a review round, which counts.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
+- The author's own approval. Without `[github_app]` istari opens pull requests as the user of `gh auth token` (section 11), and GitHub refuses a review of one's own pull request ("Can not approve your own pull request"). On a project where that user is the only human, the approve stage could then never pass. So, and only then, the approve stage also accepts `istari gate approve <approve task>` from the human whose GitHub login is the pull request's author:
+  - `istari gate list` shows the approve task of a ticket in `awaiting_approval` (merge mode not `manual`) when no `[github_app]` is configured and no such approval stands at the pull request's current head.
+  - Only a trusted member approves this way (section 4.5, `trusted`); anyone else is refused (`not_trusted`), and the message names who may approve. A trusted member who is not the pull request's author is refused and pointed to a GitHub review, which GitHub accepts from them. With `[github_app]` the pull request's author is the App, every human can review on GitHub, and `gate approve` on the approve task is refused, pointing to the GitHub review by a CODEOWNERS member.
+  - The approval binds to the pull request's head commit: it is the event `gate.approved` (payload: the approver and the head) and a journal note naming the approver and the head. The merge stage goes on only while the approval names the current head; a push after it voids it, as a GitHub review of an older head does not count (section 4.9, step 5), and the gate shows again.
+  - A GitHub review stays the way whenever it is possible: a GitHub review that approves the head completes the approve task as before.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
 If a ticket is too large, planner splits it into child tickets (sub-issues). Each of them goes through the check against the standard and its own pipeline. A child carries a key, a title, a body, its type and size, its needs and, if it belongs to another repository, that repository (section 7.6). The planner writes the body; code writes the table at its end: the child's type and size, the parent's priority, and the parent's repository unless the child names another. Before any child is created, code checks every child's body against the structural standard, with the same check as `istari ticket check` (section 4.5); a child that fails refuses the whole plan, naming the child's key and its deviations, and the planner fixes it in the same run. The parent stays in `in_progress` and moves to `done` when all child tickets are completed (T5, T12).
@@ -480,7 +485,7 @@ The merge mode is set in the config (`[defaults.merge]`, overridden in the repos
 | Mode | Who approves | Who merges | When the ticket moves to `done` |
 |---|---|---|---|
 | `manual` | a human | a human | when istari sees that the PR is merged |
-| `after_approval` (default) | a human, GitHub review | istari, right after approval | after the merge |
+| `after_approval` (default) | a human, GitHub review; without `[github_app]` the pull request's author, a trusted member, with `istari gate approve` (section 4.3) | istari, right after approval | after the merge |
 | `auto` | nobody: a passed agent review and green CI are enough | istari | after the merge |
 
 **Restrictions of `auto` mode.** Only a PR for which all of the following hold at once is merged without a human:
