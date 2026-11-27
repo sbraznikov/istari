@@ -111,7 +111,7 @@ func TestAReviewersFindingIsPublishedAndReturnsTheTicketForRework(t *testing.T) 
 	d, gh, ref, pr, log := r.d, r.gh, r.ref, r.pr, r.log
 
 	d.waitForEvents(t, ref.String(), "task.completed", 1) // the review task
-	d.step(t, "pipeline")                                  // the finding returns the ticket for rework
+	d.step(t, "pipeline")                                 // the finding returns the ticket for rework
 	out, _ := os.ReadFile(log)
 	var tk struct{ State string }
 	d.mustCLI(t, &tk, "ticket", "show", ref.String())
