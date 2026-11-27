@@ -392,6 +392,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Plan | the plan stage is complete | planner |
 | Checkpoint | a meaningful step of work is complete | implementer — `istari checkpoint`: what is done and what is next. The commit, check results and the list of changed files are added by code |
 | Review result | the review stage is complete | reviewer; details stay in the PR |
+| Reply | the implementer answers a finding of the latest review: why it is not a flaw in this place (section 7.6) | implementer — `istari review reply --finding <n> "<why>"`; code adds the review task, and refuses a number that is not a finding of the latest review |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
 | CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
@@ -830,6 +831,7 @@ istari decide --propose --file card.yaml   # decision card: problem, state, opti
 istari assume "Taking the cache size from the current config"
 istari checkpoint "Cache layer rewritten; next is the race test"   # commit, push, entry in the ticket
 istari pr open --title "..."            # creates a PR with a link to the ticket
+istari review reply --finding 2 "the duplicate is the spec's own wording"   # implementer: why finding 2 of the latest review is not a flaw here (section 7.6)
 istari schedule --in 5m "check CI"
 istari complete "PR #482 is ready for review"
 istari complete --ci-unrelated "red only in the known flaky TestX, not this change"   # implementer: rerun the failed jobs, at most twice per head (section 4.3)
@@ -930,7 +932,7 @@ Review rules:
 | Standards axis: a documented repository standard is violated | return for rework (T7) |
 | Standards axis: a code smell from the baseline set | return for rework (T7) |
 
-Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets a hold and waits for a human.
+Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies why it is not a flaw in this place, with `istari review reply --finding <n>`: the reply is an entry in the ticket journal (section 4.6), not a comment on the PR. In the second case the reviewer, in the next round, accepts the explanation or insists: its brief shows each finding of the latest review with the replies to it next to it, and keeps those replies however long the journal is. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets a hold and waits for a human.
 
 **How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
 
@@ -1056,6 +1058,7 @@ istari run list|show|logs [-f]|attach|stop
 istari gate list|approve|reject
 istari plan submit --file plan.yaml  # plan: slices, seams, change zone
 istari review submit --file r.yaml   # review report: findings on two axes
+istari review reply --finding <n> "<why>"  # implementer: reply to a finding of the latest review
 istari report                        # report: PRs in review, holds, spend
 
 istari post|reply|schedule           # messages to the ticket thread
