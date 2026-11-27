@@ -77,7 +77,7 @@ func TestTicketCheckOfATrackerTicketWritesNothing(t *testing.T) {
 	gh := githubtest.New(t)
 	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "type:feature", "size:S", "priority:P1")
 	repo := gitRepo(t, "git@github.com:acme/web.git", map[string]string{"go.mod": "module x\n"})
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	var before []struct{ Cursor string }
 	d.mustCLI(t, &before, "tail")
 	issueBefore := gh.Issue(n)

@@ -96,7 +96,7 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 
 func TestTicketResumeTakesBackATaskWhoseRunIsGone(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
 	d.createTask(t, "t_1", "implementer") // a task of #1
