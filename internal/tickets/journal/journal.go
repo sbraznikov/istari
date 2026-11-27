@@ -45,13 +45,11 @@ type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
 	Actor      string           `json:"actor"`
-	ID         string           `json:"id,omitempty"`   // a question's id; its answer names it
-	Text       string           `json:"text,omitempty"` // the question, the answer verbatim, the assumption
-	Link       string           `json:"link,omitempty"` // where the answer was given
-	// Comment is the tracker comment the entry was posted as; 0 without a
-	// tracker. It is not in the comment's own marker.
-	Comment    int64            `json:"comment,omitempty"`
-	Decision  *DecisionEntry   `json:"decision,omitempty"`
+	ID         string           `json:"id,omitempty"`      // a question's id; its answer names it
+	Text       string           `json:"text,omitempty"`    // the question, the answer verbatim, the assumption
+	Link       string           `json:"link,omitempty"`    // where the answer was given
+	Comment    int64            `json:"comment,omitempty"` // the tracker comment the entry was posted as, not in its marker; 0 without a tracker
+	Decision   *DecisionEntry   `json:"decision,omitempty"`
 	Plan       *PlanEntry       `json:"plan,omitempty"`
 	Checkpoint *CheckpointEntry `json:"checkpoint,omitempty"`
 	Review     *ReviewEntry     `json:"review,omitempty"`
