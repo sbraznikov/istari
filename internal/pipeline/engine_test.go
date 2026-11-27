@@ -281,6 +281,23 @@ func TestAHumanGrantsOneMoreReviewRoundAfterTheLimit(t *testing.T) {
 	}
 }
 
+func TestATicketHeldForFailedAttemptsGetsNoReviewRound(t *testing.T) {
+	t.Parallel()
+	f := newEngine(t, config.Defaults{MaxReviewRounds: 1}, nil)
+	f.readyTicket(t, ref)
+	f.reconcile(t)
+	f.finish(t, ref, "plan", "agent:planner-1")
+	f.reconcile(t)
+	f.fail(t, ref, "implement", core.DefaultMaxAttempts) // round 1 of 1, its implement used up
+	f.reconcile(t)
+	if hold := f.hold(t, ref); hold != "attempts_exhausted" {
+		t.Fatalf("hold = %q after the failed attempts, want attempts_exhausted", hold)
+	}
+	if _, granted, err := f.engine.GrantRound(ctx, ref, "human:alex", "retry by a human"); err != nil || granted {
+		t.Fatalf("GrantRound for failed attempts = granted %v, %v; want nothing granted: its round has not been reviewed", granted, err)
+	}
+}
+
 func TestARepositoryWithoutAnApproveStageGetsNoApproveTask(t *testing.T) {
 	t.Parallel()
 	f := newEngine(t, config.Defaults{}, files{"acme/web": "[[stage]]\nname = \"plan\"\nrole = \"planner\"\n\n[[stage]]\nname = \"implement\"\nrole = \"implementer\"\nneeds = [\"plan\"]\n"})

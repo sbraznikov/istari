@@ -855,8 +855,9 @@ func reviewLimit(s Settings, tk core.Ticket) int {
 
 // GrantRound grants a ticket held attempts_exhausted, whose review rounds
 // reached its limit, one more review round (spec 7.6) and returns that
-// round's number. A ticket with rounds left, or not held so, gets nothing:
-// granted is false.
+// round's number. A ticket with rounds left, not held so, or held because a
+// task used up its attempts gets nothing: granted is false. So retry grants
+// before it restarts the failed tasks.
 func (e *Engine) GrantRound(ctx context.Context, refText, actor, reason string) (next int, granted bool, err error) {
 	ref, err := tickets.ParseRef(refText)
 	if err != nil {
@@ -875,7 +876,7 @@ func (e *Engine) GrantRound(ctx context.Context, refText, actor, reason string) 
 		return 0, false, err
 	}
 	r := roundOf(refText, all)
-	if limit := reviewLimit(s, tk); tk.Hold != "attempts_exhausted" || limit == 0 || r.n-r.uncounted < limit {
+	if limit := reviewLimit(s, tk); tk.Hold != "attempts_exhausted" || limit == 0 || r.n-r.uncounted < limit || exhausted(refText, all) {
 		return 0, false, nil
 	}
 	if _, err := e.tickets.GrantRound(ctx, actor, refText, reason, r.n+1); err != nil {
