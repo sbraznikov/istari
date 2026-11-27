@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
 
@@ -24,7 +25,9 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	plan := filepath.Join(t.TempDir(), "plan.yaml")
-	os.WriteFile(plan, []byte("tickets:\n  - key: base\n    title: The base\n    body: \"## Context\\n\\nFirst.\\n\"\n  - key: top\n    title: On top\n    needs: [base]\n    body: \"## Context\\n\\nNeeds #base.\\n\"\n"), 0o644)
+	if err := os.WriteFile(plan, []byte("tickets:\n  - key: base\n    title: The base\n    body: \"## Context\\n\\nFirst.\\n\"\n  - key: top\n    title: On top\n    needs: [base]\n    body: \"## Context\\n\\nNeeds #base.\\n\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var refs map[string]string
 	for range 2 { // the same key twice: one plan
 		d.mustCLI(t, &refs, "ticket", "create", "--file", plan, "--idempotency-key", "plan-1")
@@ -37,12 +40,16 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 		t.Fatalf("ticket deps: exit %d %s\n%s", code, stderr, out)
 	}
 	other := filepath.Join(t.TempDir(), "other.yaml")
-	os.WriteFile(other, []byte("tickets:\n  - key: away\n    title: Elsewhere\n    repo: acme/other\n"), 0o644)
+	if err := os.WriteFile(other, []byte("tickets:\n  - key: away\n    title: Elsewhere\n    repo: acme/other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, stderr, code := d.cli(t, "ticket", "create", "--file", other); code == 0 || !strings.Contains(stderr, "acme/other is no repository istari syncs") || gh.IssueCount() != 2 {
 		t.Fatalf("a ticket in a repository istari does not sync: exit %d, %d issues\n%s", code, gh.IssueCount(), stderr)
 	}
 	md := filepath.Join(t.TempDir(), "one.md")
-	os.WriteFile(md, []byte("# A single ticket\n\n## Context\n\nOne.\n"), 0o644)
+	if err := os.WriteFile(md, []byte("# A single ticket\n\n## Context\n\nOne.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
 	if gh.IssueCount() != 3 || gh.Issue(3).Title != "A single ticket" {
 		t.Fatalf("a single ticket: %d issues, %+v", gh.IssueCount(), gh.Issue(3))
@@ -55,7 +62,9 @@ const splitAgent = `#!/bin/sh
 [ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
 istari=%[1]q
 log=%[2]q
-[ "$ISTARI_ROLE" = planner ] || exit 1
+# Only the parent is planned here: its split child is admitted and handed
+# out too, and must not write to the log.
+[ "$ISTARI_ROLE" = planner ] && [ "$ISTARI_TICKET" = %[3]q ] || exit 1
 for size in "" "size: S"; do
   echo "--- submit" >> "$log"
   "$istari" plan submit --file - >> "$log" 2>&1 <<PLAN
@@ -101,35 +110,53 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
 	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex")
+	parentRef := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(splitAgent, binary, log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(splitAgent, binary, log, parentRef))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	for deadline := time.Now().Add(60 * time.Second); gh.IssueCount() < 2; time.Sleep(200 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			out, _ := os.ReadFile(log)
-			t.Fatalf("no child after a minute\nagent log:\n%s\ndaemon:\n%s", out, d.stderr)
-		}
+	d.step(t, "sync")     // the parent, admitted
+	d.step(t, "pipeline") // its plan task and worktree
+	type run struct {
+		Ticket   string `json:"ticket"`
+		State    string `json:"state"`
+		Reason   string `json:"reason"`
+		Rejected string `json:"rejected"`
 	}
-	out, _ := os.ReadFile(log)
+	parentRuns := func() []run {
+		var all, runs []run
+		d.mustCLI(t, &all, "run", "list")
+		for _, r := range all {
+			if r.Ticket == parentRef { // the child's runs are not this test's
+				runs = append(runs, r)
+			}
+		}
+		return runs
+	}
 	// ended is how each run ended and the daemon's log, for a failure.
 	ended := func() string {
-		var runs []struct {
-			State  string `json:"state"`
-			Reason string `json:"reason"`
-		}
+		var runs []run
 		d.mustCLI(t, &runs, "run", "list")
 		return fmt.Sprintf("runs: %+v\ndaemon:\n%s", runs, d.stderr)
 	}
+	// The harness runs outside the daemon: only its end is polled for.
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		if runs := parentRuns(); len(runs) == 1 && runs[0].State != "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			out, _ := os.ReadFile(log)
+			t.Fatalf("the planner's run did not end in a minute\nagent log:\n%s\n%s", out, ended())
+		}
+	}
+	out, _ := os.ReadFile(log)
 	submits := strings.Split(string(out), "--- submit")
 	if len(submits) != 3 || !strings.Contains(submits[1], "child half") || !strings.Contains(submits[1], "no size") {
 		t.Fatalf("the first submission's answer:\n%s\nwant the child's key and its missing size\n%s", out, ended())
@@ -137,25 +164,19 @@ func TestARefusedSplitIsFixedAndResubmittedInTheSameRun(t *testing.T) {
 	if gh.IssueCount() != 2 || !strings.HasSuffix(gh.Issue(2).Body, "| feature | S | P1 | `"+githubtest.Repo+"` |\n") {
 		t.Fatalf("issues %d, the child %+v; want one child with its table\n%s", gh.IssueCount(), gh.Issue(2), ended())
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
-		var parent struct {
-			State string `json:"state"`
-		}
-		d.mustCLI(t, &parent, "ticket", "show", fmt.Sprintf("gh:%s#%d", githubtest.Repo, n))
-		var runs []struct {
-			State    string `json:"state"`
-			Rejected string `json:"rejected"`
-		}
-		d.mustCLI(t, &runs, "run", "list")
-		if parent.State == "in_progress" && len(runs) == 1 && runs[0].State != "running" {
-			if runs[0].Rejected != "" {
-				t.Fatalf("the run = %+v, want it not rejected: the planner fixed the split in it", runs[0])
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
-		}
+	if runs := parentRuns(); runs[0].Rejected != "" {
+		t.Fatalf("the run = %+v, want it not rejected: the planner fixed the split in it", runs[0])
+	}
+	d.step(t, "pipeline") // the completed plan moves the parent on
+	var parent struct {
+		State string `json:"state"`
+	}
+	d.mustCLI(t, &parent, "ticket", "show", parentRef)
+	if parent.State != "in_progress" {
+		t.Fatalf("after the run and a pipeline pass the parent is %s, want in_progress: the second plan split it\nagent log:\n%s\n%s", parent.State, out, ended())
+	}
+	if runs := parentRuns(); len(runs) != 1 {
+		t.Fatalf("the parent has %d runs, want the planner's one\n%s", len(runs), ended())
 	}
 }
 
@@ -247,7 +268,9 @@ func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
 	}
 	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	md := filepath.Join(t.TempDir(), "ticket.md")
-	os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644)
+	if err := os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var refs map[string]string
 	d.mustCLI(t, &refs, "ticket", "create", "--file", md)
 	var ref string
@@ -299,9 +322,7 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(longPlanner, binary, log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(longPlanner, binary, log))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
@@ -313,7 +334,9 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 		out, _ := os.ReadFile(log)
 		if strings.Contains(string(out), "submit exit") {
 			var bytes int
-			fmt.Sscanf(string(out), "bytes %d", &bytes)
+			if _, err := fmt.Sscanf(string(out), "bytes %d", &bytes); err != nil {
+				t.Fatalf("no byte count in the agent's log: %v\n%s", err, out)
+			}
 			if bytes < 20000 || !strings.Contains(string(out), "submit exit 0") {
 				t.Fatalf("a plan of %d bytes from the result file was not accepted:\n%s", bytes, out)
 			}
@@ -374,5 +397,62 @@ func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
 	// Read and sent: the daemon answers that a plan is the planner's.
 	if err == nil || !strings.Contains(string(out), "token_invalid") {
 		t.Fatalf("plan submit from stdin: %v\n%s", err, out)
+	}
+}
+
+// waitingPlanner submits its plan in run n once the test lets it (the file
+// $log.go.n), and completes only when the plan was taken.
+const waitingPlanner = `#!/bin/sh
+[ "$1" = "--version" ] && { echo "0.0.0 (fake)"; exit 0; }
+istari=%[1]q
+log=%[2]q
+if [ "$ISTARI_ROLE" = planner ]; then
+  n=$(( $(cat "$log.n" 2>/dev/null || echo 0) + 1 )); echo $n > "$log.n"
+  while [ ! -e "$log.go.$n" ]; do sleep 0.05; done
+  if "$istari" plan submit --file - >> "$log" 2>&1 <<'PLAN'
+summary: Write the feature file
+slices: [the feature file]
+seams: [{name: feature.txt, catches: its presence, misses: its content}]
+zone: [feature.txt (new)]
+PLAN
+  then "$istari" complete "planned" >> "$log" 2>&1; fi
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+
+func TestAPlanSubmittedWhileGitHubRefusesForTheRateLimitCostsNoAttempt(t *testing.T) {
+	t.Parallel()
+	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(waitingPlanner, binary, log) })
+	// signal lets the planner process of run n submit.
+	signal := func(n int) {
+		t.Helper()
+		if err := os.WriteFile(fmt.Sprintf("%s.go.%d", log, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The planner is another process: the test polls for its first run.
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(log + ".n"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no planner run started\ndaemon:\n%s", d.stderr)
+		}
+	}
+	gh.SetRateLimit(0, time.Now().Add(2*time.Second))
+	signal(1)
+	endedRuns(t, d, log, "planner", 1)
+	gh.SetRateLimit(5000, time.Now().Add(time.Hour))
+	signal(2)
+	yielded, completed := yieldedAndCompleted(t, endedRuns(t, d, log, "planner", 2), log)
+	out, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "tracker_unavailable") || strings.Contains(string(out), "invalid_ticket") {
+		t.Errorf("the plan submitted while GitHub refuses was not answered as later:\n%s", out)
+	}
+	if task := showTask(t, d, completed.Task); yielded.Task != completed.Task || task.Attempts != 0 {
+		t.Fatalf("the plan task is %+v, want the yielded task handed out again with no failed attempt", task)
 	}
 }

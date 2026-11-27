@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,8 +69,8 @@ func DefaultProfiles() map[string]harness.Profile {
 	readOnly := []string{"Read", "Grep", "Glob", "Bash(istari *)", "Bash(git log *)", "Bash(git diff *)", "Bash(git show *)"}
 	return map[string]harness.Profile{
 		// dontAsk: a tool that is not allowed is refused, nobody is asked.
-		"refiner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
-		"planner":  {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
+		"refiner": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
+		"planner": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: readOnly},
 		// The reviewer may see what the main branch has now (spec 7.3).
 		"reviewer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "dontAsk", AllowedTools: slices.Concat(readOnly, []string{"Bash(git fetch origin main)"})},
 		"implementer": {Harness: Name, Model: "claude-opus-5-5", PermissionMode: "acceptEdits",
@@ -253,11 +254,11 @@ func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string
 	// the agent started too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		r.Close()
-		w.Close()
+		r.Close() //nolint:errcheck // the start's error is the one returned
+		w.Close() //nolint:errcheck // the start's error is the one returned
 		return nil, fmt.Errorf("claudecode: start %s: %w", h.binary, err)
 	}
-	w.Close()
+	w.Close() //nolint:errcheck // the child holds its own copy of the write end; ours is closed only so that reads end when the child exits
 	s := &session{
 		cmd: cmd, out: r, queue: newQueue(),
 		exited: make(chan struct{}), read: make(chan struct{}), done: make(chan struct{}),
@@ -268,7 +269,9 @@ func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string
 	go func() {
 		select {
 		case <-ctx.Done():
-			s.Stop(10 * time.Second)
+			if err := s.Stop(10 * time.Second); err != nil {
+				log.Printf("istari: claudecode: stopping a canceled session: %v", err)
+			}
 		case <-s.done:
 		}
 	}()
@@ -349,7 +352,7 @@ func (s *session) wait() {
 	select {
 	case <-s.read:
 	case <-time.After(readGrace):
-		s.out.Close() // ends readOutput
+		s.out.Close() //nolint:errcheck // closed only to end readOutput, which reports how the output ended
 		<-s.read
 	}
 	s.finish()
@@ -467,7 +470,7 @@ func (s *session) readOutput() {
 		s.mu.Lock()
 		s.readErr = err
 		s.mu.Unlock()
-		io.Copy(io.Discard, s.out) // keep the harness from blocking on a full pipe
+		io.Copy(io.Discard, s.out) //nolint:errcheck // only keeps the harness from blocking on a full pipe; readErr already holds the failure
 	}
 }
 

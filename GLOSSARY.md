@@ -41,6 +41,7 @@ The words of istari, as `docs/design.md` and the code use them. Code, tests, mes
 - **Stage**: one step of the pipeline; it becomes a task per ticket. [4.3]
 - **Round**: one pass from implement to review; a rework starts the next round. Limited by `max_review_rounds`. [4.3, 7.6]
 - **Conflict round**: a round that T10 starts when GitHub reports the PR in conflict with the main branch; its run merges the main branch first, its review looks only at the conflict resolution, and it does not count against `max_review_rounds`. [4.3, 4.8]
+- **Unrelated round**: a round that starts when the implementer answered a red CI `--ci-unrelated` and its rerun was red too, or GitHub refused it; its task IDs carry the marker `u` (`rNu`), and it does not count against `max_review_rounds`. One head is rerun at most twice; the third answer holds the ticket `needs_input`. [4.3]
 - **Rework**: a return to implement after red CI, accepted review findings or a conflict with the main branch. [4.3]
 - **Plan**: the planner's structured result: summary, slices, seams, change zone, size, and a split if needed. [4.3, 7.6]
 - **Slice**: one failing test and the minimum code to pass it; every green slice is a checkpoint. [7.6]

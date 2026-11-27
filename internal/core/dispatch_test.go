@@ -25,7 +25,11 @@ func limitedTasks(t *testing.T, limits core.Limits, delay time.Duration) *core.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := func() time.Time {
 		time.Sleep(delay)
 		return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)

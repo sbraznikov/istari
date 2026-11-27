@@ -55,7 +55,7 @@ func newDataDir(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { os.RemoveAll(dir) }) //nolint:errcheck // a git process of the killed daemon may still write into dir; what is left in /tmp harms no test
 	return dir
 }
 
@@ -104,8 +104,8 @@ func startDaemonWithArgs(t *testing.T, dataDir, config string, args []string, en
 	}
 	t.Cleanup(func() {
 		if d.cmd.ProcessState == nil {
-			d.cmd.Process.Kill()
-			d.cmd.Wait()
+			d.cmd.Process.Kill() //nolint:errcheck // teardown: the daemon may have exited already
+			d.cmd.Wait()         //nolint:errcheck // teardown: Wait reports the kill
 		}
 	})
 	d.client = socketClient(d.socket)
@@ -209,8 +209,12 @@ func TestADaemonRestartedPausedOnAPausedHandOutStarts(t *testing.T) {
 	dataDir := newDataDir(t)
 	config := writeDaemonConfig(t, dataDir)
 	first := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
-	first.cmd.Process.Signal(syscall.SIGTERM)
-	first.cmd.Wait()
+	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.cmd.Wait(); err != nil {
+		t.Fatalf("the first daemon did not stop cleanly: %v", err)
+	}
 	d := startDaemonWithArgs(t, dataDir, config, []string{"--paused"})
 	d.createTask(t, "t_1", "implementer")
 	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
@@ -333,14 +337,18 @@ func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 		t.Fatalf("resumed at %s, want %s", resumed[0].ID, live[1].ID)
 	}
 	var e struct{ Ticket string }
-	json.Unmarshal(resumed[1].Data, &e)
+	if err := json.Unmarshal(resumed[1].Data, &e); err != nil {
+		t.Fatal(err)
+	}
 	if e.Ticket != "gh:acme/web#4" || resumed[1].Type != "ticket.transitioned" {
 		t.Fatalf("resumed event = %s %s, want the event of #4", resumed[1].Type, resumed[1].Data)
 	}
 
 	// Filters apply to the stream.
 	filtered := readSSE(t, d.client, "http://istari/v1/events/stream?ticket="+strings.ReplaceAll("gh:acme/web#3", "#", "%23"), "", 1)
-	json.Unmarshal(filtered[0].Data, &e)
+	if err := json.Unmarshal(filtered[0].Data, &e); err != nil {
+		t.Fatal(err)
+	}
 	if e.Ticket != "gh:acme/web#3" {
 		t.Fatalf("filtered stream gave %s", filtered[0].Data)
 	}
@@ -355,13 +363,15 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // teardown: the daemon closes its side when it exits
 	reader := bufio.NewReader(conn)
 	fmt.Fprint(conn, "GET /v1/health HTTP/1.1\r\nHost: istari\r\n\r\n")
 	if resp, err := http.ReadResponse(reader, nil); err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("first request: %v", err)
 	} else {
-		io.Copy(io.Discard, resp.Body)
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("first response: %v", err)
+		}
 		resp.Body.Close()
 	}
 	body := `{"actor":"human:alex","ref":"gh:acme/web#1","project":"web"}`
@@ -412,8 +422,10 @@ func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
 		}
 	}
 	left := runs[0].ID
-	d.cmd.Process.Kill() // the daemon dies with its run still recorded running
-	d.cmd.Wait()
+	if err := d.cmd.Process.Kill(); err != nil { // the daemon dies with its run still recorded running
+		t.Fatal(err)
+	}
+	d.cmd.Wait() //nolint:errcheck // Wait reports the kill
 
 	again := startDaemonWithConfig(t, d.dataDir, d.config, d.env...)
 	again.mustCLI(t, &runs, "run", "list")
@@ -462,8 +474,13 @@ func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode < 400 {
+			return resp.StatusCode, "" // a success carries the result, not an error code
+		}
 		var e struct{ Code string }
-		json.NewDecoder(resp.Body).Decode(&e)
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
 		return resp.StatusCode, e.Code
 	}
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "t_1", "ticket": "gh:acme/web#1", "role": "implementer"}, nil)
@@ -508,7 +525,7 @@ func TestWithoutAConfigFileTheDaemonUsesTheDefaultDataDir(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { cmd.Process.Signal(syscall.SIGTERM); cmd.Wait() }()
+	defer func() { cmd.Process.Signal(syscall.SIGTERM); cmd.Wait() }() //nolint:errcheck // teardown: the daemon may have exited already
 	socket := filepath.Join(home, ".local", "share", "istari", "istari.sock")
 	deadline := time.Now().Add(10 * time.Second)
 	for {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
@@ -43,7 +44,9 @@ func TestDoctorNamesTheSlotPausedBecauseItsHarnessDidNotStart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	gh := githubtest.New(t)
 	for range 5 { // issue #5 is the ticket; closed, they are not synced or refined
@@ -58,9 +61,7 @@ func TestDoctorNamesTheSlotPausedBecauseItsHarnessDidNotStart(t *testing.T) {
 	// while it is gone, the harness does not start.
 	bin := t.TempDir()
 	claude := filepath.Join(bin, "claude")
-	if err := os.WriteFile(claude, []byte("#!/bin/sh\necho 1.0.0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, claude, "#!/bin/sh\necho 1.0.0\n")
 	ghDir, _, _ := strings.Cut(fakeGH(t, gh.Token), string(os.PathListSeparator))
 	path := "PATH=" + bin + string(os.PathListSeparator) + ghDir + string(os.PathListSeparator) + "/usr/bin:/bin"
 	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, path, "GITHUB_API_URL="+gh.URL)

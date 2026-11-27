@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/harness/claudecode"
 )
@@ -64,9 +65,7 @@ func newFake(t *testing.T) fake {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "claude")
-	if err := os.WriteFile(bin, []byte(fakeClaude), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, bin, fakeClaude)
 	return fake{bin: bin, dir: dir}
 }
 
@@ -134,7 +133,9 @@ func TestTheAdapterStartsClaudeHeadlessAndYieldsEveryKindOfEventInOrder(t *testi
 		t.Errorf("messages = %q, %q", events[0].Text, events[3].Text)
 	}
 	var input struct{ Command string }
-	json.Unmarshal(events[2].ToolInput, &input)
+	if err := json.Unmarshal(events[2].ToolInput, &input); err != nil {
+		t.Fatal(err)
+	}
 	if events[2].Tool != "Bash" || input.Command != "istari ticket show gh:acme/web#1" {
 		t.Errorf("tool call = %s %s", events[2].Tool, events[2].ToolInput)
 	}
@@ -211,7 +212,9 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 	truncated := filepath.Join(t.TempDir(), "stream.jsonl")
 	full, _ := os.ReadFile("testdata/stream.jsonl")
 	lines := strings.Split(strings.TrimSpace(string(full)), "\n")
-	os.WriteFile(truncated, []byte(strings.Join(lines[:len(lines)-1], "\n")+"\n"), 0o644)
+	if err := os.WriteFile(truncated, []byte(strings.Join(lines[:len(lines)-1], "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	s, err = h.Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": truncated, "FAKE_EXIT": "1"}))
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +290,9 @@ func TestTheAgentGetsOnlyItsOwnEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	env := f.read(t, "env")
 	if strings.Contains(env, "daemon-secret") {
 		t.Fatal("the daemon's GITHUB_TOKEN reached the agent")
@@ -311,7 +316,9 @@ func TestTheAgentFindsTheDaemonsOwnBinaryFirstOnItsPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	want := "PATH=" + filepath.Dir(self) + ":/usr/bin:/bin\n"
 	if env := f.read(t, "env"); !strings.Contains("\n"+env, "\n"+want) {
 		t.Fatalf("the agent's environment lacks %q:\n%s", want, env)
@@ -323,22 +330,24 @@ func TestWithoutADaemonPathTheAgentStillFindsTheDaemonsOwnBinary(t *testing.T) {
 	// binary's directory, so the fake names env by absolute path and runs
 	// in a mode that does nothing else.
 	t.Setenv("PATH", "")
-	os.Unsetenv("PATH")
+	if err := os.Unsetenv("PATH"); err != nil {
+		t.Fatal(err)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := newFake(t)
 	script := strings.Replace(fakeClaude, "env > ", "/usr/bin/env > ", 1)
-	if err := os.WriteFile(f.bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, f.bin, script)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "exit", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	want := "PATH=" + filepath.Dir(self) + "\n"
 	if env := f.read(t, "env"); !strings.Contains("\n"+env, "\n"+want) {
 		t.Fatalf("the agent's environment lacks %q:\n%s", want, env)
@@ -356,7 +365,9 @@ func TestSendIsNotSupportedInPrintMode(t *testing.T) {
 		t.Fatalf("Send = %v, want ErrSendNotSupported", err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestResumeContinuesTheSession(t *testing.T) {
@@ -369,7 +380,9 @@ func TestResumeContinuesTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	if args := strings.Split(f.read(t, "args"), "\n"); !containsRun(args, []string{"--resume", "sess-42"}) {
 		t.Fatalf("arguments %q lack --resume sess-42", args)
 	}
@@ -447,7 +460,7 @@ func TestCancellingTheContextStopsTheRun(t *testing.T) {
 	waitFor(t, func() bool { return f.read(t, "ready") != "" })
 	cancel()
 	done := make(chan struct{})
-	go func() { s.Wait(); close(done) }()
+	go func() { s.Wait(); close(done) }() //nolint:errcheck // a canceled run: only that it ends counts
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -469,7 +482,9 @@ func TestTheModelProvidersCredentialsReachTheHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	s.Wait()
+	if _, err := s.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	env := f.read(t, "env")
 	for _, want := range []string{"ANTHROPIC_API_KEY=model-key", "HTTPS_PROXY=http://proxy:3128"} {
 		if !strings.Contains(env, want) {
@@ -484,7 +499,9 @@ func TestTheModelProvidersCredentialsReachTheHarness(t *testing.T) {
 func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
 	t.Parallel()
 	stream := filepath.Join(t.TempDir(), "stream.jsonl")
-	os.WriteFile(stream, []byte(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"s","total_cost_usd":5.01,"usage":{"input_tokens":1,"output_tokens":1}}`+"\n"), 0o644)
+	if err := os.WriteFile(stream, []byte(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"s","total_cost_usd":5.01,"usage":{"input_tokens":1,"output_tokens":1}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	f := newFake(t)
 	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": stream, "FAKE_EXIT": "1"}))
 	if err != nil {

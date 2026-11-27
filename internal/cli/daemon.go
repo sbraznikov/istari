@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,12 +15,14 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/tickets"
@@ -29,12 +32,15 @@ import (
 )
 
 func newDaemonCommand(opts *Options) *cobra.Command {
-	var paused bool
+	var paused, stepped bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the istari daemon in the foreground",
 		Args:  Args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if stepped && !forTests {
+				return usageError{errors.New("--stepped is only for tests: this istari binary was not built for tests (go build -tags istaritest)")}
+			}
 			cfg, err := loadConfig(opts.Config)
 			if err != nil {
 				return err
@@ -46,8 +52,12 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 			defer stop()
 			daemonOpts := api.DaemonOptions{DataDir: dataDir, Limits: limitsOf(cfg), Priority: cfg.Defaults.Priority, Repos: syncRepos(cfg), GitServer: os.Getenv("GITHUB_SERVER_URL")}
+			// One transport under every GitHub client: istari doctor counts
+			// all requests, and one quota slows them all down (#208).
+			transport := ratelimit.New(ratelimit.Options{})
+			daemonOpts.GitHub = transport
 			if len(daemonOpts.Repos) > 0 {
-				tracker, err := github.FromEnvironment(ctx)
+				tracker, err := github.FromEnvironmentWith(ctx, &http.Client{Timeout: 30 * time.Second, Transport: transport})
 				if err != nil {
 					// The daemon still runs; istari doctor and istari sync say why
 					// tickets are not synced.
@@ -61,14 +71,16 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 				client, err := vcsOf(ctx, cfg)
 				if err != nil {
 					log.Printf("istari: pushes and pull requests are off: %v", err)
+				} else {
+					daemonOpts.VCS = client.WithTransport(transport)
 				}
-				daemonOpts.VCS = client
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)
 			if daemonOpts.Tracker != nil {
 				daemonOpts.Runner.Tickets = daemonOpts.Tracker // the ticket text of the brief
 			}
 			daemonOpts.Defaults = cfg.Defaults
+			daemonOpts.Stepped = stepped
 			if paused {
 				if opts.Actor == "" {
 					return usageError{errors.New("--paused records the pause in the name of --actor: pass a non-empty --actor")}
@@ -79,6 +91,9 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&paused, "paused", false, "start with the hand-out of tasks paused for all projects, as istari pause --all does; tickets still sync")
+	cmd.Flags().BoolVar(&stepped, "stepped", false, "tests only: run the scheduler, pipeline, sync and watch loops one pass per POST /v1/step")
+	// MarkHidden fails only for a flag that does not exist; "stepped" is declared on the line above.
+	_ = cmd.Flags().MarkHidden("stepped")
 	cmd.AddCommand(newDaemonInstallCommand(opts))
 	return cmd
 }
@@ -121,6 +136,7 @@ func runnerOf(ctx context.Context, cfg *config.Config) runner.RunnerOptions {
 		return runner.RunnerOptions{}
 	}
 	opts.Budgets = cfg.Defaults.BudgetUSD // every run is capped by its ticket's budget
+	opts.StopCheckpoint = cfg.Daemon.StopCheckpoint()
 	opts.Guard = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook git-guard"
 	defaults := harness.Defaults()
 	roles := make([]string, 0, len(defaults))
@@ -308,7 +324,7 @@ WantedBy=default.target
 
 func xmlEscape(s string) string {
 	var b strings.Builder
-	xml.EscapeText(&b, []byte(s))
+	xml.EscapeText(&b, []byte(s)) //nolint:errcheck // a strings.Builder never fails a write
 	return b.String()
 }
 

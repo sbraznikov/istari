@@ -140,6 +140,8 @@ A single `istari` binary contains the daemon (`istari daemon`), the CLI and the 
 
 **Policy.** Checks who can do what: human roles, agent profile permissions, budgets.
 
+**Stepped loops (tests only).** A daemon of a test build (built with the `istaritest` tag) can run with stepped loops: `istari daemon --stepped`. The scheduler, the pipeline reconcile, the ticket sync and the PR watch then run no pass on their own timers, only one pass each time `POST /v1/step {"loop": "scheduler" | "pipeline" | "sync" | "watch"}` names them; the call answers when that pass has finished. The runner and the leases keep the real clock. A binary built without the tag refuses `--stepped`.
+
 ### 3.2 Stack
 
 The decision is **Go**:
@@ -195,7 +197,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | T8 | `in_review` | `review_passed` | `awaiting_approval` | system, based on reviewer findings | the accepted reviewer report contains no findings; CI is green |
 | T9 | `awaiting_approval` | `changes_requested` | `in_progress` | human via GitHub review | — |
 | T10 | `in_review`, `awaiting_approval` | `merge_failed` | `in_progress` | system | the PR watch sees GitHub report the PR `mergeable: false` (`dirty`) at istari's head, or the merge queue meets a conflict or red CI after the branch is updated (section 4.9). The round's open tasks are canceled and a conflict round starts from `implement`; a `mergeable` that is still unknown (`null`) changes nothing until GitHub answers. The journal records the conflict once. The repeat review is limited to the conflict resolution (sections 4.8, 4.9) |
-| T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue |
+| T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue. Applies while a hold is set, and clears it |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
 | T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
 | T14 | `canceled` | `reopen` | `new` | human | — |
@@ -205,15 +207,15 @@ any unfinished state ──► canceled ──► new (reopen)
 
 **A finished ticket has no open tasks.** The transition to `done` (T11, T12) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
 
-**Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck.
+**Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck. Two transitions apply while a hold is set and clear it, whatever its reason: a cancel (T13) and a merged pull request (T11), because each is the end of the ticket. A finished ticket carries no hold; the `ticket.transitioned` event records the cleared reason as `hold_cleared`.
 
 A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
 
 | Reason | When it is set | Who clears it |
 |---|---|---|
-| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7) | human, by replying in the thread |
+| `needs_input` | an agent asked a question and stopped; or code found at `istari pr open` that the main branch fails the full suite too (section 7.7); or the ticket's PR has no CI checks 10 minutes after istari's last push to it (section 4.3) | human, by replying in the thread |
 | `attempts_exhausted` | a task failed `max_attempts` times or the review rounds are exhausted | human, with the `retry` command |
-| `budget_exceeded` | the ticket budget is exceeded | human, by raising the budget |
+| `budget_exceeded` | the ticket budget is exceeded | human, by raising the size, then the `unhold` command (section 7.5) |
 | `paused` | a human paused the ticket | human, with the `resume` command |
 | `waiting_dependency` | a ticket in `ready`, `planning` or `in_progress` has a need (`Needs`) that is not `done`: checked whenever its needs change, also when they appear after the ticket started, e.g. in the refiner's rewrite or during the work, usually in a neighboring repository. Also a split parent with a canceled child | system, when every need is `done` (a canceled child's hold: human) |
 | `waiting_zone` | the ticket's change zone overlaps with the zone of another ticket that is already in progress | system, when that ticket is merged or canceled |
@@ -240,8 +242,10 @@ canceled — from any open state
 
 - The lease is 5 minutes by default; Runner renews it at every third of the term.
 - After expiry the task returns to `ready`, with the event `task.expired`. Any action by the old owner is rejected with `claim_lost`.
+- A run that stops (pause, timeout, a budget cap) keeps its lease until its stop checkpoint (section 4.6) and its end are recorded: Runner renews it as while the agent runs, so the task is not handed out while the checkpoint still commits, checks and pushes in the worktree. The stop checkpoint has a time limit of its own, `[daemon] stop_checkpoint_timeout` (15 minutes by default), on its commit, its checks and its push. When the limit is reached during the push, Runner asks the remote: a push the remote took makes the checkpoint, and its journal entry is recorded. Otherwise the checkpoint is abandoned: the commit it made is undone, the work stays uncommitted in the worktree, and the journal says so in a note naming the limit (and, when the remote did not answer, that whether it took the push is unknown). The next push leases on a push cut short that the remote took, so it is not refused. The run then ends as it would have (release on pause, fail on timeout, block on a budget cap), and the next run finds the work in the worktree.
 - `max_attempts` is 3 by default. Once they are exhausted, the ticket gets the hold `attempts_exhausted`, and istari reports this in Slack.
 - An attempt is a run that fails its task. When code refuses what an agent submits, the refusal counts as an attempt only when it is about the submission itself: a result outside its schema, a YAML error, a finding outside the diff. A refusal about the ticket's state, such as a review submitted while the ticket is not yet `in_review`, is not the agent's fault: the run ends without a result, the task is released to `ready`, and no attempt is spent. The journal records once per task, in a note, that it was handed out before its ticket was in the state it belongs to, with the ticket's state.
+- A tracker or code host that is unavailable costs no attempt either. When code accepts what an agent submits and the tracker write in the same call (a journal entry, the issue's body, a label, a review) still fails after its retries with a server error (5xx), a rate limit or a network error (section 5), the submit is not refused as the agent's fault: the run ends without being rejected, and the task is released to `ready` with its attempts unchanged. Nothing of the result is written later; the next run does the work again. A result takes several writes (a refine's comment, its assumptions, questions and decision card; a review on the pull request and its journal entry), and only the write that met the outage is not made: what was written before it stays, so a rare outage in the middle of a result can leave a second journal entry or a second review on the pull request for one round. That duplicate is accepted (decision 2026-11-26): it is harmless, and making the writes of a result atomic is not worth its cost. The answer tells the agent to end its run without `istari complete`. A reviewer's report is published on the pull request before it is recorded, so a review the code host cannot take is redone as well. Any other 4xx answer is the submission's refusal, as before.
 - A run whose harness does not start costs no attempt: the agent never ran, so the failure belongs to the machine, not to the work. The Runner waits a short time while still holding the lease, so a binary that is being replaced (for example by its own updater) has time to come back, then releases the task to `ready` with its attempts unchanged. Repeated start failures pause the Runner slot (section 7.3).
 - `block --kind` distinguishes the reasons: `needs_input`, `awaiting_approval`, `budget_exceeded`, `ci_red`.
 - A task is `canceled` when its ticket ends, `done` or `canceled` (section 4.1). The scheduler never hands out a task of a finished ticket, even one that a store from before this rule still has open; at start the daemon cancels, once, the open tasks of every finished ticket.
@@ -260,10 +264,15 @@ canceled — from any open state
 
 Rules:
 
+- An implement task is done only when its ticket has a tracked pull request: `istari complete` from an implementer whose ticket has none is refused and names `istari pr open`. The run then ends without a result, and the task is released, not completed, so verify never waits for a pull request that does not exist.
 - Reviewer and implementer are always different profiles, and different models where possible. An agent does not review its own code.
 - Review comments or red CI create a new `implement` task with `needs` on the original one; the iteration counter is limited (`max_review_rounds`, 3 by default).
+- A PR without CI: when the PR's head commit still has no checks (no check runs, no commit statuses) 10 minutes after istari's last push to it, the repository is read as having no CI, and the ticket gets the hold `needs_input` in `in_progress` instead of waiting silently. The full suite that `istari pr open` runs is not taken as the CI result: auto-merge (section 4.8) is tied to CI. A human adds CI (checks that appear later replace "no checks", and verify goes on once the hold is cleared), merges by hand (T11), or cancels; a hold cleared while there are still no checks is set again.
+- A head is read as red only once all its checks have finished: while one job still runs, the head is pending even when another job has failed already, and verify waits; nothing is rerun and no round starts before the run has finished.
 - When verify sees a failed check on the pull request's head, istari reads the failed jobs' logs through its own GitHub access (the gh CLI's token or the GitHub App; agents have none, section 7.3) and records a CI failure entry in the journal (section 4.6), once per head commit. The entry holds the end of each failed job's log, cut to a fixed size from its start, so the failing tests and their messages stay. When the log cannot be read, the entry says so and why; the rework round starts either way.
-- A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first. A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
+- An implementer whose run finds that a red CI is not caused by the change (a flaky test the ticket does not touch) answers so without a new commit: `istari complete --ci-unrelated "<reason>"`. The answer is accepted only from an implementer and only while the pull request's head is red or its checks still run; an answer on a running head is rerun once the run has finished and is red. On it, verify reruns the head's failed jobs through istari's own GitHub access, records a note in the journal with the reason and the rerun jobs, and waits for the new result; it starts no round. A green rerun goes on as any green CI (T6). A red rerun on the same head records a second CI failure entry that says the rerun failed too, and an unrelated round starts (below). When GitHub refuses the rerun, the journal note says why and an unrelated round starts too. Each head is rerun, or tried, at most twice, also across a restart of the daemon: the third `--ci-unrelated` answer on one head starts no round and reruns nothing; the ticket gets the hold `needs_input`, and a journal note names the head, its failed checks, the reason and that it is not rerun again. A human reruns CI, pushes, or clears the hold, which starts the rework round. A rerun is not a round and does not count against `max_review_rounds`.
+- A PR in conflict with the main branch (T10) creates a conflict round: a new `implement` task with `needs` on the last completed one, whose run merges the main branch first; its task IDs carry the marker `c` after the round number (`rNc`). A conflict round does not count against `max_review_rounds`: it repairs the movement of the main branch, not review findings.
+- The rework round that starts after a red CI the implementer answered `--ci-unrelated`, because the rerun was red too or GitHub refused it, is an unrelated round: its task IDs carry the marker `u` (`rNu`). An unrelated round does not count against `max_review_rounds`: it follows CI the change did not break, not review findings. Its limit is the head's: two reruns, then the hold `needs_input` above. A red CI the implementer did not answer starts a review round, which counts.
 - When a merge requires a human, the approval is a GitHub review from a member listed in CODEOWNERS, not a button in Slack. A Slack button is suitable for reversible gates (approve the plan, unblock). Merge modes are described in section 4.8.
 - The pipeline is defined declaratively in the repository's `.istari/pipeline.toml`; stages can be removed, added and made parallel.
 
@@ -379,7 +388,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Review result | the review stage is complete | reviewer; details stay in the PR |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
-| CI failure | verify saw a failed check on the pull request's head (section 4.3) | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read |
+| CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
 | Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`); the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
@@ -558,6 +567,8 @@ type TicketProvider interface {
 - The mapping of istari states to tracker states is in the adapter config. For GitHub these are labels, for Linear and Jira they are native statuses.
 - Echo suppression: the adapter marks its own writes and ignores webhooks about them.
 - The ticket tracker and the code hosting are independent adapters: tickets can be in Linear while PRs are in GitHub.
+- GitHub's request quota (5,000 REST requests an hour per token) is shared by the ticket sync, the PR watch, the journal, labels, file reads and the operator's own `gh`. All of the daemon's GitHub clients send through one transport that counts the requests by kind and reads `X-RateLimit-*`; `istari doctor` shows the last hour's counts and the quota left in a `github requests` row. Repeated reads are conditional (`If-None-Match` with the last ETag), so an unchanged answer (304) costs nothing; done and canceled tickets and merged or closed pull requests are not read again; a `.istari/` file of the default branch is read once per commit of that branch. While fewer than 100 requests are left, the sync and the PR watch wait until `X-RateLimit-Reset` and the daemon logs it once; a read that GitHub refuses for the rate limit (403 or 429) means "later", not that the request was wrong: a submit that needed it is answered `rate_limited` and is sent again.
+- Tracker and code host writes survive a short outage. The adapter retries a write that fails with a server error (5xx), a rate limit (429, or 403 with an exhausted rate limit or a `Retry-After`) or a network error a few times with a backoff, inside the call. What still fails is reported as unavailable (`tickets.ErrUnavailable`); any other 4xx is an error at once, without a retry. A write that an agent's submit makes is not queued: the run yields and the next run does it again (section 4.2). The daemon log names the write that failed (what it is and on which ticket) and says that it is tried again when the task is handed out next.
 
 ---
 
@@ -690,7 +701,7 @@ For each task the Runner:
 3. issues a run token: it lives as long as the lease and is valid only for this ticket;
 4. assembles the brief only from durable sources: the ticket text, its journal, the branch, the PR (section 4.6). Slack history and past harness sessions are not part of the brief;
 5. starts the harness and reads its streaming output, turning it into `run.*` events;
-6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal;
+6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal. The lease is renewed until this checkpoint and the run's end are recorded; the checkpoint itself is limited by `stop_checkpoint_timeout` (section 4.2);
 7. on completion calls `complete` or `fail`. The worktree stays: it belongs to the ticket, not to the run.
 
 **Ticket worktree.** Work on each ticket happens in a separate `git worktree`. The main working copy of the repository, in which the human works, is not used or changed by agents.
@@ -811,6 +822,7 @@ istari checkpoint "Cache layer rewritten; next is the race test"   # commit, pus
 istari pr open --title "..."            # creates a PR with a link to the ticket
 istari schedule --in 5m "check CI"
 istari complete "PR #482 is ready for review"
+istari complete --ci-unrelated "red only in the known flaky TestX, not this change"   # implementer: rerun the failed jobs, at most twice per head (section 4.3)
 ```
 
 The usage instructions are installed into the workspace as a skill (`.istari/skill.md`). The agent's access to GitHub goes through `istari`, not directly: the installation token stays in the daemon and is not present in the agent's environment.
@@ -820,6 +832,8 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 - Per-run limits: time, tokens, cost. Per ticket: total cost (budget by size, section 4.7), number of attempts, number of review rounds.
 - Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
+- The decision on an exceeded budget: a trusted member raises the ticket's size label, which raises its budget (section 4.7), then runs `istari ticket unhold <ref>`. The command unblocks the ticket's tasks blocked `budget_exceeded` and then clears the hold, so an interrupted call leaves the ticket held and a repeat finishes it. While the budget is still spent, the command refuses and names the size label and `--anyway`; `--anyway` lifts the hold without raising the size. On any other hold the command refuses and names the command that lifts it (`istari ticket resume` for `paused`, `istari ticket retry` for `attempts_exhausted`).
+- How far `--anyway` reaches: exactly one more run of the ticket. The next claim of one of its tasks starts that run although the budget is spent, capped at the full budget of the ticket's size (of the ticket whose budget it shares), never uncapped. The grant is recorded with the unhold, so it survives a daemon restart, and the start of the ticket's next run uses it up, even of a run that finds budget left because the size was raised meanwhile. After that run the budget is checked as before: a budget still spent blocks the task `budget_exceeded` and holds the ticket again, and a further run needs another `unhold --anyway` or a larger size. Spending past the budget stays a decision per run.
 - Global concurrency limits: per project, per role, for the whole installation.
 - `istari pause --all` stops handing out tasks; running runs finish gracefully. `istari daemon --paused` starts the daemon with the hand-out already paused for all projects, before the first sync and the first claim: tickets still sync, and no task is claimed until `istari resume --all`. The pause is recorded like one made by `istari pause --all` (a `dispatch.paused` event in the name of the one who started the daemon); a hand-out that is already paused stays paused.
 
@@ -944,14 +958,14 @@ The principle: less model, more deterministic code. The model is non-determinist
 | `istari pr open` | every check at `pr`: the full suite and the project's own checks | the PR is not opened; for a red full suite, see below for whose failure it is |
 | before the merge | the repository's CI after the branch is updated | return for rework (T10) |
 
-**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command once on the tip of the main branch, as last fetched, in a scratch worktree, and records that result in the journal entry together with the main commit. The result is kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
+**A red full suite at `istari pr open`.** A red result does not tell the agent whether its change broke the suite or the main branch already fails it, so code finds out. It runs the same command on the tip of the main branch, as last fetched, in a scratch worktree. A red result there is run once more, since one red run can be a flaky test: main counts as red only when the second run is red too. The result is recorded in the journal entry together with the main commit, and kept per main commit: a later red attempt with the same main tip reuses the journaled result and does not run it again.
 
 | Main branch | Journal entry | What follows |
 |---|---|---|
 | green | the branch's failure and output, as before | the failure is the ticket's: the agent fixes it |
-| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again |
+| red | also: main fails the same check, with main's commit and output | the ticket gets a question for a human, "main fails `full` at <sha>", and is held `needs_input`; the agent ends its run without trying again, and its implement task is released, not completed. A held ticket's task is not handed out; once the hold is lifted it is, and the next implement run opens the pull request |
 
-A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch.
+A repeat is refused without running anything: when the last `istari pr open` of the ticket was red and the branch's HEAD is still the commit it judged, the next `istari pr open` is refused at once. The refusal names the commit and what to do next: change the code, or merge the main branch. A red that main failed too is not the commit's: after the hold is lifted, `istari pr open` on the same commit runs the checks again.
 
 The "red first" rule is also verified by code: at a checkpoint it runs the slice's new tests on the code of the previous checkpoint and expects a failure. If a test passes there, the slice is not counted: the test verifies nothing. The check is enabled by default and is disabled by the `verify_red` parameter.
 
@@ -1017,6 +1031,7 @@ istari workspace list|prune          # ticket worktrees
 
 
 istari ticket list|show|create|check|refine|ready|pause|resume|cancel|reopen|retry
+istari ticket unhold <ref> [--anyway]  # lift a budget_exceeded hold (section 7.5)
 istari ticket create --file plan.yaml  # a set of linked tickets in one call
 istari ticket priority <ref> <P0..P3>
 istari ticket deps [ref]             # dependency graph and zone overlaps
@@ -1179,6 +1194,7 @@ The TUI supports themes. A theme changes only colors; the set of screens, the pa
 [daemon]
 data_dir = "~/.local/share/istari"
 max_concurrent_runs = 4               # claimed tasks at once in the whole installation
+stop_checkpoint_timeout = "15m"       # time limit of the checkpoint a stopping run makes (section 4.2)
 
 [defaults]                            # for all projects; overridden in .istari/pipeline.toml
 max_review_rounds = 3                 # review rounds before a hold

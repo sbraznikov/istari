@@ -1,8 +1,8 @@
 package main_test
 
 import (
+	"slices"
 	"testing"
-	"time"
 
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
@@ -23,29 +23,25 @@ func (h *humanMerge) tasks(t *testing.T) []task {
 	return out
 }
 
-// returnedForConflict waits until the ticket is in_progress with a ready
-// implement task and asserts it got there by merge_failed (T10) and that
-// the watch recorded the conflict.
+// returnedForConflict runs a watch pass and a pipeline pass and asserts the
+// ticket is then in_progress with an open implement task, got there by
+// merge_failed (T10), and that the watch recorded the conflict. The runner
+// is not stepped, so the implement task may already be claimed.
 func (h *humanMerge) returnedForConflict(t *testing.T) []task {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if h.state(t) == "in_progress" {
-			for _, tk := range h.tasks(t) {
-				if tk.Role == "implementer" && tk.State == "ready" {
-					if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted");len(conflicts) != 1 {
-						t.Fatalf("the watch recorded %d conflicts, want 1", len(conflicts))
-					}
-					if tr := h.lastTrigger(t); tr != "merge_failed" {
-						t.Fatalf("the ticket returned by %s, want merge_failed (T10)", tr)
-					}
-					return h.tasks(t)
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ticket of a pull request in conflict is %s with %+v, want in_progress with a ready implement\n%s", h.state(t), h.tasks(t), h.d.stderr)
-		}
+	h.d.step(t, "watch")
+	h.d.step(t, "pipeline")
+	if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 1 {
+		t.Fatalf("the watch recorded %d conflicts, want 1", len(conflicts))
 	}
+	all := h.tasks(t)
+	if st := h.state(t); st != "in_progress" || !slices.ContainsFunc(all, func(tk task) bool { return tk.Role == "implementer" && (tk.State == "ready" || tk.State == "claimed") }) {
+		t.Fatalf("the ticket of a pull request in conflict is %s with %+v, want in_progress with a ready or claimed implement\n%s", st, all, h.d.stderr)
+	}
+	if tr := h.lastTrigger(t); tr != "merge_failed" {
+		t.Fatalf("the ticket returned by %s, want merge_failed (T10)", tr)
+	}
+	return all
 }
 
 func (h *humanMerge) lastTrigger(t *testing.T) string {
@@ -62,7 +58,6 @@ func TestAPullRequestInConflictReturnsItsAwaitingApprovalTicketForRework(t *test
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "awaiting_approval")
 	h.gh.SetMergeable(h.pr, new(false), "dirty") // another ticket merged into main
-	h.restart(t)
 	h.returnedForConflict(t)
 }
 
@@ -70,7 +65,6 @@ func TestAPullRequestInConflictReturnsItsInReviewTicketAndCancelsTheReview(t *te
 	t.Parallel()
 	h := recoveredWithPullRequest(t, "in_review")
 	h.gh.SetMergeable(h.pr, new(false), "dirty")
-	h.restart(t)
 	for _, tk := range h.returnedForConflict(t) {
 		if tk.Role == "reviewer" && (tk.State == "ready" || tk.State == "claimed" || tk.State == "blocked") {
 			t.Fatalf("review task %s is %s, want the open one canceled and only the conflict round's waiting", tk.ID, tk.State)
@@ -84,20 +78,15 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	h.gh.SetMergeable(h.pr, nil, "unknown") // GitHub is still computing
 	h.gh.SetHeadSHA(h.pr, "h1")
 	h.gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "in_progress"}) // so the poll leaves a trace
-	h.restart(t)
-	for deadline := time.Now().Add(10 * time.Second); len(h.d.eventTypes(t, h.ref, "vcs.checks")) == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the watch did not poll\n%s", h.d.stderr)
-		}
+	h.d.step(t, "watch")
+	if checks := h.d.eventTypes(t, h.ref, "vcs.checks"); len(checks) == 0 {
+		t.Fatalf("the watch pass recorded no checks\n%s", h.evidence(t))
 	}
-	// Nothing to wait for: the ticket must stay through the reconciles after
-	// the poll.
-	for until := time.Now().Add(time.Second); time.Now().Before(until); time.Sleep(100 * time.Millisecond) {
-		if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 0 {
-			t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
-		}
-		if st := h.state(t); st != "awaiting_approval" {
-			t.Fatalf("with mergeable unknown the ticket is %s, want awaiting_approval", st)
-		}
+	h.d.step(t, "pipeline")
+	if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 0 {
+		t.Fatalf("an unknown mergeable recorded %d conflicts\n%s", len(conflicts), h.evidence(t))
+	}
+	if st := h.state(t); st != "awaiting_approval" {
+		t.Fatalf("with mergeable unknown the ticket is %s after a watch and a pipeline pass, want awaiting_approval\n%s", st, h.evidence(t))
 	}
 }

@@ -44,14 +44,36 @@ func NewCheckpoints(ws *Workspaces, j *journal.Journal, tokens vcs.Tokens) *Chec
 // must fail; the branch is pushed; the entry records the commit, the real
 // results, the changed files and what code found.
 func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journal.Entry, error) {
+	ref, ws, err := c.resolve(ctx, run)
+	if err != nil {
+		return journal.Entry{}, err
+	}
+	e, err := c.check(ctx, run, ref, ws, message)
+	if err != nil {
+		return journal.Entry{}, err
+	}
+	if err := c.push(ctx, ws, run.Dir); err != nil {
+		return journal.Entry{}, err
+	}
+	if err := c.journal.Append(ctx, ref, e); err != nil {
+		return journal.Entry{}, err
+	}
+	return e, nil
+}
+
+// resolve returns the ticket and the workspace of a run's checkpoint.
+func (c *Checkpoints) resolve(ctx context.Context, run Run) (tickets.Ref, Workspace, error) {
 	ref, err := tickets.ParseRef(run.Ticket)
 	if err != nil {
-		return journal.Entry{}, err
+		return tickets.Ref{}, Workspace{}, err
 	}
 	ws, err := c.ws.Get(ctx, run.Ticket)
-	if err != nil {
-		return journal.Entry{}, err
-	}
+	return ref, ws, err
+}
+
+// check commits the leftovers, runs the checks and returns the entry to
+// record once the commit is pushed.
+func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Workspace, message string) (journal.Entry, error) {
 	if ws.Branch == "" || !isWorktree(ctx, run.Dir) {
 		return journal.Entry{}, fmt.Errorf("checkpoint: %s has no worktree", run.Ticket)
 	}
@@ -144,28 +166,115 @@ func (c *Checkpoints) Make(ctx context.Context, run Run, message string) (journa
 			entry.Notes = append(entry.Notes, "verify_red: red first was judged on the whole test command, not on the new tests alone")
 		}
 	}
-
-	if err := c.push(ctx, ws, run.Dir); err != nil {
+	if err := ctx.Err(); err != nil {
+		// A check cut short by ctx is not a red one.
 		return journal.Entry{}, err
 	}
-	e := journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry}
+	return journal.Entry{Kind: journal.Checkpoint, Actor: run.Agent(), Checkpoint: entry}, nil
+}
+
+// MakeWithin makes a stopping run's checkpoint within limit (spec section
+// 4.2). The limit bounds the commit, the checks and the push. Past the limit,
+// a push the remote took still makes the checkpoint; otherwise it is
+// abandoned: a commit it made of the leftovers is undone, the work stays
+// uncommitted in the worktree, and a journal note names the limit.
+func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run Run, message string) (journal.Entry, error) {
+	ref, ws, err := c.resolve(ctx, run)
+	if err != nil {
+		return journal.Entry{}, err
+	}
+	before, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD")
+	if err != nil {
+		return journal.Entry{}, err
+	}
+	limited, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	e, err := c.check(limited, run, ref, ws, message)
+	pushing := err == nil
+	if pushing {
+		err = c.push(limited, ws, run.Dir)
+	}
+	if err != nil && errors.Is(limited.Err(), context.DeadlineExceeded) {
+		var taken bool
+		var unknown error // why the remote could not tell whether it took the push
+		if pushing {
+			taken, unknown = c.pushed(ctx, ws, run.Dir)
+		}
+		if !taken {
+			return journal.Entry{}, c.abandon(ctx, run, ref, before, limit, err, unknown)
+		}
+		err = nil
+	}
+	if err != nil {
+		return journal.Entry{}, err
+	}
 	if err := c.journal.Append(ctx, ref, e); err != nil {
 		return journal.Entry{}, err
 	}
 	return e, nil
 }
 
+// confirmTimeout bounds asking the remote whether it took a push cut short.
+const confirmTimeout = 30 * time.Second
+
+// pushed tells whether the ticket's remote branch is at the worktree's HEAD.
+func (c *Checkpoints) pushed(ctx context.Context, ws Workspace, dir string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, confirmTimeout)
+	defer cancel()
+	head, err := gitOut(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	spec, err := c.pushSpec(ctx, ws, dir)
+	if err != nil {
+		return false, err
+	}
+	remote, err := vcs.RemoteHead(ctx, spec)
+	return err == nil && remote == head, err
+}
+
+// abandon undoes the commit a stop checkpoint made of the leftovers, back to
+// before, and notes in the journal that the checkpoint was abandoned at its
+// limit. unknown, when not nil, is why istari could not tell whether the
+// remote took the push.
+func (c *Checkpoints) abandon(ctx context.Context, run Run, ref tickets.Ref, before string, limit time.Duration, cause, unknown error) error {
+	if head, err := gitOut(ctx, run.Dir, "rev-parse", "HEAD"); err == nil && head != before {
+		if _, err := gitOut(ctx, run.Dir, "reset", "-q", "--soft", before); err != nil {
+			return err
+		}
+	}
+	sent := "nothing was committed or pushed"
+	if unknown != nil {
+		sent = fmt.Sprintf("nothing was committed, and whether the remote took the push is unknown (%v)", unknown)
+	}
+	note := journal.Entry{Kind: journal.Note, Actor: "system", ID: run.Task, Text: fmt.Sprintf(
+		"The stop checkpoint was abandoned at its limit of %s ([daemon] stop_checkpoint_timeout): %s, and the work is uncommitted in the worktree.", limit, sent)}
+	if err := c.journal.Append(ctx, ref, note); err != nil {
+		return err
+	}
+	return fmt.Errorf("checkpoint: abandoned at its limit of %s: %v", limit, cause)
+}
+
 // push pushes a worktree's branch to the ticket's remote branch.
 func (c *Checkpoints) push(ctx context.Context, ws Workspace, dir string) error {
+	spec, err := c.pushSpec(ctx, ws, dir)
+	if err != nil {
+		return err
+	}
+	return vcs.Push(ctx, spec)
+}
+
+// pushSpec is the push of a worktree's branch to the ticket's remote branch.
+func (c *Checkpoints) pushSpec(ctx context.Context, ws Workspace, dir string) (vcs.PushSpec, error) {
 	url, private := c.ws.PushTarget(ws.Repo)
 	var token string
 	if c.tokens != nil {
 		var err error
 		if token, err = c.tokens.Token(ctx, ws.Repo); err != nil {
-			return err
+			return vcs.PushSpec{}, err
 		}
 	}
-	return vcs.Push(ctx, vcs.PushSpec{Worktree: dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token})
+	return vcs.PushSpec{Worktree: dir, URL: url, Private: private, Own: ws.Branch, Target: ws.Branch, Force: true, Token: token}, nil
 }
 
 // previous returns the commit of the ticket's last checkpoint and the test
@@ -229,7 +338,9 @@ func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, p
 		}
 	}
 	for _, t := range gone {
-		os.Remove(filepath.Join(scratch, t))
+		if err := os.Remove(filepath.Join(scratch, t)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, false, err
+		}
 	}
 	for _, t := range tests {
 		data, err := os.ReadFile(filepath.Join(dir, t))

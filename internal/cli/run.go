@@ -133,12 +133,16 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 			return render(cmd.OutOrStdout(), opts, w, []string{"WHAT", "VALUE"}, rows)
 		},
 	}
+	var ciUnrelated string
 	complete := writeCommand(opts, &cobra.Command{
 		Use: "complete [message]", Short: "For an agent: say the work of the task is done", Args: Args(cobra.MaximumNArgs(1)),
 	}, func(cmd *cobra.Command, args []string, key string) error {
-		req := api.RunCompleteRequest{Actor: opts.Actor}
-		if len(args) == 1 {
+		req := api.RunCompleteRequest{Actor: opts.Actor, CIUnrelated: ciUnrelated}
+		switch {
+		case len(args) == 1:
 			req.Message = args[0]
+		case ciUnrelated != "":
+			req.Message = ciUnrelated
 		}
 		var res api.OK
 		if err := opts.call(cmd, "run.complete", key, req, &res); err != nil {
@@ -146,6 +150,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		}
 		return render(cmd.OutOrStdout(), opts, res, []string{"OK"}, [][]string{{"the task completes when the run ends"}})
 	})
+	complete.Flags().StringVar(&ciUnrelated, "ci-unrelated", "", "for the implementer: the red CI is not caused by the change, and why; istari reruns the failed jobs, at most twice per head")
 	checkpoint := writeCommand(opts, &cobra.Command{
 		Use:   "checkpoint \"<done>; <next>\"",
 		Short: "For the implementer: commit, run the checks, push and record the step in the ticket",

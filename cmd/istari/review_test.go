@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -48,10 +49,32 @@ type reviewed struct {
 
 func newReviewed(t *testing.T, agent string) reviewed {
 	t.Helper()
+	return newRecovered(t, agent, "in_review", nil)
+}
+
+// newRecovered is a ticket recovered in state, with its branch, its pull
+// request, the fake GitHub set up by before ahead of the recover, and a
+// daemon whose claude is agent.
+func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
+	return recoverWith(t, startDaemonWithConfig, agent, state, before)
+}
+
+// newSteppedRecovered is newRecovered on a stepped daemon: its PR watch and
+// pipeline run one pass per step.
+func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
+	return recoverWith(t, startSteppedDaemon, agent, state, before)
+}
+
+// recoverWith seeds a ticket with an open pull request, starts a daemon
+// with start and recovers the ticket.
+func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
-	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "istari:in_review")
+	n := gh.Seed("Add rate limits", strings.SplitN(conforming, "\n", 2)[1], "alex", "istari:"+state)
 	branch := fmt.Sprintf("istari/%d/add-rate-limits", n)
 	seed := filepath.Join(server, "seed")
 	git(t, seed, "switch", "-q", "-c", branch)
@@ -62,6 +85,9 @@ func newReviewed(t *testing.T, agent string) reviewed {
 	git(t, seed, "commit", "-q", "-m", "feature")
 	git(t, seed, "push", "-q", "origin", branch)
 	pr := gh.SeedPull(branch, "feature")
+	if before != nil {
+		before(gh, pr)
+	}
 	// The journal says where the pull request is: recover watches it again.
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: n}
 	body, err := journal.Render(journal.Entry{Kind: journal.Checkpoint, Actor: "agent:implementer-1", At: time.Now().UTC(),
@@ -76,16 +102,14 @@ func newReviewed(t *testing.T, agent string) reviewed {
 	dataDir := newDataDir(t)
 	log := filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fmt.Sprintf(agent, binary, log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(agent, binary, log))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
-		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	env := []string{"GITHUB_SERVER_URL=file://" + server, "PATH=" + bin + string(os.PathListSeparator) + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	d := start(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "recover")
 	return reviewed{d: d, gh: gh, ref: ref, pr: pr, log: log}
 }
@@ -300,9 +324,7 @@ func pipelineDaemon(t *testing.T, pipeline string, agent func(log string) string
 	dataDir := newDataDir(t)
 	log = filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(agent(log)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(bin, "claude"), agent(log))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {

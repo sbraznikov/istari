@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
@@ -38,7 +43,11 @@ func newSync(t *testing.T, trusted ...string) *syncFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	k := core.NewTickets(s, core.TicketOptions{Clock: clock})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
@@ -101,7 +110,9 @@ func (f *syncFixture) transitions(t *testing.T, n int) []transition {
 	var out []transition
 	for _, e := range f.events(t, store.Filter{Ticket: ghRef(n), TypePrefix: "ticket.transitioned"}) {
 		var tr transition
-		json.Unmarshal(e.Payload, &tr)
+		if err := json.Unmarshal(e.Payload, &tr); err != nil {
+			t.Fatal(err)
+		}
 		out = append(out, tr)
 	}
 	return out
@@ -124,6 +135,133 @@ func TestAnIssueCreatedInTheTrackerAppearsAsNew(t *testing.T) {
 	}
 	if tr := f.transitions(t, n); len(tr) != 1 || tr[0].Trigger != "create" || tr[0].Actor != "human:bob" {
 		t.Fatalf("transitions = %+v, want one create by human:bob", tr)
+	}
+}
+
+func TestASyncOfUnchangedIssuesMakesNoRequestThatCounts(t *testing.T) {
+	t.Parallel()
+	f := newSync(t)
+	f.gh.Seed("Add rate limits", "## Context\n…", "bob", "bug")
+	n := f.gh.Seed("Count requests", "## Context\n…", "carol", "bug")
+	f.gh.HumanComment(n, "carol", "a first thought")
+	f.run(t)
+	f.run(t) // reads back what the first sync wrote
+	before := len(f.gh.Counted())
+	f.run(t)
+	if got := f.gh.Counted()[before:]; len(got) != 0 {
+		t.Errorf("counted requests of a sync of unchanged issues = %v, want none", got)
+	}
+}
+
+func TestWithFewRequestsLeftTheSyncWaitsUntilTheReset(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	now := time.Date(2026, 11, 25, 19, 12, 0, 0, time.UTC)
+	reset := now.Add(20 * time.Minute)
+	// The hold's waits: each asks its duration on asked and ends when the
+	// test releases it.
+	asked, release := make(chan time.Duration), make(chan time.Time)
+	after := func(d time.Duration) <-chan time.Time { asked <- d; return release }
+	transport := ratelimit.New(ratelimit.Options{Clock: func() time.Time { return now }, After: after})
+	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token, HTTPClient: &http.Client{Transport: transport}})
+	syncer := tickets.NewSyncer(adapter, core.NewTickets(s, core.TicketOptions{}), s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Hold: transport.Hold})
+	gh.Seed("t", "", "bob")
+	gh.SetRateLimit(50, reset)
+	lists := func() int {
+		return len(slices.DeleteFunc(gh.Counted(), func(r string) bool { return r != "GET /repos/"+githubtest.Repo+"/issues" }))
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { syncer.Run(ctx, time.Millisecond) })
+	defer wg.Wait()
+	defer cancel()
+	if d := <-asked; d != 20*time.Minute {
+		t.Errorf("the sync waits %v, want 20m: until the reset", d)
+	}
+	if n := lists(); n != 1 {
+		t.Fatalf("lists of the issues before the reset = %d, want only the first sync's", n)
+	}
+	release <- reset
+	<-asked // the second sync is done and the next one waits again
+	if n := lists(); n != 2 {
+		t.Errorf("lists of the issues after the reset = %d, want a second sync", n)
+	}
+}
+
+// Not parallel: sets the output of the standard logger.
+func TestASyncRefusedForTheRateLimitIsLaterNotAFailure(t *testing.T) {
+	gh := githubtest.New(t)
+	s, err := store.Open(filepath.Join(t.TempDir(), "istari.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	now := time.Date(2026, 11, 25, 19, 12, 0, 0, time.UTC)
+	asked := make(chan time.Duration)
+	after := func(d time.Duration) <-chan time.Time { asked <- d; return nil }
+	transport := ratelimit.New(ratelimit.Options{Clock: func() time.Time { return now }, After: after})
+	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token, HTTPClient: &http.Client{Transport: transport}})
+	syncer := tickets.NewSyncer(adapter, core.NewTickets(s, core.TicketOptions{}), s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web"}}, tickets.SyncOptions{Hold: transport.Hold})
+	gh.SetRateLimit(0, now.Add(5*time.Minute)) // every request is refused with 403
+
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { syncer.Run(ctx, time.Millisecond) })
+	d := <-asked // the first sync was refused; the next one waits
+	cancel()
+	wg.Wait()
+	if d != 5*time.Minute {
+		t.Errorf("the next sync waits %v, want 5m: until the reset", d)
+	}
+	if strings.Contains(logged.String(), "ticket sync:") {
+		t.Errorf("log = %q, want no sync failure for a refusal of the rate limit", logged.String())
+	}
+	if got := strings.Count(logged.String(), "\n"); got != 1 || !strings.Contains(logged.String(), "19:17:00") {
+		t.Errorf("log = %q, want one line that the sync waits until 19:17:00", logged.String())
+	}
+}
+
+func TestATicketThatIsDoneIsNotReadAgain(t *testing.T) {
+	t.Parallel()
+	for _, state := range []core.TicketState{core.TicketDone, core.TicketCanceled} {
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			f := newSync(t)
+			n := f.gh.Seed("Finished work", "", "bob")
+			if _, err := f.tickets.Recover(ctx, "system", core.NewTicket{Ref: ghRef(n), Project: "web", Title: "Finished work", Author: "bob"}, state, ""); err != nil {
+				t.Fatal(err)
+			}
+			f.run(t) // closes the issue
+			if got := f.gh.Issue(n).State; got != "closed" {
+				t.Fatalf("issue state after the sync = %s, want closed", got)
+			}
+			before := len(f.gh.Counted())
+			f.run(t)
+			f.run(t)
+			issue := fmt.Sprintf("GET /repos/%s/issues/%d", githubtest.Repo, n)
+			for _, r := range f.gh.Counted()[before:] {
+				if strings.HasPrefix(r, issue) {
+					t.Errorf("a later sync asked %s, want no read of a %s ticket", r, state)
+				}
+			}
+		})
 	}
 }
 
@@ -253,7 +391,9 @@ func TestAHumanCommentProducesOneEvent(t *testing.T) {
 		t.Fatalf("%d comment events, want 1 (istari's own comment is not one)", len(comments))
 	}
 	var p struct{ Author, Body string }
-	json.Unmarshal(comments[0].Payload, &p)
+	if err := json.Unmarshal(comments[0].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
 	if p.Author != "bob" || p.Body != "Use the v2 API." || comments[0].Ticket != ghRef(n) || comments[0].Actor != "human:bob" {
 		t.Fatalf("comment event = %+v %+v", comments[0], p)
 	}

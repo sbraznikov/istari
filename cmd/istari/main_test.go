@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sbraznikov/istari/internal/exectest"
 )
 
 var binary string
@@ -16,7 +18,9 @@ func TestMain(m *testing.M) {
 	// the binaries the tests start to the real daemon (#154).
 	for _, kv := range os.Environ() {
 		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "ISTARI_") {
-			os.Unsetenv(name)
+			if err := os.Unsetenv(name); err != nil {
+				panic(err)
+			}
 		}
 	}
 	dir, err := os.MkdirTemp("", "istari-bin")
@@ -24,13 +28,14 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	binary = filepath.Join(dir, "istari")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	// Built for tests: its daemon accepts --stepped (spec section 3.1).
+	build := exec.Command("go", "build", "-tags", "istaritest", "-o", binary, ".")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		panic(err)
 	}
 	code := m.Run()
-	os.RemoveAll(dir)
+	os.RemoveAll(dir) //nolint:errcheck // a test binary left in the temp dir harms no test, and the exit code is the tests' own
 	os.Exit(code)
 }
 
@@ -96,9 +101,7 @@ func TestDoctorReportsAMissingHarnessBinaryClearly(t *testing.T) {
 
 	withFake := t.TempDir()
 	fake := "#!/bin/sh\necho 1.0.0\n"
-	if err := os.WriteFile(filepath.Join(withFake, "claude"), []byte(fake), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	exectest.Write(t, filepath.Join(withFake, "claude"), fake)
 	// Only the harness row is judged: other checks (gh, tracker token, user
 	// config) depend on the machine and may fail with exit 1.
 	cmd = exec.Command(binary, "doctor")

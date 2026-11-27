@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,25 +13,47 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 )
 
 // Client talks to GitHub for pull requests, checks and reviews.
 type Client struct {
-	base   string
-	tokens Tokens
-	http   *http.Client
+	base    string
+	tokens  Tokens
+	http    *http.Client
+	backoff []time.Duration
 }
 
-// NewClient returns a client; baseURL "" means api.github.com.
+// NewClient returns a client with its own ratelimit.Transport; baseURL ""
+// means api.github.com.
 func NewClient(baseURL string, tokens Tokens) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), tokens: tokens,
+		http: &http.Client{Timeout: 30 * time.Second, Transport: ratelimit.New(ratelimit.Options{})}, backoff: tickets.DefaultBackoff}
+}
+
+// WithTransport returns a copy of the client that sends its requests through
+// rt: the daemon shares one ratelimit.Transport among its GitHub clients
+// (#208).
+func (c *Client) WithTransport(rt http.RoundTripper) *Client {
+	out := *c
+	out.http = &http.Client{Timeout: c.http.Timeout, Transport: rt}
+	return &out
+}
+
+// WithBackoff sets the waits before each retry of a write that met a server
+// error, a rate limit or a network error (spec section 5); its length is the
+// number of retries.
+func (c *Client) WithBackoff(waits []time.Duration) *Client {
+	c.backoff = waits
+	return c
 }
 
 // Tokens returns the client's token source.
@@ -97,7 +120,7 @@ func linked(p NewPullRequest, ref tickets.Ref) string {
 // Status is what a pull request's checks and reviews say.
 type Status struct {
 	HeadSHA string
-	Checks  string // "", pending, success or failure
+	Checks  string // "", pending, success or failure; pending while any check runs
 	Review  string // none, approved or changes_requested
 	By      string // who gave the deciding review
 	Merged  bool
@@ -152,17 +175,18 @@ func (c *Client) checkRuns(ctx context.Context, repo, sha string) ([]checkRun, e
 	}
 }
 
-// checks sums up a commit's check runs and its combined status: failure if
-// any failed, pending if any still runs, success if all passed, "" if there
-// are none.
+// checks sums up a commit's check runs and its combined status: pending if
+// any still runs, failure if all finished and any failed, success if all
+// passed, "" if there are none. A head is red only once its runs have
+// finished: while a job still runs there is nothing to rerun (spec 4.3).
 func (c *Client) checks(ctx context.Context, repo, sha string) (string, error) {
 	state := ""
 	add := func(s string) {
 		switch {
-		case s == "failure" || state == "failure":
-			state = "failure"
 		case s == "pending" || state == "pending":
 			state = "pending"
+		case s == "failure" || state == "failure":
+			state = "failure"
 		case s == "success":
 			state = "success"
 		}
@@ -349,8 +373,29 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 	return c.request(ctx, repo, method, c.base+path, body, out)
 }
 
+// request sends one API request. A write that meets a server error, a rate
+// limit or a network error is tried again after each wait of the backoff; what
+// still fails so is tickets.ErrUnavailable (spec section 5).
 func (c *Client) request(ctx context.Context, repo, method, url string, body, out any) error {
-	data, err := c.send(ctx, repo, method, url, body)
+	var payload []byte
+	if body != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
+			return fmt.Errorf("vcs: %s %s: encoding the body: %w", method, url, err)
+		}
+	}
+	var data []byte
+	send := func() error {
+		var err error
+		data, err = c.send(ctx, repo, method, url, payload)
+		return err
+	}
+	var err error
+	if method == http.MethodGet {
+		err = send()
+	} else {
+		err = tickets.RetryWrite(ctx, c.backoff, func(err error) bool { return errors.Is(err, errTransient) }, send)
+	}
 	if err != nil {
 		return err
 	}
@@ -360,17 +405,25 @@ func (c *Client) request(ctx context.Context, repo, method, url string, body, ou
 	return nil
 }
 
+// errTransient marks a server error, a rate limit or a network error: the
+// host's passing trouble, not a refusal of the request.
+var errTransient = errors.New("transient")
+
+type transientError struct{ error }
+
+func (e transientError) Is(target error) bool { return target == errTransient }
+func (e transientError) Unwrap() error        { return e.error }
+
 // send makes a request and returns the body of its answer; an answer other
 // than 2xx is an error that names GitHub's message.
-func (c *Client) send(ctx context.Context, repo, method, url string, body any) ([]byte, error) {
+func (c *Client) send(ctx context.Context, repo, method, url string, payload []byte) ([]byte, error) {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
 	var reader io.Reader
-	if body != nil {
-		data, _ := json.Marshal(body)
-		reader = bytes.NewReader(data)
+	if payload != nil {
+		reader = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
@@ -381,14 +434,25 @@ func (c *Client) send(ctx context.Context, repo, method, url string, body any) (
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	res, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, transientError{err}
 	}
 	defer res.Body.Close()
 	data, _ := io.ReadAll(res.Body)
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
-		json.Unmarshal(data, &e)
-		return nil, fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
+		json.Unmarshal(data, &e) //nolint:errcheck // a body that is not GitHub's JSON error leaves the message empty; the status still says what failed
+		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
+		limited := ratelimit.RateLimited(res)
+		if limited {
+			err = fmt.Errorf("%w: %w", err, ratelimit.ErrRateLimited)
+		}
+		if limited || tickets.TransientStatus(res.StatusCode, res.Header) {
+			return nil, transientError{err}
+		}
+		return nil, err
 	}
 	return data, nil
 }
@@ -403,7 +467,7 @@ type PushSpec struct {
 	Private  string // istari's private bare repository the push is made from
 	Own      string // the ticket's branch
 	Target   string // the branch asked for
-	Force    bool   // with a lease on what istari last pushed or saw, or on a remote branch the pushed commit contains
+	Force    bool   // with a lease on what istari last pushed or saw, on its own push the remote took, or on a remote branch the pushed commit contains
 	Token    string
 }
 
@@ -413,9 +477,10 @@ type PushSpec struct {
 // made from it: istari fetches the commits into a private repository of its
 // own and pushes from there to the repository's URL, with no hooks and the
 // token in git's environment, not its arguments. A forced push leases on what
-// istari itself last pushed or saw, or on the remote branch as it is now when
-// the pushed commit already contains it, so work pushed by someone else is
-// never overwritten.
+// istari itself last pushed or saw, on its own push that was cut short after
+// the remote took it, or on the remote branch as it is now when the pushed
+// commit already contains it, so work pushed by someone else is never
+// overwritten.
 func Push(ctx context.Context, p PushSpec) error {
 	refuse := func(format string, args ...any) error {
 		return &core.Error{Code: CodePushRefused, Message: fmt.Sprintf(format, args...)}
@@ -423,20 +488,7 @@ func Push(ctx context.Context, p PushSpec) error {
 	if p.Target != p.Own {
 		return refuse("an agent pushes only to its ticket branch %s, not %s", p.Own, p.Target)
 	}
-	run := func(env []string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
-		cmd.Dir = p.Private
-		cmd.Env = append(cleanEnv(), env...)
-		out, err := cmd.CombinedOutput()
-		msg := strings.TrimSpace(string(out))
-		if p.Token != "" {
-			msg = strings.ReplaceAll(msg, p.Token, "***")
-		}
-		if err != nil {
-			return msg, refuse("git %s: %s", args[0], msg)
-		}
-		return msg, nil
-	}
+	run := func(env []string, args ...string) (string, error) { return pushGit(ctx, p, env, args...) }
 	if _, err := os.Stat(p.Private); err != nil {
 		if err := os.MkdirAll(p.Private, 0o700); err != nil {
 			return err
@@ -447,20 +499,24 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	work := "refs/istari/push/" + p.Own
 	seen := "refs/istari/seen/" + p.Own
+	// The last push's commit: when it is not the seen one, that push was cut
+	// short, and the remote may have taken it.
+	tried, _ := run(nil, "rev-parse", "--verify", "-q", work) // "" when nothing was pushed from here
 	if _, err := run(nil, "fetch", "-q", "--no-tags", p.Worktree, "+HEAD:"+work); err != nil {
 		return err
 	}
 	auth := authEnv(p.Token)
 	args := []string{"push", "--porcelain"}
 	if p.Force {
-		var current string
-		if out, err := run(auth, "ls-remote", p.URL, "refs/heads/"+p.Own); err == nil && out != "" {
-			current, _, _ = strings.Cut(out, "\t")
-		}
+		current, _ := RemoteHead(ctx, p) // "" when the branch is unknown or the remote does not answer
 		expected, err := run(nil, "rev-parse", "--verify", "-q", seen)
-		if err != nil {
+		switch {
+		case err != nil:
 			// Nothing pushed from here yet: lease on the branch as it is now.
 			expected = current
+		case tried != "" && tried != expected && current == tried:
+			// istari's own push, cut short after the remote took it.
+			expected = tried
 		}
 		if current != "" && current != expected {
 			// Someone else moved the branch. A commit that contains it
@@ -477,6 +533,38 @@ func Push(ctx context.Context, p PushSpec) error {
 	}
 	_, err := run(nil, "update-ref", seen, work)
 	return err
+}
+
+// RemoteHead returns the commit of the ticket's branch on the remote, ""
+// when the remote has no such branch.
+func RemoteHead(ctx context.Context, p PushSpec) (string, error) {
+	out, err := pushGit(ctx, p, authEnv(p.Token), "ls-remote", p.URL, "refs/heads/"+p.Own)
+	if err != nil {
+		return "", err
+	}
+	head, _, _ := strings.Cut(out, "\t")
+	return head, nil
+}
+
+// pushGit runs git in istari's private repository of a push, without hooks
+// and with the token kept out of what it reports. When ctx ends, git ends
+// with the helpers it started (a remote helper, a local receive-pack).
+func pushGit(ctx context.Context, p PushSpec, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
+	cmd.Dir = p.Private
+	cmd.Env = append(cleanEnv(), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if p.Token != "" {
+		msg = strings.ReplaceAll(msg, p.Token, "***")
+	}
+	if err != nil {
+		return msg, &core.Error{Code: CodePushRefused, Message: fmt.Sprintf("git %s: %s", args[0], msg)}
+	}
+	return msg, nil
 }
 
 // authEnv gives git the token as a header through its environment.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,7 +251,7 @@ func (w *Workspaces) remove(ctx context.Context, ref string, now bool) (Workspac
 		return Workspace{}, err
 	}
 	// verify_red's worktree holds only the previous code: nothing to lose.
-	gitOut(ctx, clone, "worktree", "remove", "--force", redDir(ws))
+	gitOut(ctx, clone, "worktree", "remove", "--force", redDir(ws)) //nolint:errcheck // the RemoveAll and prune below clear what is left
 	if err := os.RemoveAll(redDir(ws)); err != nil {
 		return Workspace{}, err
 	}
@@ -488,9 +489,14 @@ func (w *Workspaces) Scratch(ctx context.Context, ticket, dir string) (remove fu
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		bg := context.WithoutCancel(ctx)
-		gitOut(bg, clone, "worktree", "remove", "--force", dir)
-		os.RemoveAll(dir)
-		gitOut(bg, clone, "worktree", "prune")
+		// A scratch checkout of main holds nothing to lose: what is left of
+		// it is only logged.
+		_, removeErr := gitOut(bg, clone, "worktree", "remove", "--force", dir)
+		removeAllErr := os.RemoveAll(dir)
+		_, pruneErr := gitOut(bg, clone, "worktree", "prune")
+		if err := errors.Join(removeErr, removeAllErr, pruneErr); err != nil {
+			log.Printf("istari: scratch %s: remove: %v", dir, err)
+		}
 	}, nil
 }
 
@@ -512,8 +518,8 @@ func (w *Workspaces) redCheckout(ctx context.Context, ws Workspace, commit strin
 		clone := w.clonePath(ws.Repo)
 		// Whatever is left of a broken one only holds previous code; if it
 		// cannot be cleared, worktree add below fails and says why.
-		os.RemoveAll(dir)
-		gitOut(ctx, clone, "worktree", "prune")
+		os.RemoveAll(dir)                       //nolint:errcheck // as said above: worktree add fails and says why
+		gitOut(ctx, clone, "worktree", "prune") //nolint:errcheck // as said above: worktree add fails and says why
 		_, err := gitOut(ctx, clone, "worktree", "add", "--detach", dir, commit)
 		return dir, err
 	}

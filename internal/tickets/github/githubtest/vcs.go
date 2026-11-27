@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,9 @@ type Check struct {
 	// Log is the log of the check's Actions job; "" serves none (404), as
 	// GitHub does for a check that is no Actions job or whose log expired.
 	Log string
+	// Rerun is the conclusion the check reaches when its job is rerun; ""
+	// refuses the rerun (403), as GitHub does for a workflow run too old.
+	Rerun string
 
 	id int64
 }
@@ -81,6 +85,18 @@ func (s *Server) SetChecks(sha string, checks ...Check) {
 	s.checks[sha] = checks
 }
 
+// SetCheck sets the status and conclusion of a commit's check by name, as a
+// job of a running workflow finishes; the check keeps its id.
+func (s *Server) SetCheck(sha, name, status, conclusion string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.checks[sha] {
+		if c := &s.checks[sha][k]; c.Name == name {
+			c.Status, c.Conclusion = status, conclusion
+		}
+	}
+}
+
 // jobLogs serves an Actions job's log as plain text; a check run's id is its
 // job's id, as on GitHub.
 func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +110,40 @@ func (s *Server) jobLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+}
+
+// rerunJob reruns an Actions job: its check takes the conclusion of Rerun at
+// once, the fake has no queue. Like GitHub it refuses while a check of the
+// same commit still runs, the fake's stand-in for the same workflow run.
+func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request) {
+	for _, checks := range s.checks {
+		for k := range checks {
+			c := &checks[k]
+			if strconv.FormatInt(c.id, 10) != r.PathValue("id") {
+				continue
+			}
+			if slices.ContainsFunc(checks, func(o Check) bool { return o.Status != "completed" }) {
+				s.write(w, http.StatusForbidden, map[string]string{"message": "The workflow run containing this job is already running"})
+				return
+			}
+			if c.Rerun == "" {
+				s.write(w, http.StatusForbidden, map[string]string{"message": "Unable to retry this workflow run because it was created over a month ago"})
+				return
+			}
+			s.reruns++
+			c.Status, c.Conclusion = "completed", c.Rerun
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}
+	s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+}
+
+// Reruns returns how many jobs were rerun through the API.
+func (s *Server) Reruns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reruns
 }
 
 // AddReview adds a review to a pull request.
@@ -176,7 +226,9 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 		Title, Body, Head, Base string
 		Draft                   bool
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	for _, i := range s.issues {
 		if i.PullRequest && i.Branch == req.Head && i.State == "open" {
 			s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "A pull request already exists for " + req.Head})
@@ -216,7 +268,9 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 		Query     string
 		Variables struct{ ID string }
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	fail := func(msg string) {
 		s.write(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": msg}}})
 	}
@@ -244,7 +298,9 @@ func (s *Server) updatePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Title, Body *string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if req.Title != nil {
 		i.Title = *req.Title
 	}
@@ -278,13 +334,27 @@ func (s *Server) reviews(w http.ResponseWriter, r *http.Request) {
 	s.page(w, r, all)
 }
 
+// FailReviews makes the next n reviews of a pull request answer status.
+func (s *Server) FailReviews(n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failReviews, s.failReviewsWith = n, status
+}
+
 func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
 	i := s.pull(w, r)
 	if i == nil {
 		return
 	}
+	if s.failReviews > 0 {
+		s.failReviews--
+		s.write(w, s.failReviewsWith, map[string]string{"message": http.StatusText(s.failReviewsWith)})
+		return
+	}
 	var req struct{ Body, Event string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	state, ok := map[string]string{"COMMENT": "COMMENTED", "APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[req.Event]
 	if !ok {
 		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "Unprocessable event " + req.Event})
@@ -302,7 +372,9 @@ func (s *Server) mergePull(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Method string `json:"merge_method"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	i.Merged, i.MergeMethod, i.State = true, req.Method, "closed"
 	s.write(w, http.StatusOK, map[string]any{"merged": true, "sha": "merge-" + i.HeadSHA})
 }

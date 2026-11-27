@@ -6,8 +6,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -21,7 +23,127 @@ func newProvider(t *testing.T) (*github.Provider, *githubtest.Server) {
 	return github.New(github.Options{BaseURL: fake.URL, Token: fake.Token}), fake
 }
 
+// quick are retry waits short enough for tests.
+var quick = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+
+func TestAWriteSurvivesAShortServerOutageInsideTheCall(t *testing.T) {
+	t.Parallel()
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNext(2)
+	if _, err := p.Comment(ctx, ref(n), "journal entry"); err != nil {
+		t.Fatalf("comment after two 500s: %v", err)
+	}
+	if got := fake.Issue(n).Comments; len(got) != 1 {
+		t.Fatalf("comments = %+v, want exactly one", got)
+	}
+}
+
+func TestAWriteThatOutlastsItsRetriesIsUnavailable(t *testing.T) {
+	t.Parallel()
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNext(len(quick) + 1)
+	_, err := p.Comment(ctx, ref(n), "journal entry")
+	if !errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("comment during an outage: %v, want ErrUnavailable", err)
+	}
+	if _, err := p.Comment(ctx, ref(n), "journal entry"); err != nil {
+		t.Fatalf("the outage used up exactly the retries, yet the next comment failed: %v", err)
+	}
+}
+
+func TestARefusalIsNotRetriedAndNotUnavailable(t *testing.T) {
+	t.Parallel()
+	fake := githubtest.New(t)
+	p := github.New(github.Options{BaseURL: fake.URL, Token: fake.Token, Backoff: quick})
+	n := fake.Seed("t", "", "bob")
+	fake.FailNextWith(1, 422)
+	_, err := p.Comment(ctx, ref(n), "journal entry")
+	if err == nil || errors.Is(err, tickets.ErrUnavailable) {
+		t.Fatalf("comment answered 422: %v, want a plain error", err)
+	}
+	if got := fake.Issue(n).Comments; len(got) != 0 {
+		t.Fatalf("a 422 was retried: comments = %+v", got)
+	}
+}
+
 func ref(n int) tickets.Ref { return tickets.Ref{Provider: "gh", Repo: "acme/web", Number: n} }
+
+func TestARefusalForTheRateLimitIsLaterNotNotFound(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	n := fake.Seed("t", "", "bob")
+	fake.SetFile(".istari/pipeline.toml", "x")
+	fake.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	_, getErr := p.Get(ctx, ref(n))
+	_, readErr := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml")
+	for what, err := range map[string]error{"Get": getErr, "ReadFile": readErr} {
+		if !errors.Is(err, ratelimit.ErrRateLimited) || errors.Is(err, tickets.ErrNotFound) {
+			t.Errorf("%s while the quota is spent: %v, want ErrRateLimited and not ErrNotFound", what, err)
+		}
+	}
+}
+
+func TestAFileOfMainIsReadOncePerMainCommit(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	fake.SetFile(".istari/pipeline.toml", "one")
+	fake.SetFile(".istari/ticket-standard.toml", "std")
+	contentReads := func() int {
+		n := 0
+		for _, r := range fake.Counted() {
+			if strings.HasPrefix(r, "GET /repos/acme/web/contents/") {
+				n++
+			}
+		}
+		return n
+	}
+	read := func(path, want string) {
+		t.Helper()
+		got, err := p.ReadFile(ctx, "acme/web", path)
+		if err != nil || string(got) != want {
+			t.Fatalf("ReadFile(%s) = %q, %v, want %q", path, got, err, want)
+		}
+	}
+	for range 3 {
+		read(".istari/pipeline.toml", "one")
+	}
+	read(".istari/ticket-standard.toml", "std")
+	for range 2 {
+		if _, err := p.ReadFile(ctx, "acme/web", ".istari/missing.toml"); !errors.Is(err, tickets.ErrNotFound) {
+			t.Fatalf("ReadFile of a missing file: %v, want ErrNotFound", err)
+		}
+	}
+	if got := contentReads(); got != 3 {
+		t.Errorf("counted content reads on one main commit = %d, want 3 (one per file)", got)
+	}
+	fake.SetFile(".istari/pipeline.toml", "two") // a new main commit
+	read(".istari/pipeline.toml", "two")
+	read(".istari/pipeline.toml", "two")
+	if got := contentReads(); got != 4 {
+		t.Errorf("counted content reads after a new main commit = %d, want 4", got)
+	}
+}
+
+func TestWhileGitHubRefusesForTheRateLimitAFileAlreadyReadIsGivenAgain(t *testing.T) {
+	t.Parallel()
+	p, fake := newProvider(t)
+	fake.SetFile(".istari/pipeline.toml", "one")
+	if _, err := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml"); err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	fake.SetRateLimit(0, time.Date(2026, 11, 25, 20, 20, 0, 0, time.UTC))
+	got, err := p.ReadFile(ctx, "acme/web", ".istari/pipeline.toml")
+	if err != nil || string(got) != "one" {
+		t.Fatalf("ReadFile while the quota is spent = %q, %v, want the file read before", got, err)
+	}
+	if _, err := p.ReadFile(ctx, "acme/web", ".istari/other.toml"); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatalf("ReadFile of a file not read before while the quota is spent: %v, want ErrRateLimited", err)
+	}
+}
 
 func stateLabels(labels []string) []string {
 	var out []string

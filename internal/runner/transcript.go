@@ -41,9 +41,12 @@ func (t *transcript) write(e harness.Event) error {
 	}
 	line = append(line, '\n')
 	if t.f != nil && t.size > 0 && t.size+int64(len(line)) > t.max {
-		t.f.Close()
+		closeErr := t.f.Close()
 		t.f, t.size = nil, 0
 		t.part++
+		if closeErr != nil {
+			return closeErr
+		}
 	}
 	if t.f == nil {
 		if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
@@ -60,10 +63,11 @@ func (t *transcript) write(e harness.Event) error {
 	return err
 }
 
-func (t *transcript) close() {
-	if t.f != nil {
-		t.f.Close()
+func (t *transcript) close() error {
+	if t.f == nil {
+		return nil
 	}
+	return t.f.Close()
 }
 
 // TranscriptPos is a reader's position in a transcript.
@@ -85,7 +89,7 @@ func ReadTranscript(path string, pos TranscriptPos) ([]json.RawMessage, Transcri
 			return nil, pos, err
 		}
 		if _, err := f.Seek(pos.Offset, io.SeekStart); err != nil {
-			f.Close()
+			f.Close() //nolint:errcheck // opened only to read; the seek's error is the one returned
 			return nil, pos, err
 		}
 		r := bufio.NewReader(f)
@@ -97,7 +101,7 @@ func ReadTranscript(path string, pos TranscriptPos) ([]json.RawMessage, Transcri
 			pos.Offset += int64(len(line))
 			lines = append(lines, json.RawMessage(line[:len(line)-1]))
 		}
-		f.Close()
+		f.Close() //nolint:errcheck // opened only to read, and what was read is complete lines
 		if _, err := os.Stat(partPath(path, pos.Part+1)); err != nil {
 			return lines, pos, nil
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 )
@@ -34,6 +35,7 @@ push '{"actor":"x","branch":"istari/6/other"}' > "$out/push_other"
 push '{"actor":"x"}' > "$out/push_own"
 echo done > feature.txt
 "$istari" checkpoint "Did the work; next nothing" > "$out/checkpoint" 2>&1
+printf '## Summary\n\nWork.\n\n## Evidence\n\nNone.\n\n## Merge Danger\n\ntwo-way, none\n' | "$istari" pr open --title "Work" --body-file - > "$out/pr" 2>&1
 pwd > "$out/pwd"
 "$istari" whoami --json > "$out/whoami" 2>&1
 "$istari" ticket show gh:acme/web#99 > /dev/null 2> "$out/scope"; echo "exit $?" >> "$out/scope"
@@ -78,12 +80,12 @@ func startAgentDaemon(t *testing.T, agent string) *agentDaemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
-
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(agent), 0o755); err != nil {
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+
+	bin := t.TempDir()
+	exectest.Write(t, filepath.Join(bin, "claude"), agent)
 	gh := githubtest.New(t)
 	for range 5 { // issue #5 is the ticket: its journal goes there; closed, they are not synced or refined
 		gh.HumanClose(gh.Seed("Add limits", "## Context\n\nLimits.\n", "bob"), "bob", "completed")

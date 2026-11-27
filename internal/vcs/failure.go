@@ -28,7 +28,7 @@ type Failure struct {
 // own access: each run's Actions job log. An error says why no log could be
 // read.
 func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, error) {
-	runs, err := c.checkRuns(ctx, repo, sha)
+	runs, err := c.failedRuns(ctx, repo, sha)
 	if err != nil {
 		return Failure{}, err
 	}
@@ -36,9 +36,6 @@ func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, err
 	var names, parts []string
 	var errs []error
 	for _, r := range runs {
-		if r.state() != "failure" {
-			continue
-		}
 		names = append(names, r.Name)
 		if f.URL == "" {
 			f.URL = r.URL
@@ -63,6 +60,41 @@ func (c *Client) FailureLog(ctx context.Context, repo, sha string) (Failure, err
 	}
 	f.Output = strings.Join(parts, "\n")
 	return f, errors.Join(errs...)
+}
+
+// RerunFailed reruns the Actions job of each failed check run of a commit
+// through istari's own access (spec 4.3) and returns the names of the jobs
+// it reran. An error names each job GitHub refused to rerun.
+func (c *Client) RerunFailed(ctx context.Context, repo, sha string) ([]string, error) {
+	runs, err := c.failedRuns(ctx, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	var jobs []string
+	var errs []error
+	for _, r := range runs {
+		if _, err := c.send(ctx, repo, http.MethodPost, fmt.Sprintf("%s/repos/%s/actions/jobs/%d/rerun", c.base, repo, r.ID), nil); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Name, err))
+			continue
+		}
+		jobs = append(jobs, r.Name)
+	}
+	return jobs, errors.Join(errs...)
+}
+
+// failedRuns lists the failed check runs of a commit.
+func (c *Client) failedRuns(ctx context.Context, repo, sha string) ([]checkRun, error) {
+	runs, err := c.checkRuns(ctx, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	var failed []checkRun
+	for _, r := range runs {
+		if r.state() == "failure" {
+			failed = append(failed, r)
+		}
+	}
+	return failed, nil
 }
 
 // tail is the end of text in at most limit bytes, starting at a line when

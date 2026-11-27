@@ -1,8 +1,11 @@
 package runner_test
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
@@ -33,7 +36,7 @@ func TestARunIsCappedAtWhatIsLeftOfItsTicketsBudget(t *testing.T) {
 	if second.spec.MaxBudgetUSD != 3 {
 		t.Fatalf("after $2 spent the next run is capped at $%v, want $3", second.spec.MaxBudgetUSD)
 	}
-	second.Stop(0)
+	second.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 }
 
 func TestNoRunStartsWhenTheTicketsBudgetIsSpent(t *testing.T) {
@@ -96,7 +99,7 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := f.session(t)
-	defer c.Stop(0)
+	defer c.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if c.spec.MaxBudgetUSD != 11 {
 		t.Fatalf("the child's run is capped at $%v, want the parent's M budget of $15 less the $4 spent", c.spec.MaxBudgetUSD)
 	}
@@ -135,7 +138,7 @@ func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := f.session(t)
-	defer g.Stop(0)
+	defer g.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if g.spec.MaxBudgetUSD != 26 {
 		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30 less the child's $4", g.spec.MaxBudgetUSD)
 	}
@@ -185,11 +188,11 @@ func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
 	sized(t, f, parent.Ref, "M")
 	f.start(t)
 	spendAndFinish(t, f, task.ID) // the planner spends $4 on the parent
-	sized(t, f, parent.Ref, "XL")  // too large: the planner splits it
+	sized(t, f, parent.Ref, "XL") // too large: the planner splits it
 	child := split(t, f, parent.Ref, 51, "S")
 	implement(t, f, child.Ref)
 	c := f.session(t)
-	defer c.Stop(0)
+	defer c.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if c.spec.MaxBudgetUSD != 5 {
 		t.Fatalf("the split child's run is capped at $%v, want its own S budget of $5", c.spec.MaxBudgetUSD)
 	}
@@ -214,8 +217,212 @@ func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T
 	f.fire(t, filed.Ref, "accept", "start")
 	implement(t, f, filed.Ref)
 	g := f.session(t)
-	defer g.Stop(0)
+	defer g.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if g.spec.MaxBudgetUSD != 1 {
 		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
+	}
+}
+
+// spendTheBudget lets an XS ticket's only run spend all of its $2, so its
+// task is blocked budget_exceeded and the ticket is held.
+func spendTheBudget(t *testing.T, f *runFixture, n int) (core.Ticket, core.Task) {
+	t.Helper()
+	tk, task := f.readyTask(t, n)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	return tk, task
+}
+
+func TestLiftingABudgetHoldAfterRaisingTheSizeRunsTheTaskAgain(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 70)
+	sized(t, f, tk.Ref, "S")
+	lifted, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifted.Hold != "" {
+		t.Fatalf("hold = %q after lifting, want none", lifted.Hold)
+	}
+	s := f.session(t) // the task is ready again and handed out
+	defer s.Stop(0)   //nolint:errcheck // the fake session's Stop always returns nil
+	if s.spec.MaxBudgetUSD != 3 {
+		t.Fatalf("the next run is capped at $%v, want the S budget of $5 less the $2 spent", s.spec.MaxBudgetUSD)
+	}
+}
+
+func TestABudgetHoldIsNotLiftedWhileTheBudgetIsStillSpent(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 71)
+	_, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, false)
+	var refused *core.Error
+	if !errors.As(err, &refused) || refused.Code != core.CodeInvalidState {
+		t.Fatalf("LiftBudgetHold with the size unchanged = %v, want invalid_state", err)
+	}
+	for _, want := range []string{"size label", "--anyway"} {
+		if !strings.Contains(refused.Message, want) {
+			t.Errorf("refusal %q does not name %q", refused.Message, want)
+		}
+	}
+	if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != "budget_exceeded" {
+		t.Fatalf("hold = %q after the refusal, want budget_exceeded", held.Hold)
+	}
+	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskBlocked {
+		t.Fatalf("task is %s after the refusal, want blocked", got.State)
+	}
+}
+
+func TestLiftingABudgetHoldRefusesAnotherHoldAndNamesItsCommand(t *testing.T) {
+	t.Parallel()
+	for n, c := range []struct{ hold, command string }{
+		{"paused", "istari ticket resume"},
+		{"attempts_exhausted", "istari ticket retry"},
+	} {
+		t.Run(c.hold, func(t *testing.T) {
+			t.Parallel()
+			f := newRunner(t, runner.RunnerOptions{Budgets: budgets})
+			tk, _ := f.readyTask(t, 80+n)
+			if _, err := f.tickets.SetHold(ctx, "system", tk.Ref, c.hold); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true)
+			var refused *core.Error
+			if !errors.As(err, &refused) || refused.Code != core.CodeInvalidState || !strings.Contains(refused.Message, c.command) {
+				t.Fatalf("LiftBudgetHold on a %s hold = %v, want invalid_state naming %s", c.hold, err, c.command)
+			}
+			if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != c.hold {
+				t.Fatalf("hold = %q after the refusal, want %s", held.Hold, c.hold)
+			}
+		})
+	}
+}
+
+func TestABudgetHoldIsLiftedAnywayWithoutRaisingTheSize(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 72)
+	lifted, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifted.Hold != "" {
+		t.Fatalf("hold = %q after lifting anyway, want none", lifted.Hold)
+	}
+	unblocked := f.waitEvent(t, "task.unblocked")
+	if !strings.Contains(string(unblocked.Payload), "budget_exceeded") {
+		t.Fatalf("task.unblocked = %s, want the budget_exceeded block of %s lifted", unblocked.Payload, task.ID)
+	}
+}
+
+func TestLiftingABudgetHoldAnywayLetsTheNextRunStart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, _ := spendTheBudget(t, f, 73)
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	s := f.session(t)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
+	if s.spec.MaxBudgetUSD != 2 {
+		t.Fatalf("the run let start anyway is capped at $%v, want the XS budget of $2", s.spec.MaxBudgetUSD)
+	}
+	if held, _ := f.tickets.Get(ctx, tk.Ref); held.Hold != "" {
+		t.Fatalf("hold = %q while the run let start anyway runs, want none", held.Hold)
+	}
+}
+
+func TestARunLetStartAnywayStartsAfterADaemonRestart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 75)
+	sized(t, f, tk.Ref, "XS")
+	stop := f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	stop()
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon restarts: a new runner over the same store.
+	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + f.root + "/remotes"}), runner.RunnerOptions{
+		Budgets: budgets, DataDir: f.data, Projects: []string{"web"}, Lease: time.Minute,
+		Slots: []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+	})
+	f.start(t)
+	s := f.session(t)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
+	if s.spec.MaxBudgetUSD != 2 {
+		t.Fatalf("the run let start anyway is capped at $%v after a restart, want the XS budget of $2", s.spec.MaxBudgetUSD)
+	}
+}
+
+func TestAnUnholdAnywayIsUsedUpByTheNextRunEvenWithBudgetLeft(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := f.readyTask(t, 76)
+	sized(t, f, tk.Ref, "XS")
+	stop := f.start(t)
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent all $2
+	f.waitTask(t, task.ID, core.TaskBlocked)
+	f.waitEvent(t, core.EventTicketHoldSet)
+	stop()
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, tk.Ref, "S") // before the next claim: $3 left
+	f.start(t)
+	spendAndFinish(t, f, task.ID) // a run with budget left, $4 spent in all
+	sized(t, f, tk.Ref, "XS")     // spent again
+	next := implement(t, f, tk.Ref)
+	if blocked := f.waitTask(t, next.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+	select {
+	case s := <-f.h.started:
+		t.Fatalf("an unhold --anyway that no run needed let a later run start: capped at $%v", s.spec.MaxBudgetUSD)
+	case <-time.After(time.Second):
+	}
+}
+
+func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 2}})
+	tk, task := spendTheBudget(t, f, 74)
+	if _, err := f.runner.LiftBudgetHold(ctx, "human:alex", tk.Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	f.session(t).finish <- harness.Result{ExitCode: 1} // spent another $2, failed
+	if blocked := f.waitTask(t, task.ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("block kind = %q after the run let start anyway, want budget_exceeded", blocked.BlockKind)
+	}
+	f.waitHold(t, tk.Ref, "budget_exceeded") // the hold follows the block
+	select {
+	case s := <-f.h.started:
+		t.Fatalf("a second run started after one unhold --anyway: capped at $%v", s.spec.MaxBudgetUSD)
+	default:
+	}
+}
+
+// waitHold waits until the ticket's hold is want. It reads the hold rather
+// than waiting on a ticket.hold_set event, since a ticket held a second time
+// already has the first.
+func (f *runFixture) waitHold(t *testing.T, ref, want string) {
+	t.Helper()
+	deadline := time.Now().Add(waitFor)
+	for {
+		tk, err := f.tickets.Get(ctx, ref)
+		if err == nil && tk.Hold == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hold of %s = %q, want %q", ref, tk.Hold, want)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

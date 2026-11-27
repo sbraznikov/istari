@@ -235,14 +235,15 @@ func (r *Runs) end(ctx context.Context, id, reason string, exit *runExit) (Run, 
 	})
 }
 
-// create records a new run and its token.
-func (r *Runs) create(ctx context.Context, run *Run) (token string, err error) {
+// create records a new run and its token, with more changes in the same
+// commit (a budget waiver the run uses).
+func (r *Runs) create(ctx context.Context, run *Run, more ...store.Change) (token string, err error) {
 	token = randomHex(32)
 	data, _ := json.Marshal(map[string]string{"run": run.ID})
 	run.State, run.Started = RunRunning, r.clock().UTC()
 	return token, r.commit(ctx, run, EventRunStarted, run.Agent(),
 		map[string]any{"run": run.ID, "task": run.Task, "role": run.Role, "profile": run.Profile, "harness": run.Harness, "dir": run.Dir, "transcript": run.Transcript},
-		store.Change{Kind: runTokenKind, ID: tokenHash(token), Data: data})
+		append([]store.Change{{Kind: runTokenKind, ID: tokenHash(token), Data: data}}, more...)...)
 }
 
 // update reloads the run, applies change and records it with an event.

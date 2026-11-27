@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/github/ratelimit"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
@@ -30,6 +33,15 @@ const (
 
 const prKind = "pull_request"
 
+// ChecksNone is the checks state of a pull request whose head commit still
+// has no check runs and no commit statuses NoCIWindow after istari's last
+// push to it: the repository has no CI (spec section 4.3).
+const ChecksNone = "none"
+
+// NoCIWindow is how long a pushed head may go without checks before the
+// pull request is read as having no CI.
+const NoCIWindow = 10 * time.Minute
+
 // Tracked is a ticket's pull request as istari last saw it.
 type Tracked struct {
 	Ticket string `json:"ticket"`
@@ -40,18 +52,45 @@ type Tracked struct {
 	// Replaced is the commit that push replaced: its checks are no longer
 	// news, even while GitHub still shows it as the head.
 	Replaced string `json:"replaced,omitempty"`
-	Checks   string `json:"checks,omitempty"`
-	SHA      string `json:"sha,omitempty"` // the head commit the checks are of
-	Review   string `json:"review,omitempty"`
-	Done     bool   `json:"done,omitempty"` // merged or closed: no longer polled
+	Checks   string `json:"checks,omitempty"` // as Status.Checks, or ChecksNone
+	SHA      string `json:"sha,omitempty"`    // the head commit the checks are of
+	// Pushed is when istari last pushed to the pull request (Track or
+	// Pushed): the no-CI window runs from here. Zero: tracked before the
+	// window existed; the next poll starts the window at its own time.
+	Pushed time.Time `json:"pushed"`
+	Review string    `json:"review,omitempty"`
+	Done   bool      `json:"done,omitempty"` // merged or closed: no longer polled
 	// Mergeable is GitHub's last answer whether the pull request merges into
 	// its base, MergeableClean or MergeableDirty, at the head MergeHead and the
 	// base MergeBase; "" while GitHub has not answered for istari's head.
 	Mergeable string `json:"mergeable,omitempty"`
 	MergeHead string `json:"merge_head,omitempty"`
 	MergeBase string `json:"merge_base,omitempty"`
+	// Unrelated is the red head an implementer answered as not caused by the
+	// change, with its Reason, until Rerun uses the answer up; Rerun is the
+	// head whose failed jobs istari reran or tried to, and Reruns how often,
+	// at most MaxReruns times per head (spec 4.3); RedReruns is how many of
+	// those attempts Rerun reported RerunRed.
+	Unrelated string `json:"unrelated,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Rerun     string `json:"rerun,omitempty"`
+	Reruns    int    `json:"reruns,omitempty"`
+	RedReruns int    `json:"red_reruns,omitempty"`
 
 	version int64
+}
+
+// MaxReruns is how often istari reruns, or tries to rerun, the failed jobs of
+// one head answered unrelated; the next answer on it is spent (spec 4.3).
+const MaxReruns = 2
+
+// rerunsOf is how often the head was rerun or tried. A record from before
+// the count names its head once.
+func (t Tracked) rerunsOf(head string) int {
+	if t.Rerun != head {
+		return 0
+	}
+	return max(1, t.Reruns)
 }
 
 // What GitHub says about merging a pull request into its base.
@@ -87,9 +126,10 @@ func NewWatcher(c *Client, s store.Store, opts WatcherOptions) *Watcher {
 
 // Track starts watching a ticket's pull request.
 func (w *Watcher) Track(ctx context.Context, ticket, repo string, pr Opened) error {
-	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: pr.Number, URL: pr.URL})
+	now := w.clock().UTC()
+	data, _ := json.Marshal(Tracked{Ticket: ticket, Repo: repo, Number: pr.Number, URL: pr.URL, Pushed: now})
 	raw, _ := json.Marshal(map[string]any{"repo": repo, "number": pr.Number})
-	_, err := w.store.Append(ctx, store.Event{Type: "vcs.tracked", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+	_, err := w.store.Append(ctx, store.Event{Type: "vcs.tracked", At: now, Actor: "system", Ticket: ticket, Payload: raw},
 		store.Change{Kind: prKind, ID: ticket, Data: data})
 	if errors.Is(err, store.ErrConflict) {
 		return fmt.Errorf("vcs: %s already has a tracked pull request", ticket)
@@ -170,7 +210,7 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 		if old := cmp.Or(t.SHA, t.MergeHead); old != "" {
 			t.Replaced = old
 		}
-		t.Head, t.Checks, t.SHA = head, "", ""
+		t.Head, t.Checks, t.SHA, t.Pushed = head, "", "", w.clock().UTC()
 		t.Mergeable, t.MergeHead, t.MergeBase = "", "", ""
 		data, _ := json.Marshal(t)
 		raw, _ := json.Marshal(map[string]any{"number": t.Number, "head": head})
@@ -182,8 +222,149 @@ func (w *Watcher) Pushed(ctx context.Context, ticket, head string) error {
 	}
 }
 
+// ErrNotRed refuses an unrelated answer on a head whose CI istari last read
+// is neither red nor still running: there is nothing to rerun.
+var ErrNotRed = errors.New("the CI istari last read is not red, there is nothing to rerun")
+
+// Unrelated records an implementer's answer that the red CI of the pull
+// request's head is not caused by the change (spec 4.3). A head whose run
+// still runs may be answered too: one of its jobs may have failed already,
+// and the rerun waits until the run has finished. It is refused while the
+// head istari knows is green or has no CI.
+func (w *Watcher) Unrelated(ctx context.Context, ticket, reason string) error {
+	for {
+		t, err := w.PullRequestOf(ctx, ticket)
+		if err != nil {
+			return err
+		}
+		if (t.Checks != "failure" && t.Checks != "pending") || t.SHA == "" {
+			return fmt.Errorf("vcs: the CI of %s's pull request: %w", ticket, ErrNotRed)
+		}
+		t.Unrelated, t.Reason = t.SHA, reason
+		data, _ := json.Marshal(t)
+		raw, _ := json.Marshal(map[string]any{"number": t.Number, "sha": t.SHA, "reason": reason})
+		_, err = w.store.Append(ctx, store.Event{Type: "vcs.answered_unrelated", At: w.clock().UTC(), Actor: "system", Ticket: ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
+}
+
+// Rerun reruns the failed jobs of the pull request's red head, when an
+// implementer answered it as unrelated (spec 4.3), at most MaxReruns times
+// per head. The answer is used up by the attempt: a rerun's red result, or a
+// refused rerun, is reported RerunRed once and opens the unrelated round. An
+// answer on a head that was rerun or refused MaxReruns times already is
+// spent. The checks istari knew are forgotten when a rerun starts, so the
+// next poll reads its result, and a note in the journal says what was rerun
+// and why, or why not.
+func (w *Watcher) Rerun(ctx context.Context, ticket string) (core.RerunOutcome, error) {
+	t, err := w.PullRequestOf(ctx, ticket)
+	if errors.Is(err, store.ErrNotFound) {
+		return core.RerunNone, nil
+	}
+	if err != nil || t.Checks != "failure" {
+		return core.RerunNone, err
+	}
+	head, reason := t.SHA, t.Reason
+	if t.Unrelated != head {
+		if n := t.rerunsOf(head); n > t.RedReruns {
+			return core.RerunRed, w.record(ctx, t, "vcs.rerun_reported_red", map[string]any{"number": t.Number, "sha": head, "reruns": n}, func(t *Tracked) {
+				t.RedReruns = n
+			})
+		}
+		return core.RerunNone, nil
+	}
+	if n := t.rerunsOf(head); n >= MaxReruns {
+		return core.RerunSpent, w.spend(ctx, t, n)
+	}
+	jobs, rerr := w.client.RerunFailed(ctx, t.Repo, head)
+	started := len(jobs) > 0
+	n := t.rerunsOf(head) + 1
+	if err := w.record(ctx, t, "vcs.rerun", map[string]any{"number": t.Number, "sha": head, "jobs": jobs, "started": started, "reruns": n}, func(t *Tracked) {
+		if t.Rerun != head {
+			t.RedReruns = 0 // the count of reds is of the head rerun
+		}
+		t.Rerun, t.Reruns = head, n // GitHub has the rerun: it is recorded even when a poll came between
+		if !started {
+			t.RedReruns = n // reported red below
+		}
+		if t.Unrelated == head {
+			t.Unrelated = ""
+		}
+		if started && t.SHA == head {
+			t.Checks = ""
+		}
+	}); err != nil {
+		return core.RerunNone, err
+	}
+	if !started {
+		return core.RerunRed, w.note(ctx, ticket, fmt.Sprintf("CI on `%s` could not be rerun (%d of %d), so the unrelated round starts: %v. The implementer said it is not this change: %s", head, n, MaxReruns, rerr, reason))
+	}
+	text := fmt.Sprintf("CI on `%s` is rerun (%d of %d): %s. The implementer says it is not this change: %s", head, n, MaxReruns, strings.Join(jobs, ", "), reason)
+	if rerr != nil {
+		text += fmt.Sprintf(". Not rerun: %v", rerr)
+	}
+	return core.RerunStarted, w.note(ctx, ticket, text)
+}
+
+// spend records that the unrelated answer on the tracked red head finds its
+// reruns used up, and notes the head and its failed checks for the human who
+// decides how to go on.
+func (w *Watcher) spend(ctx context.Context, t Tracked, reruns int) error {
+	head, reason := t.SHA, t.Reason
+	checks := "its failed checks could not be read"
+	if runs, err := w.client.failedRuns(ctx, t.Repo, head); err != nil {
+		checks += ": " + err.Error()
+	} else if len(runs) > 0 {
+		names := make([]string, len(runs))
+		for i, r := range runs {
+			names[i] = r.Name
+		}
+		checks = "failed: `" + strings.Join(names, "`, `") + "`"
+	}
+	if err := w.record(ctx, t, "vcs.rerun_spent", map[string]any{"number": t.Number, "sha": head, "reason": reason, "reruns": reruns}, func(t *Tracked) {
+		t.Unrelated = "" // the answer holds the ticket once; a human goes on from there
+	}); err != nil {
+		return err
+	}
+	return w.note(ctx, t.Ticket, fmt.Sprintf("CI on `%s` is not rerun again, and no further round starts: it was rerun, or could not be, %d times already; %s. The implementer says it is not this change: %s. A human decides how to go on.", head, reruns, checks, reason))
+}
+
+// record appends an event of the tracked pull request with change applied,
+// reading it again when a poll came between.
+func (w *Watcher) record(ctx context.Context, t Tracked, typ string, payload map[string]any, change func(*Tracked)) error {
+	raw, _ := json.Marshal(payload)
+	for {
+		change(&t)
+		data, _ := json.Marshal(t)
+		_, err := w.store.Append(ctx, store.Event{Type: typ, At: w.clock().UTC(), Actor: "system", Ticket: t.Ticket, Payload: raw},
+			store.Change{Kind: prKind, ID: t.Ticket, Data: data, IfVersion: t.version})
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+		if t, err = w.PullRequestOf(ctx, t.Ticket); err != nil {
+			return err
+		}
+	}
+}
+
+// note records a system note in the ticket's journal.
+func (w *Watcher) note(ctx context.Context, ticket, text string) error {
+	if w.journal == nil {
+		return nil
+	}
+	ref, err := tickets.ParseRef(ticket)
+	if err != nil {
+		return err
+	}
+	return w.journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})
+}
+
 // Poll reads every open tracked pull request once.
 func (w *Watcher) Poll(ctx context.Context) error {
+	ctx = ratelimit.WithKind(ctx, ratelimit.KindPRWatch)
 	recs, err := w.store.List(ctx, prKind)
 	if err != nil {
 		return err
@@ -216,16 +397,24 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 		payload map[string]any
 	}
 	var changes []change
+	if t.Pushed.IsZero() { // tracked before the window existed: it starts now
+		t.Pushed = w.clock().UTC()
+		changes = append(changes, change{"vcs.window", map[string]any{"number": t.Number, "from": t.Pushed}})
+	}
 	stale := s.HeadSHA == t.Replaced && s.HeadSHA != t.Head // GitHub has not caught up with istari's push
+	checks := s.Checks
+	if checks == "" && s.HeadSHA != "" && !w.clock().Before(t.Pushed.Add(NoCIWindow)) {
+		checks = ChecksNone
+	}
 	var failed error // a CI failure entry that could not be recorded; the event goes on regardless
-	if s.Checks != "" && !stale && (s.Checks != t.Checks || s.HeadSHA != t.SHA) {
-		t.Checks, t.SHA = s.Checks, s.HeadSHA
-		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": s.Checks, "sha": s.HeadSHA}})
-		if s.Checks == "failure" {
+	if checks != "" && !stale && (checks != t.Checks || s.HeadSHA != t.SHA) {
+		t.Checks, t.SHA = checks, s.HeadSHA
+		changes = append(changes, change{EventChecks, map[string]any{"number": t.Number, "checks": checks, "sha": s.HeadSHA}})
+		if checks == "failure" {
 			failed = w.recordFailure(ctx, t)
 		}
 	}
-	if s.Review != t.Review && !(t.Review == "" && s.Review == ReviewNone) {
+	if s.Review != t.Review && (t.Review != "" || s.Review != ReviewNone) {
 		t.Review = s.Review
 		changes = append(changes, change{EventReview, map[string]any{"number": t.Number, "review": s.Review, "by": s.By}})
 	}
@@ -256,8 +445,9 @@ func (w *Watcher) poll(ctx context.Context, t Tracked) error {
 }
 
 // recordFailure appends a CI failure entry for the tracked head, once per
-// commit: the failed jobs' logs, or why they could not be read. It comes
-// before the vcs.checks event, so the rework brief has it.
+// commit and once more for its rerun: the failed jobs' logs, or why they
+// could not be read. It comes before the vcs.checks event, so the rework
+// brief has it.
 func (w *Watcher) recordFailure(ctx context.Context, t Tracked) error {
 	if w.journal == nil {
 		return nil
@@ -270,13 +460,14 @@ func (w *Watcher) recordFailure(ctx context.Context, t Tracked) error {
 	if err != nil {
 		return err
 	}
+	rerun := t.Rerun == t.SHA
 	for _, e := range entries {
-		if e.Kind == journal.CI && e.CI.Commit == t.SHA {
+		if e.Kind == journal.CI && e.CI.Commit == t.SHA && e.CI.Rerun == rerun {
 			return nil // recorded by an earlier poll whose event did not get through
 		}
 	}
 	f, err := w.client.FailureLog(ctx, t.Repo, t.SHA)
-	ci := &journal.CIEntry{Check: f.Check, Commit: t.SHA, URL: f.URL, Output: f.Output, Cut: f.Cut}
+	ci := &journal.CIEntry{Check: f.Check, Commit: t.SHA, URL: f.URL, Output: f.Output, Cut: f.Cut, Rerun: rerun}
 	if err != nil {
 		ci.Error = err.Error()
 	}

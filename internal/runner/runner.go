@@ -24,13 +24,14 @@ import (
 
 // Defaults of the runner.
 const (
-	DefaultRunTimeout    = time.Hour
-	DefaultPoll          = 2 * time.Second
-	DefaultTranscriptMax = 10 << 20 // bytes of a transcript file before it is rotated
-	DefaultStartRetry    = 5 * time.Second
-	DefaultStartPause    = time.Minute
-	startFailuresToPause = 3 // start failures in a row that pause a slot
-	stopGrace            = 10 * time.Second
+	DefaultRunTimeout     = time.Hour
+	DefaultStopCheckpoint = 15 * time.Minute // the limit of a stopping run's checkpoint
+	DefaultPoll           = 2 * time.Second
+	DefaultTranscriptMax  = 10 << 20 // bytes of a transcript file before it is rotated
+	DefaultStartRetry     = 5 * time.Second
+	DefaultStartPause     = time.Minute
+	startFailuresToPause  = 3 // start failures in a row that pause a slot
+	stopGrace             = 10 * time.Second
 )
 
 // Slot is one agent slot: a profile name, its role and how it runs. The
@@ -72,6 +73,9 @@ type RunnerOptions struct {
 	// Checkpoints, when set, saves the work of a run stopped on its timeout,
 	// its budget or by a human (spec section 7.2, step 6).
 	Checkpoints *Checkpoints
+	// StopCheckpoint limits that checkpoint ([daemon]
+	// stop_checkpoint_timeout, spec section 4.2); 0: DefaultStopCheckpoint.
+	StopCheckpoint time.Duration
 	// Journal records what the runner notices about a run, such as a merge
 	// of the main branch given up; nil: istari's log only.
 	Journal *journal.Journal
@@ -114,6 +118,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultRunTimeout
+	}
+	if opts.StopCheckpoint <= 0 {
+		opts.StopCheckpoint = DefaultStopCheckpoint
 	}
 	if opts.Poll <= 0 {
 		opts.Poll = DefaultPoll
@@ -176,9 +183,9 @@ func (r *Runner) SetSelfReview(f func(ctx context.Context, repo string) bool) { 
 // Runs returns the record of runs.
 func (r *Runner) Runs() *Runs { return r.runs }
 
-// holdLease renews a lease in the background while a run is prepared.
-// started stops that and renews it once more for the run to start with;
-// abandon only stops it, for a run that does not start.
+// holdLease renews a lease in the background while no harness runs: while a
+// run is prepared, and while it stops. started stops that and renews it once
+// more, for the run to start or its task to end with; abandon only stops it.
 func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func() (core.Lease, error), abandon func()) {
 	stop, done := make(chan struct{}), make(chan struct{})
 	current := lease // written by the goroutine; read after done
@@ -209,16 +216,15 @@ func (r *Runner) holdLease(ctx context.Context, lease core.Lease) (started func(
 const blockBudget = "budget_exceeded"
 
 // budgetLeft is what is left of the ticket's budget: the budget of its size,
-// or of the ticket whose budget it shares, less what the runs of every
-// ticket sharing it spent. capped is false when
-// no budgets are configured.
-func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, capped bool, err error) {
+// or of the ticket whose budget it shares (full), less what the runs of every
+// ticket sharing it spent. capped is false when no budgets are configured.
+func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full float64, capped bool, err error) {
 	if len(r.opts.Budgets) == 0 {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
 	all, err := r.tickets.List(ctx)
 	if err != nil {
-		return 0, true, err
+		return 0, 0, true, err
 	}
 	byRef := map[string]core.Ticket{}
 	for _, t := range all {
@@ -252,15 +258,132 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left float64, 
 	}
 	runs, err := r.runs.List(ctx)
 	if err != nil {
-		return 0, true, err
+		return 0, 0, true, err
 	}
-	left = r.opts.Budgets[size]
+	full = r.opts.Budgets[size]
+	left = full
 	for _, run := range runs {
 		if sharing[run.Ticket] {
 			left -= run.Usage.CostUSD
 		}
 	}
-	return left, true, nil
+	return left, full, true, nil
+}
+
+// budgetWaiverKind is the record of a human's istari ticket unhold --anyway:
+// one more run of the ticket starts with its budget spent (spec section 7.5).
+const budgetWaiverKind = "budget_waiver"
+
+// EventBudgetWaived records that a human let one more run of a ticket start
+// past its spent budget.
+const EventBudgetWaived = "ticket.budget_waived"
+
+// budgetWaiver is the record of an unhold --anyway, by ticket. It is live
+// until a run uses it; Run names that run.
+type budgetWaiver struct {
+	Ticket string    `json:"ticket"`
+	By     string    `json:"by"`
+	At     time.Time `json:"at"`
+	Run    string    `json:"run,omitempty"`
+}
+
+// waiveBudget records a live waiver for the ticket, in place of any earlier
+// one, so it survives a daemon restart.
+func (r *Runner) waiveBudget(ctx context.Context, actor string, tk core.Ticket) error {
+	var version int64
+	switch rec, err := r.store.Get(ctx, budgetWaiverKind, tk.Ref); {
+	case err == nil:
+		version = rec.Version
+	case !errors.Is(err, store.ErrNotFound):
+		return err
+	}
+	w := budgetWaiver{Ticket: tk.Ref, By: actor, At: r.opts.Clock().UTC()}
+	// Marshalling a struct of strings and a time, and a map of strings,
+	// cannot fail.
+	data, _ := json.Marshal(w)
+	raw, _ := json.Marshal(map[string]any{"ticket": tk.Ref, "actor": actor})
+	_, err := r.store.Append(ctx, store.Event{Type: EventBudgetWaived, At: w.At, Actor: actor, Project: tk.Project, Ticket: tk.Ref, Payload: raw},
+		store.Change{Kind: budgetWaiverKind, ID: tk.Ref, Data: data, IfVersion: version})
+	return err
+}
+
+// useBudgetWaiver returns the change that marks the ticket's live waiver as
+// used by the run, to commit with the run's start; ok is false when the
+// ticket has no live waiver. The version check lets only one run use it.
+func (r *Runner) useBudgetWaiver(ctx context.Context, ref, run string) (use store.Change, ok bool, err error) {
+	rec, err := r.store.Get(ctx, budgetWaiverKind, ref)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Change{}, false, nil
+	}
+	if err != nil {
+		return store.Change{}, false, err
+	}
+	var w budgetWaiver
+	if err := json.Unmarshal(rec.Data, &w); err != nil {
+		return store.Change{}, false, fmt.Errorf("budget waiver of %s: %w", ref, err)
+	}
+	if w.Run != "" {
+		return store.Change{}, false, nil
+	}
+	w.Run = run
+	data, _ := json.Marshal(w) // a struct of strings and a time cannot fail to marshal
+
+	return store.Change{Kind: budgetWaiverKind, ID: ref, Data: data, IfVersion: rec.Version}, true, nil
+}
+
+// holdLiftedBy says what lifts each hold but budget_exceeded (spec section
+// 4.1), for a refusal that names the way out.
+var holdLiftedBy = map[string]string{
+	"needs_input":        "a reply in the ticket thread lifts it",
+	"attempts_exhausted": "istari ticket retry lifts it",
+	"paused":             "istari ticket resume lifts it",
+	"waiting_dependency": "istari lifts it when every need is done",
+	"waiting_zone":       "istari lifts it when the overlapping ticket is merged or canceled",
+}
+
+// LiftBudgetHold is a human's decision on an exceeded budget (spec section
+// 7.5, istari ticket unhold): it unblocks the ticket's tasks blocked
+// budget_exceeded and then clears the hold, so an interrupted call leaves the
+// ticket held and a repeat finishes it. anyway lets one more run of the
+// ticket start with its budget spent, capped at the budget of its size.
+func (r *Runner) LiftBudgetHold(ctx context.Context, actor, ref string, anyway bool) (core.Ticket, error) {
+	tk, err := r.tickets.Get(ctx, ref)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	if tk.Hold != blockBudget {
+		msg := fmt.Sprintf("ticket %s is not on hold for %s", ref, blockBudget)
+		if tk.Hold != "" {
+			msg = fmt.Sprintf("ticket %s is on hold for %s, not %s: %s", ref, tk.Hold, blockBudget, holdLiftedBy[tk.Hold])
+		}
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: msg}
+	}
+	if anyway {
+		if err := r.waiveBudget(ctx, actor, tk); err != nil {
+			return core.Ticket{}, err
+		}
+	} else {
+		left, _, capped, err := r.budgetLeft(ctx, tk)
+		if err != nil {
+			return core.Ticket{}, err
+		}
+		if capped && left <= 0 {
+			return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("the budget of %s is still spent ($%.2f left): raise its size label first, or pass --anyway", ref, left)}
+		}
+	}
+	all, err := r.tasks.List(ctx)
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	for _, task := range all {
+		if task.Ticket != ref || task.State != core.TaskBlocked || task.BlockKind != blockBudget {
+			continue
+		}
+		if err := r.tasks.Unblock(ctx, actor, task.ID); err != nil {
+			return core.Ticket{}, err
+		}
+	}
+	return r.tickets.ClearHold(ctx, actor, ref, blockBudget)
 }
 
 // Working tells which of this runner's live runs works on a task, if any.
@@ -420,21 +543,40 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		fail(err.Error())
 		return nil
 	}
-	budget, capped, err := r.budgetLeft(bg, tk)
+	run := Run{
+		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
+		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout,
+	}
+	budget, full, capped, err := r.budgetLeft(bg, tk)
 	if err != nil {
 		fail("budget: " + err.Error())
 		return nil
 	}
-	if capped && budget <= 0 {
-		if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
-			log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
+	// A human's unhold --anyway lets the next run start with the budget
+	// spent, capped at the budget of the ticket's size; that run uses it up
+	// either way (spec section 7.5).
+	var waived []store.Change
+	if capped {
+		use, ok, err := r.useBudgetWaiver(bg, tk.Ref, run.ID)
+		if err != nil {
+			fail("budget: " + err.Error())
+			return nil
 		}
-		return nil
+		if ok {
+			waived = []store.Change{use}
+		}
+		switch {
+		case budget > 0:
+		case ok:
+			budget = full
+		default:
+			if err := r.blockForBudget(tk.Ref)(bg, lease); err != nil {
+				log.Printf("istari: runner %s: block %s: %v", slot.Profile, lease.Task, err)
+			}
+			return nil
+		}
 	}
-	run := Run{
-		ID: "r_" + randomHex(12), Task: task.ID, Ticket: task.Ticket, Project: task.Project, Role: slot.Role,
-		Profile: slot.Profile, Harness: h.Name(), Timeout: r.opts.Timeout, BudgetUSD: budget,
-	}
+	run.BudgetUSD = budget
 	var conflicts []string
 	if slot.Role == "refiner" {
 		// The refiner works before the ticket has a worktree and reads the
@@ -465,7 +607,7 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 		}
 	}
 	run.Transcript = filepath.Join(r.opts.DataDir, "runs", run.ID+".jsonl")
-	token, err := r.runs.create(bg, &run)
+	token, err := r.runs.create(bg, &run, waived...)
 	if err != nil {
 		fail("run: " + err.Error())
 		return nil
@@ -585,7 +727,9 @@ func (r *Runner) execute(ctx context.Context, slot Slot, lease core.Lease) error
 	stopWith := func(e ending) {
 		if end == nil {
 			end = &e
-			sess.Stop(stopGrace)
+			if err := sess.Stop(stopGrace); err != nil {
+				log.Printf("istari: run %s: stop: %v", run.ID, err)
+			}
 		}
 	}
 	var res harness.Result
@@ -607,8 +751,8 @@ loop:
 			case err == nil && current.Hold != "":
 				// The ticket was put on hold (paused): the run stops, its work
 				// is saved, and the task waits until the hold is lifted.
+				// The lease is still renewed while the agent stops.
 				stopWith(ending{reason: "the ticket is on hold (" + current.Hold + ")", outcome: r.tasks.Release, released: true, save: true})
-				continue
 			}
 			l, err := r.tasks.Renew(bg, lease)
 			var e *core.Error
@@ -638,19 +782,32 @@ loop:
 	}
 	<-streamed
 
-	if end != nil && end.save && r.opts.Checkpoints != nil && slot.Role == "implementer" {
+	// A stopping run's task stays this run's until its checkpoint and its
+	// end are recorded: a stop checkpoint may outlast the lease (spec
+	// section 4.2).
+	stopping := end != nil && end.save
+	ended := func() (core.Lease, error) { return lease, nil }
+	if stopping {
+		held, unheld := r.holdLease(bg, lease)
+		defer unheld()
+		ended = held
+	}
+	if stopping && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
-		if _, err := r.opts.Checkpoints.Make(bg, run, end.reason+"; continue from here"); err != nil {
+		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, run, end.reason+"; continue from here"); err != nil {
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}
 	reason, outcome, completed := r.outcome(bg, run.ID, res)
-	if end != nil && !(end.released && completed) {
+	if end != nil && (!end.released || !completed) {
 		// A runner that stops while the agent finishes its work keeps the
 		// work: a completed run completes its task even then.
 		reason, outcome = end.reason, end.outcome
 	}
 	r.end(bg, run, res, usage, reason)
+	if held, err := ended(); err == nil {
+		lease = held
+	}
 	if err := outcome(bg, lease); err != nil {
 		log.Printf("istari: runner %s: task %s: %v", slot.Profile, lease.Task, err)
 	}
@@ -704,7 +861,11 @@ func (r *Runner) blockForBudget(ticket string) func(context.Context, core.Lease)
 // returns the run's usage. It signals over when the run budget is spent.
 func (r *Runner) stream(ctx context.Context, run Run, events <-chan harness.Event, over chan<- struct{}) harness.Usage {
 	t := &transcript{path: run.Transcript, max: r.opts.TranscriptMax}
-	defer t.close()
+	defer func() {
+		if err := t.close(); err != nil {
+			log.Printf("istari: run %s: transcript: %v", run.ID, err)
+		}
+	}()
 	var total harness.Usage
 	for e := range events {
 		if err := t.write(e); err != nil {
@@ -816,9 +977,8 @@ func installSkill(ctx context.Context, dir, skill string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	_, err = f.WriteString("\n/.istari/skill.md\n")
-	return err
+	return errors.Join(err, f.Close())
 }
 
 // resultRoles are the roles that submit a structured result and get a result
