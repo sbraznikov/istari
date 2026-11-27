@@ -50,7 +50,11 @@ func newEngine(t *testing.T, global config.Defaults, repoFiles files) *engineFix
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	f := &engineFixture{store: s, tasks: core.NewTasks(s, core.TaskOptions{}), tickets: core.NewTickets(s, core.TicketOptions{})}
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: global, Files: repoFiles})
 	return f
@@ -364,7 +368,9 @@ func TestATicketWaitingForAnUnfinishedNeedIsHeldAndFreedWhenItIsDone(t *testing.
 		t.Fatalf("the waiting ticket = %s, hold %q; want ready on waiting_dependency", tk.State, tk.Hold)
 	}
 	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
-		f.tickets.Fire(ctx, "system", need, tr)
+		if _, err := f.tickets.Fire(ctx, "system", need, tr); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f.reconcile(t)
 	if tk, _ := f.tickets.Get(ctx, ref); tk.Hold != "" || tk.State != core.TicketPlanning {
@@ -566,7 +572,9 @@ func TestASplitParentIsDoneWhenAllItsChildrenAre(t *testing.T) {
 	}
 	done := func(k string) {
 		for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed", "merged"} {
-			f.tickets.Fire(ctx, "system", k, tr)
+			if _, err := f.tickets.Fire(ctx, "system", k, tr); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	done(kids[0])
@@ -601,8 +609,12 @@ func TestACanceledChildHoldsItsParent(t *testing.T) {
 	f.readyTicket(t, ref)
 	f.reconcile(t)
 	kid := "gh:acme/web#2"
-	f.tickets.Create(ctx, "human:alex", kid, "web")
-	f.tickets.SetChildren(ctx, "agent:planner-1", ref, []string{kid})
+	if _, err := f.tickets.Create(ctx, "human:alex", kid, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", ref, []string{kid}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.tickets.Fire(ctx, "agent:planner-1", ref, "split"); err != nil {
 		t.Fatal(err)
 	}
@@ -840,6 +852,7 @@ type watchedPR struct {
 	gh      *githubtest.Server
 	watch   *vcs.Watcher
 	journal *journal.Journal
+	number  int // of the pull request
 }
 
 func newWatchedPR(t *testing.T, defaults config.Defaults, checks ...githubtest.Check) *watchedPR {
@@ -863,7 +876,7 @@ func newWatchedPR(t *testing.T, defaults config.Defaults, checks ...githubtest.C
 		return pr.Checks, err == nil && pr.Checks != ""
 	}
 	f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Defaults: defaults, Checks: state, Rerun: w.Rerun})
-	return &watchedPR{engineFixture: f, gh: gh, watch: w, journal: j}
+	return &watchedPR{engineFixture: f, gh: gh, watch: w, journal: j, number: pr.Number}
 }
 
 // answeredUnrelated takes the ticket to its first implementer, which sees
@@ -877,6 +890,14 @@ func (p *watchedPR) answeredUnrelated(t *testing.T) {
 	if err := p.watch.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
+	p.answerAgain(t)
+}
+
+// answerAgain is the implementer of the latest round, which finds the head
+// red still, answers it as not this change and completes; the watch reads
+// the rerun's result and the engine acts on it.
+func (p *watchedPR) answerAgain(t *testing.T) {
+	t.Helper()
 	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
 		t.Fatalf("Unrelated: %v", err)
 	}
@@ -886,6 +907,25 @@ func (p *watchedPR) answeredUnrelated(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.reconcile(t)
+}
+
+// lastNote is the text of the ticket's latest journal note.
+func (p *watchedPR) lastNote(t *testing.T) string {
+	t.Helper()
+	r, err := tickets.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := p.journal.Stored(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == journal.Note {
+			return entries[i].Text
+		}
+	}
+	return ""
 }
 
 func TestACheckThatFailsOnceAndPassesOnRerunGoesToReviewWithoutASecondRound(t *testing.T) {
@@ -934,25 +974,18 @@ func TestAFailedJobIsRerunOnlyOnceItsRunHasFinished(t *testing.T) {
 	}
 }
 
-func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing.T) {
+func TestARedHeadThatCannotBeRerunAnsweredUnrelatedThreeTimesOpensTwoRounds(t *testing.T) {
 	t.Parallel()
-	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
 	p.answeredUnrelated(t)
-	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
-		t.Fatalf("a refused rerun left implement in round %d, want its one rework round 2", pipeline.RoundOf(impl))
+	// Rounds 2 and 3 have nothing to change on the same head and answer unrelated again.
+	p.answerAgain(t)
+	if impl := p.stage(t, ref, "implement"); !strings.HasSuffix(impl.ID, "_r3u_implement") {
+		t.Fatalf("after two refused reruns implement is %s, want the unrelated round 3", impl.ID)
 	}
-	// Round 2 has nothing to change on the same head and answers unrelated again.
-	if err := p.watch.Unrelated(ctx, ref, "the known ETXTBSY flake"); err != nil {
-		t.Fatalf("second Unrelated: %v", err)
-	}
-	p.finish(t, ref, "implement", "agent:implementer-1")
-	p.reconcile(t)
-	if err := p.watch.Poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	p.reconcile(t)
-	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 {
-		t.Fatalf("the second answer started round %d, want no round after 2", pipeline.RoundOf(impl))
+	p.answerAgain(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 3 {
+		t.Fatalf("the third answer started round %d, want no round after 3", pipeline.RoundOf(impl))
 	}
 	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
 		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
@@ -962,12 +995,67 @@ func TestARedHeadThatCannotBeRerunAnsweredUnrelatedTwiceOpensOneRound(t *testing
 	}
 }
 
+func TestTheThirdUnrelatedAnswerOnOneHeadHoldsTheTicketNeedsInputNamingTheHead(t *testing.T) {
+	t.Parallel()
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
+	p.answeredUnrelated(t)
+	p.answerAgain(t)
+	if impl := p.stage(t, ref, "implement"); !strings.HasSuffix(impl.ID, "_r3u_implement") || impl.State != core.TaskReady {
+		t.Fatalf("after two red reruns implement is %s %s, want a ready unrelated round 3", impl.ID, impl.State)
+	}
+	p.answerAgain(t)
+	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 3 {
+		t.Fatalf("the third answer started round %d, want no round 4", pipeline.RoundOf(impl))
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "needs_input" {
+		t.Fatalf("the ticket is %s, hold %q; want held needs_input", tk.State, tk.Hold)
+	}
+	if p.gh.Reruns() != 2 {
+		t.Fatalf("the fake saw %d reruns, want 2", p.gh.Reruns())
+	}
+	if note := p.lastNote(t); !strings.Contains(note, "abc123") || !strings.Contains(note, "`test`") {
+		t.Fatalf("the hold's note = %q, want the head and the failed check", note)
+	}
+}
+
+func TestFiveRedHeadsAnsweredUnrelatedAreNotHeldAttemptsExhausted(t *testing.T) {
+	t.Parallel()
+	red := githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"}
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 2}, red)
+	p.answeredUnrelated(t)
+	for _, head := range []string{"def456", "0a0a0a", "1b1b1b", "2c2c2c"} {
+		// the implementer of the unrelated round pushes a new head, red on another flake
+		p.gh.SetHeadSHA(p.number, head)
+		p.gh.SetChecks(head, red)
+		if err := p.watch.Pushed(ctx, ref, head); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.watch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p.answerAgain(t)
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "" {
+		t.Fatalf("after five red heads answered unrelated the ticket is held %q, want not held", tk.Hold)
+	}
+	if impl := p.stage(t, ref, "implement"); !strings.HasSuffix(impl.ID, "_r6u_implement") || impl.State != core.TaskReady {
+		t.Fatalf("implement is %s %s, want a ready unrelated round 6", impl.ID, impl.State)
+	}
+	if p.gh.Reruns() != 5 {
+		t.Fatalf("the fake saw %d reruns, want one per head", p.gh.Reruns())
+	}
+}
+
 func TestACheckThatFailsOnRerunTooStartsTheNextRoundAndTheJournalNamesBoth(t *testing.T) {
 	t.Parallel()
-	p := newWatchedPR(t, config.Defaults{}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
+	p := newWatchedPR(t, config.Defaults{MaxReviewRounds: 1}, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
 	p.answeredUnrelated(t)
-	if impl := p.stage(t, ref, "implement"); pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady {
-		t.Fatalf("implement is round %d %s, want a ready rework in round 2", pipeline.RoundOf(impl), impl.State)
+	impl := p.stage(t, ref, "implement")
+	if pipeline.RoundOf(impl) != 2 || impl.State != core.TaskReady || !strings.Contains(impl.ID, "_r2u_") {
+		t.Fatalf("implement is %s, round %d %s; want a ready unrelated rework r2u", impl.ID, pipeline.RoundOf(impl), impl.State)
+	}
+	if tk, _ := p.tickets.Get(ctx, ref); tk.Hold != "" {
+		t.Fatalf("with max_review_rounds 1 the unrelated round held the ticket %q, want it not counted", tk.Hold)
 	}
 	r, err := tickets.ParseRef(ref)
 	if err != nil {
@@ -1380,7 +1468,11 @@ func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	early := "[[stage]]\nname = \"implement\"\nrole = \"implementer\"\n\n[[stage]]\nname = \"review\"\nrole = \"reviewer\"\nneeds = [\"implement\"]\n"
 	repos := []string{"acme/web", "acme/api"}
 	// A cache of a nanosecond: every Load reads the file again.

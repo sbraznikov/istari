@@ -102,7 +102,7 @@ func TestAfterAKilledRunTheNextOneStartsFromTheCheckpointAndTheConflicts(t *test
 	if first < 0 || next < 0 || first > next {
 		t.Fatalf("brief of the next run:\n%s", b)
 	}
-	again.Stop(0)
+	again.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 }
 
 func TestTheRunnerKnowsWhichTaskItIsWorkingOn(t *testing.T) {

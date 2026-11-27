@@ -142,7 +142,11 @@ func TestAJournalRebuiltFromTheTrackerEqualsTheStoredOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	j := journal.New(adapter, s, func() time.Time { return at })
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: n}
 	for _, e := range every {
@@ -293,7 +297,11 @@ func TestALostLogIsRestoredFromTheTickets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
 		return s
 	}
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: n}

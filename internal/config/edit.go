@@ -139,7 +139,7 @@ func projectBlock(lines []string, name string) (int, int, error) {
 		}
 		end := i + 1
 		found := false
-		for end < len(lines) && !(headerRe.MatchString(lines[end]) && !subtableRe.MatchString(lines[end])) {
+		for end < len(lines) && (!headerRe.MatchString(lines[end]) || subtableRe.MatchString(lines[end])) {
 			if m := nameRe.FindStringSubmatch(lines[end]); m != nil && value(m) == name {
 				found = true
 			}
@@ -166,11 +166,11 @@ func update(path string, change func(*document) error) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer lock.Close() //nolint:errcheck // the lock file is opened only for its flock; closing it releases the flock as well
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck // the close after it releases the flock anyway
 
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -192,9 +192,9 @@ func writeChecked(path, text string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer os.Remove(tmp.Name()) //nolint:errcheck // after the rename there is nothing left to remove; before it, the write's error is the one returned
 	if _, err := tmp.WriteString(text); err != nil {
-		tmp.Close()
+		tmp.Close() //nolint:errcheck // the write's error is the one returned
 		return err
 	}
 	if err := tmp.Close(); err != nil {

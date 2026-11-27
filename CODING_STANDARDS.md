@@ -6,7 +6,7 @@ Each rule says where it comes from: **[repo]** is a convention of this code base
 
 ## 0. What tooling checks
 
-- **S0.1** Code is gofmt-formatted, passes `go vet ./...`, and the module is tidy (`go mod tidy -diff` reports nothing). A reviewer does not flag what these tools report. [GSG] [VET]
+- **S0.1** Code is gofmt-formatted, passes `go vet ./...`, passes `golangci-lint run ./...` with the linters of `.golangci.yml`: `staticcheck`, `unused` (staticcheck's U1000), `errcheck` (the calls whose error never matters are excluded there, each with a reason) and `nolintlint` (a `//nolint:<linter> // <why>` names its linter and says why), and the module is tidy (`go mod tidy -diff` reports nothing). A reviewer does not flag what these tools report. [GSG] [VET]
 - **S0.2** There is no line length limit; break lines for meaning. [CRC] [GSG] (Uber's 99 characters is not adopted.)
 
 ## 1. Design: the model supplies data, code decides

@@ -34,7 +34,11 @@ func newRefine(t *testing.T) *refineFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	adapter := github.New(github.Options{BaseURL: gh.URL, Token: gh.Token})
 	k := core.NewTickets(s, core.TicketOptions{})
 	ref := tickets.Ref{Provider: "gh", Repo: githubtest.Repo, Number: n}

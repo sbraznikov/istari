@@ -119,7 +119,7 @@ func recordRequest(ctx context.Context, e store.Event) []store.Change {
 	rec := requestRecord{Op: k.op, Body: k.body, Actor: e.Actor, Task: e.Task, Ticket: e.Ticket}
 	if e.Type == scheduler.EventTimerScheduled {
 		var p struct{ Timer string }
-		json.Unmarshal(e.Payload, &p)
+		json.Unmarshal(e.Payload, &p) //nolint:errcheck // the payload is the scheduler's own JSON; without a timer name the record keeps none
 		rec.Timer = p.Timer
 	}
 	data, _ := json.Marshal(rec)

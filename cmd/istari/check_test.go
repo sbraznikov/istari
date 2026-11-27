@@ -48,9 +48,13 @@ func TestTicketCheckPrintsDeviationsAndExitsByThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	good := filepath.Join(t.TempDir(), "good.md")
-	os.WriteFile(good, []byte(conforming), 0o644)
+	if err := os.WriteFile(good, []byte(conforming), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	bad := filepath.Join(t.TempDir(), "bad.md")
-	os.WriteFile(bad, []byte(strings.Replace(conforming, "## Out of scope\n\n- Per-user limits.\n\n", "", 1)), 0o644)
+	if err := os.WriteFile(bad, []byte(strings.Replace(conforming, "## Out of scope\n\n- Per-user limits.\n\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if out, stderr, code := istariIn(t, repo, config, "ticket", "check", good); code != 0 {
 		t.Fatalf("a conforming ticket: exit %d\n%s%s", code, out, stderr)

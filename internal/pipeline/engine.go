@@ -42,11 +42,12 @@ type EngineOptions struct {
 	// nil: CI is not watched.
 	Checks func(ctx context.Context, ref string) (state string, ok bool)
 	// Rerun is asked on red CI before a rework round: it reruns the failed
-	// jobs of the head once when the implementer answered them as not caused
-	// by the change (spec 4.3). RerunStarted: verify waits for the new
-	// result and starts no round; RerunSpent: the head was answered again
-	// after its one rerun or refusal, so the ticket is held needs_input.
-	// nil: red CI always starts a round.
+	// jobs of the head when the implementer answered them as not caused by
+	// the change (spec 4.3). RerunStarted: verify waits for the new result
+	// and starts no round; RerunRed: the answered head is red after its
+	// rerun or refusal, so an unrelated round starts; RerunSpent: the head
+	// was answered again after its reruns were used up, so the ticket is
+	// held needs_input. nil: red CI always starts a review round.
 	Rerun func(ctx context.Context, ref string) (core.RerunOutcome, error)
 	// Ready marks a ticket's draft pull request ready for review; it is
 	// called on green CI before T6 and must succeed for T6 to fire. nil: the
@@ -169,19 +170,24 @@ func (e *Engine) read(ctx context.Context, repo string) (Pipeline, error) {
 }
 
 // taskID names a stage's task of a ticket in a round, so expanding twice
-// creates nothing new: s_<ticket hash>_r<round>_<stage>, and
-// s_<ticket hash>_r<round>c_<stage> in a conflict round (spec 4.8).
-func taskID(ref string, round int, conflict bool, stage string) string {
-	marker := ""
-	if conflict {
-		marker = conflictMarker
-	}
-	return fmt.Sprintf("%s_r%d%s_%s", ticketPrefix(ref), round, marker, stage)
+// creates nothing new: s_<ticket hash>_r<round><kind>_<stage>, the kind's
+// marker empty in a review round (spec 4.3, 4.8).
+func taskID(ref string, round int, kind roundKind, stage string) string {
+	return fmt.Sprintf("%s_r%d%s_%s", ticketPrefix(ref), round, kind, stage)
 }
 
-// conflictMarker follows the round number in the task IDs of a conflict
-// round, which does not count against max_review_rounds.
-const conflictMarker = "c"
+// roundKind is the marker that follows the round number in the task IDs of
+// a round. Only review rounds count against max_review_rounds.
+type roundKind string
+
+const (
+	reviewRound roundKind = ""
+	// conflictRound repairs the main branch's movement (spec 4.8).
+	conflictRound roundKind = "c"
+	// unrelatedRound follows a red CI the implementer answered as not caused
+	// by the change, after its rerun was red or refused (spec 4.3).
+	unrelatedRound roundKind = "u"
+)
 
 func ticketPrefix(ref string) string {
 	sum := sha256.Sum256([]byte(ref))
@@ -200,38 +206,44 @@ func RoundOf(task core.Task) int {
 	return round
 }
 
-func parseID(id string) (round int, conflict bool, stage string) {
+func parseID(id string) (round int, kind roundKind, stage string) {
 	rest, ok := strings.CutPrefix(id, "s_")
 	if !ok || len(rest) < 11 || rest[10] != '_' {
-		return 0, false, ""
+		return 0, reviewRound, ""
 	}
 	r, stage, ok := strings.Cut(rest[11:], "_")
 	if !ok || !strings.HasPrefix(r, "r") {
-		return 0, false, ""
+		return 0, reviewRound, ""
 	}
-	r, conflict = strings.CutSuffix(r[1:], conflictMarker)
+	r = r[1:]
+	for _, k := range []roundKind{conflictRound, unrelatedRound} {
+		if n, cut := strings.CutSuffix(r, string(k)); cut {
+			r, kind = n, k
+			break
+		}
+	}
 	round, err := strconv.Atoi(r)
 	if err != nil {
-		return 0, false, ""
+		return 0, reviewRound, ""
 	}
-	return round, conflict, stage
+	return round, kind, stage
 }
 
-// round is a ticket's tasks of its latest round, by stage; conflict tells
-// whether that round is a conflict round, conflicts how many of the ticket's
-// rounds were; others counts its tasks that the engine did not make.
+// round is a ticket's tasks of its latest round, by stage; kind is that
+// round's kind, uncounted how many of the ticket's rounds were conflict or
+// unrelated rounds; others counts its tasks that the engine did not make.
 type round struct {
 	n         int
-	conflict  bool
+	kind      roundKind
 	tasks     map[string]core.Task
-	conflicts int
+	uncounted int
 	others    int
 }
 
 func roundOf(ref string, all []core.Task) round {
 	r := round{tasks: map[string]core.Task{}}
 	prefix := ticketPrefix(ref) + "_"
-	conflicts := map[int]bool{}
+	uncounted := map[int]bool{}
 	for _, t := range all {
 		if t.Ticket != ref {
 			continue
@@ -240,18 +252,18 @@ func roundOf(ref string, all []core.Task) round {
 			r.others++
 			continue
 		}
-		n, conflict, stage := parseID(t.ID)
-		if conflict {
-			conflicts[n] = true
+		n, kind, stage := parseID(t.ID)
+		if kind != reviewRound {
+			uncounted[n] = true
 		}
 		switch {
 		case n > r.n:
-			r.n, r.conflict, r.tasks = n, conflict, map[string]core.Task{stage: t}
+			r.n, r.kind, r.tasks = n, kind, map[string]core.Task{stage: t}
 		case n == r.n:
 			r.tasks[stage] = t
 		}
 	}
-	r.conflicts = len(conflicts)
+	r.uncounted = len(uncounted)
 	return r
 }
 
@@ -325,13 +337,13 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		return err
 	}
 	r := roundOf(tk.Ref, all)
-	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && !r.conflict) && r.others == 0 && len(tk.Children) == 0 {
+	if from := resumeFrom(tk.State); from != nil && (r.n == 0 || r.n == 1 && r.kind == reviewRound) && r.others == 0 && len(tk.Children) == 0 {
 		// A ticket past planning without tasks was recovered from the
 		// tracker (istari recover): it gets the stages of its state on.
 		// Its first round is expanded again, as expand skips the tasks that
 		// exist: a daemon stopped while it made them left out the rest, and
 		// round.done reads a stage without a task as completed.
-		if err := e.expand(ctx, tk, 1, false, from); err != nil {
+		if err := e.expand(ctx, tk, 1, reviewRound, from); err != nil {
 			return err
 		}
 		tasks, err := e.tasks.List(ctx)
@@ -389,7 +401,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "attempts_exhausted")
 			return err
 		}
-		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, false, fmt.Sprintf("refine-%d", done+1)), Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
+		_, err = e.tasks.Create(ctx, e.opts.Actor, core.NewTask{ID: taskID(tk.Ref, 0, reviewRound, fmt.Sprintf("refine-%d", done+1)), Ticket: tk.Ref, Project: tk.Project, Role: "refiner"})
 		return err
 	case core.TicketReady:
 		// T3. Claims are what the slots and limits gate; starting gives the
@@ -412,7 +424,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 			return nil // someone made this ticket's tasks by hand: they are theirs
 		}
 		if r.n == 0 {
-			if err := e.expand(ctx, tk, 1, false, nil); err != nil {
+			if err := e.expand(ctx, tk, 1, reviewRound, nil); err != nil {
 				return err
 			}
 			tasks, err := e.tasks.List(ctx)
@@ -518,7 +530,7 @@ func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returne
 		return false, err
 	}
 	impl, ok := r.tasks["implement"]
-	started := r.conflict && ok && impl.State != core.TaskCompleted // by a reconcile that did not get to T10
+	started := r.kind == conflictRound && ok && impl.State != core.TaskCompleted // by a reconcile that did not get to T10
 	if !started {
 		if !dirty {
 			return false, nil
@@ -527,7 +539,7 @@ func (e *Engine) conflict(ctx context.Context, tk core.Ticket, r round) (returne
 		if err != nil || handled {
 			return false, err
 		}
-		if err := e.nextRound(ctx, tk.Ref, e.opts.Actor, r, true); err != nil {
+		if err := e.nextRound(ctx, tk.Ref, e.opts.Actor, r, conflictRound); err != nil {
 			return false, err
 		}
 	}
@@ -654,8 +666,10 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 		_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "pr_ready") // T6
 		return err
 	case "failure":
-		// A rerun is no round: verify waits for its result. A head answered
-		// unrelated again after its one rerun opens no second round on it.
+		// A rerun is no round: verify waits for its result. Its red result,
+		// or a refused rerun, starts an unrelated round, which does not count
+		// toward max_review_rounds; a head whose reruns are used up opens no
+		// further round on it.
 		if e.opts.Rerun != nil {
 			switch outcome, err := e.opts.Rerun(ctx, tk.Ref); {
 			case err != nil || outcome == core.RerunStarted:
@@ -663,11 +677,13 @@ func (e *Engine) verify(ctx context.Context, tk core.Ticket, r round, state stri
 			case outcome == core.RerunSpent:
 				_, err := e.tickets.SetHold(ctx, e.opts.Actor, tk.Ref, "needs_input")
 				return err
+			case outcome == core.RerunRed:
+				return e.nextRound(ctx, tk.Ref, e.opts.Actor, r, unrelatedRound)
 			}
 		}
 		// The red CI is handled once: the next round's verify waits for its
-		// implementer, and a round that leaves CI red counts toward
-		// max_review_rounds.
+		// implementer, and a round that leaves CI red unanswered counts
+		// toward max_review_rounds.
 		err := e.RequestChanges(ctx, tk.Ref, e.opts.Actor)
 		if ce := (*core.Error)(nil); errors.As(err, &ce) && ce.Code == core.CodeLimitReached {
 			return nil // the ticket is held for a human
@@ -748,9 +764,9 @@ func (e *Engine) state(ctx context.Context, ref string) core.TicketState {
 	return ""
 }
 
-// expand creates the tasks of round n, a conflict round if conflict; from,
-// if set, keeps only those stages (a new review round starts at implement).
-func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, conflict bool, from func(TaskSpec) bool, after ...string) error {
+// expand creates the tasks of round n of the kind; from, if set, keeps only
+// those stages (a new review round starts at implement).
+func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, kind roundKind, from func(TaskSpec) bool, after ...string) error {
 	ref, err := tickets.ParseRef(tk.Ref)
 	if err != nil {
 		return err
@@ -774,13 +790,13 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, conflict boo
 		var needs []string
 		for _, need := range spec.Needs {
 			if kept[need] {
-				needs = append(needs, taskID(tk.Ref, n, conflict, need))
+				needs = append(needs, taskID(tk.Ref, n, kind, need))
 			}
 		}
 		if len(needs) == 0 {
 			needs = append(needs, after...) // the round's first tasks wait for what came before
 		}
-		id := taskID(tk.Ref, n, conflict, spec.Stage)
+		id := taskID(tk.Ref, n, kind, spec.Stage)
 		if _, err := e.tasks.Get(ctx, id); err == nil {
 			continue // an earlier reconcile made it
 		}
@@ -796,8 +812,9 @@ func (e *Engine) expand(ctx context.Context, tk core.Ticket, n int, conflict boo
 // RequestChanges starts the next review round (spec section 4.3): the open
 // tasks of the round end, and a new round runs from implement on. After
 // max_review_rounds rounds the ticket is held instead.
-// Conflict rounds (spec 4.8) do not count: they repair the main branch's
-// movement, not review findings.
+// Conflict rounds (spec 4.8) and unrelated rounds (spec 4.3) do not count:
+// they repair the main branch's movement or follow CI the change did not
+// break, not review findings.
 func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) error {
 	ref, err := tickets.ParseRef(refText)
 	if err != nil {
@@ -812,18 +829,18 @@ func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) erro
 		return err
 	}
 	r := roundOf(refText, all)
-	if reviews := r.n - r.conflicts; s.MaxReviewRounds > 0 && reviews >= s.MaxReviewRounds {
+	if reviews := r.n - r.uncounted; s.MaxReviewRounds > 0 && reviews >= s.MaxReviewRounds {
 		if _, err := e.tickets.SetHold(ctx, actor, refText, "attempts_exhausted"); err != nil {
 			return err
 		}
 		return &core.Error{Code: core.CodeLimitReached, Message: fmt.Sprintf("%s has had %d review rounds, the max_review_rounds of its pipeline", refText, reviews)}
 	}
-	return e.nextRound(ctx, refText, actor, r, false)
+	return e.nextRound(ctx, refText, actor, r, reviewRound)
 }
 
-// nextRound ends the open tasks of round r and starts the next one, a
-// conflict round if conflict, from implement on.
-func (e *Engine) nextRound(ctx context.Context, refText, actor string, r round, conflict bool) error {
+// nextRound ends the open tasks of round r and starts the next one, of the
+// kind, from implement on.
+func (e *Engine) nextRound(ctx context.Context, refText, actor string, r round, kind roundKind) error {
 	tk, err := e.tickets.Get(ctx, refText)
 	if err != nil {
 		return err
@@ -842,7 +859,7 @@ func (e *Engine) nextRound(ctx context.Context, refText, actor string, r round, 
 		after = []string{impl.ID}
 	}
 	started := false
-	return e.expand(ctx, tk, r.n+1, conflict, func(spec TaskSpec) bool {
+	return e.expand(ctx, tk, r.n+1, kind, func(spec TaskSpec) bool {
 		started = started || spec.Stage == "implement"
 		return started
 	}, after...)

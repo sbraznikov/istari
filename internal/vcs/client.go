@@ -443,7 +443,7 @@ func (c *Client) send(ctx context.Context, repo, method, url string, payload []b
 	data, _ := io.ReadAll(res.Body)
 	if res.StatusCode/100 != 2 {
 		var e struct{ Message string }
-		json.Unmarshal(data, &e)
+		json.Unmarshal(data, &e) //nolint:errcheck // a body that is not GitHub's JSON error leaves the message empty; the status still says what failed
 		err := fmt.Errorf("github: %s %s: %d %s", method, strings.TrimPrefix(url, c.base), res.StatusCode, e.Message)
 		limited := ratelimit.RateLimited(res)
 		if limited {

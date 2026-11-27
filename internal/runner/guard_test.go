@@ -120,7 +120,7 @@ func TestEveryRunGetsTheGitGuardForItsOwnWorktree(t *testing.T) {
 	if s.spec.Guard != "/usr/local/bin/istari hook git-guard" || s.spec.Env["ISTARI_WORKTREE"] != s.spec.Workdir || s.spec.Workdir == "" {
 		t.Fatalf("guard %q, ISTARI_WORKTREE %q, workdir %q", s.spec.Guard, s.spec.Env["ISTARI_WORKTREE"], s.spec.Workdir)
 	}
-	s.Stop(0)
+	s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 }
 
 func TestACheckpointOnAnotherBranchIsRefused(t *testing.T) {
@@ -174,7 +174,7 @@ func TestTheAgentsGitAndGhSeeNoneOfTheUsersCredentials(t *testing.T) {
 	f.readyTask(t, 4)
 	f.start(t)
 	s := f.session(t)
-	defer s.Stop(0)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	env := os.Environ()
 	for k, v := range s.spec.Env {
 		env = append(env, k+"="+v)

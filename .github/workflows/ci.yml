@@ -25,6 +25,11 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      # The linters in .golangci.yml; any report fails the job (#228).
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+          args: ./...
       - run: go test ./...
 
   flaky:

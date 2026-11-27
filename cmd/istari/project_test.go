@@ -54,13 +54,16 @@ func istariEnv(t *testing.T, dir, config string, env []string, args ...string) (
 func snapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	files := map[string]string{}
-	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
 			data, _ := os.ReadFile(path)
 			files[path] = string(data)
 		}
 		return nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return files
 }
 
@@ -68,7 +71,9 @@ func TestInitCreatesTheIstariFilesAndRegistersTheProjectOnce(t *testing.T) {
 	t.Parallel()
 	repo := gitRepo(t, "git@github.com:acme/web.git", nil)
 	config := filepath.Join(t.TempDir(), "config.toml")
-	os.WriteFile(config, []byte("# my installation\n[daemon]\nmax_concurrent_runs = 2\n"), 0o600)
+	if err := os.WriteFile(config, []byte("# my installation\n[daemon]\nmax_concurrent_runs = 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, stderr, code := istariIn(t, repo, config, "init"); code != 0 {
 		t.Fatalf("init: exit %d %s", code, stderr)
@@ -190,7 +195,9 @@ func TestRepoAddWithAnExplicitChoiceAndRepoRemove(t *testing.T) {
 	}
 	var list repoList
 	stdout, _, _ := istariIn(t, service, config, "--json", "repo", "list")
-	json.Unmarshal([]byte(stdout), &list)
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatalf("repo list: %v\n%s", err, stdout)
+	}
 	if len(list.Repos) != 2 || list.Repos[1].DoneWhen != "released" {
 		t.Fatalf("repo list = %+v, want the human's released", list)
 	}
@@ -202,7 +209,9 @@ func TestRepoAddWithAnExplicitChoiceAndRepoRemove(t *testing.T) {
 	}
 	stdout, _, _ = istariIn(t, service, config, "--json", "repo", "list")
 	list = repoList{}
-	json.Unmarshal([]byte(stdout), &list)
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatalf("repo list after remove: %v\n%s", err, stdout)
+	}
 	if len(list.Repos) != 1 || list.Repos[0].Repo != "acme/service" {
 		t.Fatalf("after remove: %+v", list)
 	}
