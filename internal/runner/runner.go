@@ -76,6 +76,9 @@ type RunnerOptions struct {
 	// StopCheckpoint limits that checkpoint ([daemon]
 	// stop_checkpoint_timeout, spec section 4.2); 0: DefaultStopCheckpoint.
 	StopCheckpoint time.Duration
+	// After is how that checkpoint waits for its limit: the limit is reached
+	// when the channel fires; nil: time.After.
+	After func(time.Duration) <-chan time.Time
 	// Journal records what the runner notices about a run, such as a merge
 	// of the main branch given up; nil: istari's log only.
 	Journal *journal.Journal
@@ -122,6 +125,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.StopCheckpoint <= 0 {
 		opts.StopCheckpoint = DefaultStopCheckpoint
+	}
+	if opts.After == nil {
+		opts.After = time.After
 	}
 	if opts.Poll <= 0 {
 		opts.Poll = DefaultPoll
@@ -813,7 +819,7 @@ loop:
 	}
 	if stopping && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
-		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, run, end.reason+"; continue from here"); err != nil {
+		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, r.opts.After(r.opts.StopCheckpoint), run, end.reason+"; continue from here"); err != nil {
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}
