@@ -232,7 +232,11 @@ const maxComment = 60000
 
 // marker carries the entry, machine-readable, in its comment. JSON escapes
 // '<' and '>', so the entry cannot end the HTML comment early.
-var marker = regexp.MustCompile(`<!-- istari:journal (\{.*\}) -->`)
+var marker = regexp.MustCompile(regexp.QuoteMeta(markerStart) + ` (\{.*\}) -->`)
+
+// markerStart begins the marker: a comment that has it is istari's, or a
+// copy of one of istari's.
+const markerStart = "<!-- istari:journal"
 
 // Render returns the comment of an entry: a short text for people and the
 // entry itself in a marker.
@@ -244,7 +248,7 @@ func Render(e Entry) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := Text(e) + "\n\n<!-- istari:journal " + string(data) + " -->"
+	out := Text(e) + "\n\n" + markerStart + " " + string(data) + " -->"
 	if len(out) > maxComment {
 		return "", fmt.Errorf("journal: the %s entry is %d characters as a comment, more than %d", e.Kind, len(out), maxComment)
 	}

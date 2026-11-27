@@ -380,7 +380,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 
 | Entry | When it appears | Who creates it |
 |---|---|---|
-| Question and answer | the agent asked, a human answered | the agent — `istari ask`; istari records the answer verbatim, with the author and a link to the message |
+| Question and answer | the agent asked, a human answered | the agent — `istari ask`; istari records the answer verbatim, with the question's id, the author and a link to the message (rules below) |
 | Decision | a choice between options is needed | the agent prepares a decision card, a human chooses an option; or a human does it directly — with a 📌 reaction on a message or `/istari decide` |
 | Assumption | the agent decided on its own in `decide` mode | the agent — `istari assume` |
 | Plan | the plan stage is complete | planner |
@@ -389,7 +389,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
 | CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
-| Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`); the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
+| Comment | a trusted member commented on the issue while the ticket is in work (`planning` up to `awaiting_approval`) and the comment is not the answer to an open question; the comment of anyone else is not an entry | istari: the comment verbatim, with its author and a link |
 
 A decision that changes the requirements is also written into the ticket text. The text always describes the current task, and the journal explains how it was arrived at.
 
@@ -425,8 +425,10 @@ Directly, without confirmation, the agent records only assumptions (`istari assu
 
 **Rules.**
 
-- A question is first recorded in the ticket, then published in Slack. It can be answered in the question's thread in Slack or with a comment in the ticket.
-- The `needs_input` hold is lifted only after the answer is recorded in the ticket.
+- A question is first recorded in the ticket, then published in Slack. It can be answered in the question's thread in Slack, with a comment in the ticket, or with `istari ticket answer`.
+- An answer in a comment: while a ticket has an open question, in any unfinished state (`new` included), the sync takes the next comment of a trusted member (section 4.4) that has no `istari:journal` marker as an answer. istari's own comments carry the marker, also when they are posted under the same login as a human's; anyone else's comment answers nothing and stays out of the journal. A comment answers one question: the open question whose id it names, else the oldest open one. A trusted comment with no open question left is a Comment entry, as above.
+- An answer from the CLI: `istari ticket answer <ref> [--question <id>] "<text>"`, for a human only (an agent's actor is refused with `human_only`). It records the same entry, with the CLI's actor as its author; `--question` names the question, and an id that is not an open question is refused.
+- The `needs_input` hold is lifted only after the answer is recorded in the ticket, and only once every open question has an answer. A hold of another reason stays. The next run's brief lists each question with its answer, however long the journal is; the "Work state" block lists only the questions still open.
 - The agent gets its brief only from durable sources. A Slack discussion not recorded in the ticket does not exist for agents.
 - A checkpoint is a commit, a push to the ticket branch and a journal entry. Unfinished work is pushed as is: the ticket branch is a working branch. On a failure, only what was done after the last checkpoint is lost.
 - Continuing a harness session is an optimization, not a necessity. No stage relies on it.
@@ -1032,6 +1034,7 @@ istari workspace list|prune          # ticket worktrees
 
 istari ticket list|show|create|check|refine|ready|pause|resume|cancel|reopen|retry
 istari ticket unhold <ref> [--anyway]  # lift a budget_exceeded hold (section 7.5)
+istari ticket answer <ref> [--question <id>] "<text>"  # a human answers an open question; the last answer lifts needs_input (section 4.6)
 istari ticket create --file plan.yaml  # a set of linked tickets in one call
 istari ticket priority <ref> <P0..P3>
 istari ticket deps [ref]             # dependency graph and zone overlaps

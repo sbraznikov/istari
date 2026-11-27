@@ -86,7 +86,7 @@ const needsInput = "needs_input"
 // comment with a journal marker is istari's, or a copy of it: never an
 // answer.
 func (j *Journal) AnswerComment(ctx context.Context, holds *core.Tickets, ref tickets.Ref, c tickets.Comment) (bool, error) {
-	if c.Own || strings.Contains(c.Body, "<!-- istari:journal") {
+	if c.Own || strings.Contains(c.Body, markerStart) {
 		return false, nil
 	}
 	_, err := j.Answer(ctx, holds, ref, Reply{Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
