@@ -31,6 +31,9 @@ const Name = "claude-code"
 // Options configures the adapter.
 type Options struct {
 	Binary string // default "claude", looked up in PATH
+	// Clock places a usage limit's reset time, which Claude Code names only
+	// as a time of day; nil: time.Now.
+	Clock func() time.Time
 }
 
 // readGrace is how long the output may stay open after the harness exited:
@@ -40,6 +43,7 @@ const readGrace = 2 * time.Second
 // Harness starts Claude Code runs.
 type Harness struct {
 	binary string
+	clock  func() time.Time
 }
 
 var (
@@ -57,7 +61,10 @@ func New(opts Options) *Harness {
 	if opts.Binary == "" {
 		opts.Binary = "claude"
 	}
-	return &Harness{binary: opts.Binary}
+	if opts.Clock == nil {
+		opts.Clock = time.Now
+	}
+	return &Harness{binary: opts.Binary, clock: opts.Clock}
 }
 
 // Name implements harness.Harness.
@@ -262,7 +269,7 @@ func (h *Harness) start(ctx context.Context, spec harness.RunSpec, resume string
 	s := &session{
 		cmd: cmd, out: r, queue: newQueue(),
 		exited: make(chan struct{}), read: make(chan struct{}), done: make(chan struct{}),
-		seen: map[string]bool{},
+		seen: map[string]bool{}, clock: h.clock,
 	}
 	go s.readOutput()
 	go s.wait()
@@ -285,6 +292,7 @@ type session struct {
 	exited chan struct{} // the process has exited
 	read   chan struct{} // the output has been read to its end
 	done   chan struct{} // both; the result is final
+	clock  func() time.Time
 
 	mu       sync.Mutex
 	id       string
@@ -439,6 +447,9 @@ func (s *session) readOutput() {
 				switch c.Type {
 				case "text":
 					s.queue.push(harness.Event{Kind: harness.EventMessage, Text: c.Text})
+					if reset, ok := usageLimit(c.Text, s.clock()); ok {
+						s.queue.push(harness.Event{Kind: harness.EventUsageLimit, Text: c.Text, Reset: reset})
+					}
 				case "tool_use":
 					s.queue.push(harness.Event{Kind: harness.EventToolCall, Tool: c.Name, ToolInput: c.Input})
 				}
