@@ -167,3 +167,41 @@ func (s *Server) reviewOf(ctx context.Context, ticket, task string) (int, bool, 
 	}
 	return 0, false, nil
 }
+
+// replyToFinding records the implementer's reply to a finding of the
+// ticket's latest review in its journal (spec 7.6): the next reviewer reads
+// it next to the finding.
+func (s *Server) replyToFinding(ctx context.Context, r ReviewReplyRequest) (any, error) {
+	run, isAgent := runOf(ctx)
+	switch {
+	case !isAgent:
+		return nil, &core.Error{Code: runner.CodeTokenInvalid, Message: "istari review reply is for the implementer: it needs the run token in ISTARI_TOKEN"}
+	case run.Role != "implementer":
+		return nil, &core.Error{Code: CodeTokenForbidden, Message: "only the implementer replies to a finding, not the " + run.Role}
+	}
+	jt, ok := s.tracker.(journal.Tracker)
+	if !ok {
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: "replies are off: istari has no ticket tracker"}
+	}
+	ref, err := tickets.ParseRef(run.Ticket)
+	if err != nil {
+		return nil, err
+	}
+	j := journal.New(jt, s.store, s.clock)
+	entries, err := j.Stored(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	latest, ok := journal.LatestReview(entries)
+	switch {
+	case !ok:
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no review to reply to; a reply answers a finding of the latest review entry in the journal"}
+	case r.Finding > len(latest.Findings):
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("finding %d is not in the latest review of %s: it has %d; name one of them by its number in the review entry, from 1", r.Finding, run.Ticket, len(latest.Findings))}
+	}
+	e := journal.Entry{Kind: journal.FindingReply, Actor: run.Agent(), Text: r.Text, Reply: &journal.ReplyEntry{Review: latest.Task, Finding: r.Finding}}
+	if err := j.Append(ctx, ref, e); err != nil {
+		return nil, err
+	}
+	return OK{OK: true}, nil
+}
