@@ -199,15 +199,16 @@ any unfinished state ──► canceled ──► new (reopen)
 | T10 | `in_review`, `awaiting_approval` | `merge_failed` | `in_progress` | system | the PR watch sees GitHub report the PR `mergeable: false` (`dirty`) at istari's head, or the merge queue meets a conflict or red CI after the branch is updated (section 4.9). The round's open tasks are canceled and a conflict round starts from `implement`; a `mergeable` that is still unknown (`null`) changes nothing until GitHub answers. The journal records the conflict once. The repeat review is limited to the conflict resolution (sections 4.8, 4.9) |
 | T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue. Applies while a hold is set, and clears it |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
-| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled |
+| T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled. In GitHub Issues also: the human closes the issue as not planned or as a duplicate |
 | T14 | `canceled` | `reopen` | `new` | human | — |
 | T15 | `ready` | `edited` | `new` | system | the text of the ticket's mandatory sections has changed (compared by hash); editing labels and fixing typos outside these sections does not trigger the check |
+| T16 | any except `done` | `complete` | `done` | human, by closing the issue as completed; from `canceled` only the system | the ticket's PR is not merged (a merged one fires T11); runs are stopped, the ticket's open tasks are canceled. From `canceled`: a repair of a ticket that an earlier version canceled for that close (section 4.8). Applies while a hold is set, and clears it |
 
 `done` is not reopened: a regression is filed as a new ticket with a link to the original one.
 
-**A finished ticket has no open tasks.** The transition to `done` (T11, T12) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
+**A finished ticket has no open tasks.** The transition to `done` (T11, T12, T16) or `canceled` (T13) cancels every task of the ticket that is `waiting`, `ready`, `claimed` or `blocked`, in the same transaction as the transition; a claimed task loses its lease. A run of such a task is stopped with a checkpoint, as a pause stops it, and its task stays `canceled`: no attempt is spent.
 
-**Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck. Two transitions apply while a hold is set and clear it, whatever its reason: a cancel (T13) and a merged pull request (T11), because each is the end of the ticket. A finished ticket carries no hold; the `ticket.transitioned` event records the cleared reason as `hold_cleared`.
+**Hold (`hold`).** This is not a state but a flag on top of any unfinished state. While it is set, the ticket's tasks are not handed out to workers, and the state does not change. After it is cleared, the ticket continues from the same place, so the board shows at which stage it got stuck. Three transitions apply while a hold is set and clear it, whatever its reason: a cancel (T13), a merged pull request (T11) and a human's close of the issue as completed (T16), because each is the end of the ticket. A finished ticket carries no hold; the `ticket.transitioned` event records the cleared reason as `hold_cleared`.
 
 A hold set on a ticket with a running run stops the run with a checkpoint, as a pause does, and releases its task. `waiting_dependency` is not set on a ticket in `in_review` or later: its pull request is open, so istari does not stop it; the journal records once that the ticket got open needs after its pull request was opened, and a human decides.
 
@@ -224,7 +225,7 @@ A hold set on a ticket with a running run stops the run with a checkpoint, as a 
 
 - Only Core performs transitions. Every transition is a `ticket.transitioned` event with the fields `from`, `to`, `trigger`, `actor`, so the ticket history can be fully reconstructed from the log.
 - The ticket state changes only through the events in the table. Task states (section 4.2) are a finer level inside a single ticket state.
-- In GitHub Issues the state is stored as exactly one label `istari:<state>`, and a hold as the label `istari:hold:<reason>`. `done` closes the issue as completed, `canceled` as not planned. A closed issue is read as a human's cancel (T13) only when the ticket's PR is not merged: an issue closed by the merge of its PR (`Closes #n`) fires T11 instead (section 4.8). In Linear and Jira native statuses are used, according to the mapping table in the adapter config.
+- In GitHub Issues the state is stored as exactly one label `istari:<state>`, and a hold as the label `istari:hold:<reason>`. `done` closes the issue as completed, `canceled` as not planned. A closed issue of a ticket whose PR is not merged is a human's request, read by its close reason: closed as completed finishes the ticket (T16, `complete`), closed as not planned or as a duplicate cancels it (T13); no reason counts as completed, as for a closed issue without a state label. An issue closed by the merge of its PR (`Closes #n`) fires T11 instead (section 4.8). In Linear and Jira native statuses are used, according to the mapping table in the adapter config.
 - A manual label edit in the tracker is treated as a transition request. If the transition is allowed and the author has the right to perform it, it is applied; otherwise istari restores the label and explains the reason in a comment.
 
 ### 4.2 Task states
@@ -324,18 +325,22 @@ Creating a ticket and working on it are separated. For istari it does not matter
 | Part | What is checked | By whom |
 |---|---|---|
 | Structure | mandatory sections ("Context", "What needs to be done", "Acceptance criteria", "Out of scope"), ticket type, T-shirt size, priority, repository, links to dependencies; the dependency graph has no cycles and no links to nonexistent tickets; the file paths mentioned exist in the repository | by code |
-| Quality | the acceptance criteria are verifiable; there are no contradictions or ambiguities; the size matches the scope and does not exceed the allowed one; the modules and APIs mentioned exist in the code; the ticket does not duplicate or contradict tickets from the candidate list selected by code | by the refiner agent |
+| Quality | the acceptance criteria are verifiable; there are no contradictions or ambiguities; the size matches the scope and does not exceed the allowed one; the modules and APIs mentioned exist in the code; the ticket does not duplicate or contradict tickets from the candidate list selected by code; the ticket links the documents its behaviour is defined in (spec sections, ADRs and so on) and does not contradict them; a ticket that changes documented behaviour says so, and the document change is part of its work and its acceptance criteria | by the refiner agent |
+
+**Documents a ticket rests on.** A ticket's behaviour is defined in the repository's documents: the sources of truth its instructions file (`AGENTS.md` or the harness's equivalent) names, such as a spec, ADRs or a glossary. The list stays in the instructions file, not in istari's config, and the role instructions name no document of a repository. The ticket links the documents and sections it follows. A ticket that changes documented behaviour says so: the document change is part of its work and of its acceptance criteria. The refiner reports a ticket without the links, or one that changes documented behaviour without saying so, as a deviation.
 
 **Check and refinement.** The structural check by code is performed for every ticket in `new`. The refiner is an agent run that costs money, so it works only on a ticket that is admitted once it meets the standard (see Admission): its author is trusted, it was created by an agent working on an admitted ticket, or a trusted member asked to admit it. A ticket of anyone else that falls short waits in `new` for a trusted member. For a ticket the refiner works on:
 
 1. Structural check by code. Code fills in a missing priority with the default value.
 2. Code selects duplicate candidates: open and recently completed tickets with matching paths, identifiers and keywords.
-3. Refiner reads the ticket, the code and the candidate list and assesses the quality. It submits the result in structured form: verdict, size, list of deviations, list of assumptions.
+3. Refiner reads the ticket, the documents it links to, the code and the candidate list, checks the ticket against the documents and assesses the quality. It submits the result in structured form: verdict, size, list of deviations, list of assumptions.
 4. The ticket meets the standard: it proceeds to admission.
 5. The ticket does not meet the standard, but what is missing can be derived from its text and the code: refiner rewrites the ticket into the standard form. The original text is kept in a collapsed block at the end of the ticket, and a comment lists what was changed and which assumptions were made. Code checks that the original text is preserved verbatim and repeats the structural check.
 6. Information is missing that cannot be derived: refiner asks the author questions in a ticket comment and in the decisions channel and sets the hold `needs_input`. After the answer the check is repeated.
 
 Refiner does not change the meaning of the ticket and does not add requirements the author did not ask for. Everything it inferred is marked as an assumption.
+
+**A document that is wrong.** When a document is wrong or in conflict with the ticket, the code or another source of truth, and the ticket does not say it changes that document, the agent asks with `istari ask` and the ticket is held `needs_input`; it does not implement either side silently. When the fix is a document change that stands on its own, the agent files a ticket in the format of this section, and the current ticket needs it. This holds for every role (section 7.6); the refiner and the planner are expected to catch it before implementation starts.
 
 **Admission.** Meeting the standard is not yet permission to work: otherwise anyone who can create an issue would be launching agents. Transition T2 requires one of the following conditions:
 
@@ -489,9 +494,9 @@ A PR that fails at least one condition waits for a human as in `after_approval` 
 **A human merges first.** In every mode a human may merge the ticket's PR before istari does, also while the ticket is still in `in_progress` or `in_review`. When istari sees that the PR is merged, the ticket moves to `done` (T11, actor `system`), whoever merged it; istari's own review and approval steps that had not run yet are skipped, because the human who merged had the last word. istari sees the merge in two places, whichever comes first:
 
 - the PR watch records `vcs.closed` with `merged: true`;
-- sync finds the ticket's issue closed (GitHub closes it through `Closes #n`). Before reading a closed issue as a cancel (T13), sync asks whether the ticket's PR is merged; if it is, it fires T11 instead, and the issue stays closed as completed with the label `istari:done`.
+- sync finds the ticket's issue closed (GitHub closes it through `Closes #n`). Before reading a closed issue as a human's close (T13 or T16), sync asks whether the ticket's PR is merged; if it is, it fires T11 instead, and the issue stays closed as completed with the label `istari:done`.
 
-A ticket that is already `done` ignores the second sighting. A ticket that an earlier version canceled because of a human's merge (its PR merged, its issue closed by that merge) is repaired to `done` on the next sync through T11 from `canceled`, with a `ticket.transitioned` event in the log. A PR closed without a merge changes nothing; a closed issue of a ticket without a merged PR is still a cancel (T13). Merges made outside GitHub are not seen.
+A ticket that is already `done` ignores the second sighting. A ticket that an earlier version canceled because of a human's merge (its PR merged, its issue closed by that merge) is repaired to `done` on the next sync through T11 from `canceled`, with a `ticket.transitioned` event in the log. A ticket that an earlier version canceled because a human closed its issue as completed is repaired the same way, through T16 from `canceled` (actor `system`), unless a human set its label `istari:canceled`; sync reads the close reason of a canceled ticket's issue once for this. A PR closed without a merge changes nothing; a closed issue of a ticket without a merged PR is read by its close reason (section 4.1): T16 for completed, T13 for not planned or a duplicate. Merges made outside GitHub are not seen.
 
 **A pull request in conflict.** A merge into the main branch can leave the open PR of another ticket in conflict. The PR watch reads GitHub's `mergeable` and `mergeable_state` with the PR, again whenever the head or the base moved; `dirty` means conflicts. A ticket in `in_review` or `awaiting_approval` whose PR is `dirty` at istari's current head returns to `in_progress` through T10 `merge_failed`: the open tasks of its round (review, approve, merge) are canceled, and a conflict round starts from `implement`, whose run merges the main branch and resolves the conflict first (section 4.6, step 2). The journal records the conflict once per head, naming the PR and the head; GitHub does not name the files, so the implement run, whose merge finds them, records them in the journal once and its brief lists them. The review of the conflict round looks only at the conflict resolution. While GitHub has not computed `mergeable` yet (`null`), nothing changes; a reading for a head istari has already replaced is stale and ignored. A ticket in `in_progress` is left alone: its next run merges the main branch anyway. A conflict round does not count against `max_review_rounds` (section 4.3).
 
@@ -846,6 +851,8 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 
 The working rules of these two roles are written in istari's built-in instructions (`.istari/roles/implementer.md`, `.istari/roles/reviewer.md`). The reference for them is Matt Pocock's skills `implement`, `tdd`, `pr` and `code-review` (`github.com/mattpocock/skills`): the skills themselves are not installed into istari and are not a dependency, but the agents' behavior follows them as closely as possible.
 
+**Every role: the sources of truth.** The refiner, the planner, the implementer and the reviewer work by the sources of truth that the repository's instructions file names, plus the documents the ticket links to (section 4.5). The role instructions name no document of a repository. The refiner and the planner read the linked documents and check the ticket against them; each slice of the plan names the sections of the documents it follows. An ADR is not broken: a decision is replaced by a new ADR. Every role instruction says what to do when a document is wrong or in conflict: ask with `istari ask`, stop on `needs_input`, and file a document-fix ticket the current one needs when the fix stands on its own (section 4.5).
+
 **Planner: the split.** A ticket larger than `max_size` gets a `split:` in its plan (`istari plan submit`): a list of child tickets with these fields.
 
 | Field | Content |
@@ -876,7 +883,7 @@ Code writes the table at the end of each body (type, size, the parent's priority
 - **Red first.** The failing test is written first, then exactly as much code as it takes to make it pass. No code for the future.
 - **Refactoring is not part of the cycle.** It belongs to the review stage.
 - **Forbidden kinds of tests.** Implementation-coupled ones (mocks of internal parts, testing private methods, verification that bypasses the interface) and tautological ones (the expected value is computed the same way as in the code).
-- **Project language.** Test and interface names are taken from `GLOSSARY.md`, and decisions from ADRs are followed.
+- **Project language.** Test and interface names are taken from the project's glossary among its sources of truth (`GLOSSARY.md` here), and decisions from ADRs are followed; a decision is replaced by a new ADR, not broken.
 
 **Implementer: PR description** (after `pr`).
 
@@ -891,7 +898,7 @@ No preambles, the prose is brief.
 **Reviewer: review along two axes** (after `code-review`).
 
 - **Standards**: whether the code conforms to the documented standards of the repository. Sources: `CODING_STANDARDS.md`, `CONTRIBUTING.md` and other files about how to write code. On top of them Fowler's baseline set of code smells always applies: mysterious name, duplicated code, feature envy, data clumps, primitive obsession, repeated switches, shotgun surgery, divergent change, speculative generality, message chains, middle man, refused bequest.
-- **Spec**: whether the code implements the ticket correctly: what is not done or done partially, what is done beyond what was requested, what is done wrong. For each finding a line of the ticket is quoted.
+- **Spec**: whether the code implements the ticket correctly, checked against the ticket and against the documents the ticket links to: what is not done or done partially, what is done beyond what was requested, what is done wrong. A change of documented behaviour the ticket does not ask for is reported, and so is code that contradicts an ADR. For each finding a line of the ticket is quoted, or a line of a file of the repository at the pull request's base, such as the spec section or the ADR it breaks.
 
 Review rules:
 
@@ -901,7 +908,7 @@ Review rules:
 - A code smell is worded as a judgment call ("possibly feature envy"), because it depends on context. What tools already check is not flagged: the reviewer's brief lists the checks of the main branch's `.istari/pipeline.toml` by name and command (section 12).
 - The comparison is made against the base of the ticket branch relative to the main branch.
 - The result is one line per axis: the number of findings and the most serious one on that axis.
-- The report is submitted in structured form (`istari review submit`): each finding has an axis, a file and line, a kind, and a quote from the ticket or the standard.
+- The report is submitted in structured form (`istari review submit`): each finding has an axis, a file and line, a kind, and a quote with its source: for the Spec axis the ticket or a file of the repository by its path, for a standard its standards file, for a code smell the baseline set (`instructions`).
 
 **What istari does differently from the reference.** The skills are designed for a human at the keyboard; istari agents work without one.
 
@@ -946,14 +953,17 @@ The principle: less model, more deterministic code. The model is non-determinist
 
 | The model's work | What code does before | What code checks after |
 |---|---|---|
-| The refiner assesses ticket quality and size | structural check, existence of paths, selection of duplicate candidates | result schema; the original text is preserved verbatim; repeated structural check |
+| The refiner assesses ticket quality and size, against the documents the ticket links to | structural check, existence of paths, selection of duplicate candidates | result schema; the original text is preserved verbatim; repeated structural check |
 | The refiner rewrites the ticket | — | the mandatory sections are in place; changes in meaning are listed as assumptions |
 | The planner writes the plan, seams, zone and breakdown | passes the size and the zones of tickets in progress | plan schema; the zone's paths exist; the zone's size matches the ticket's size; the graph of child tickets has no cycles |
 | The implementer writes code and tests | prepares the worktree, restricts the tools and the token's permissions | at a checkpoint it runs the checks from the config itself and records their real result; the slice contains a change to tests; the changes are compared against the zone |
 | The implementer opens a PR | — | the full set of checks has passed; the description sections are in place; the link to the ticket and the trailer in the commits are set by code |
-| The reviewer looks for findings along two axes | computes the diff, collects the sources of standards, marks files outside the zone | report schema; the file and line of each finding are in the diff; the quote is present verbatim in the ticket or the standard. A finding that fails the check is discarded and noted in the journal |
+| The reviewer looks for findings along two axes | computes the diff, collects the sources of standards, marks files outside the zone | report schema; the file and line of each finding are in the diff; the quote is present verbatim in its source: the ticket or, for the Spec axis, any file of the repository at the main branch, the pull request's base; the standard; the baseline set. A finding that fails the check, or names a file the main branch does not have, is discarded and noted in the journal |
 | An agent prepares a decision card | — | schema; at least two options; the recommendation refers to an existing option; sizes are from the scale |
 | An agent makes an assumption | — | the assumption counter and the `max_assumptions` limit; assumptions block auto-merge |
+| An agent finds a document wrong or in conflict (section 4.5) | — | the question holds the ticket `needs_input`; a document-fix ticket it files goes through the standard like any other |
+
+Which documents are a repository's sources of truth is the repository's knowledge, not code's: the instructions file names them and the ticket links them. Code does not index or list them; it only checks that a Spec quote is verbatim in the file it names.
 
 **Checks that are run by code, not by the model.** `.istari/pipeline.toml` defines the commands as named checks (section 12): type check, fast tests, full suite, and any check of the project's own, such as format, lint or dependencies, each with `at` saying when it runs. The agent can run them itself as often as it likes, but only the result of a run performed by code goes into the journal, which lists every check by its name, green or red, and keeps a red one's output:
 

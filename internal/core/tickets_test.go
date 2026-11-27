@@ -61,6 +61,13 @@ var transitionTable = []struct {
 	{"T13", core.TicketAwaitingApproval, "cancel", core.TicketCanceled},
 	{"T14", core.TicketCanceled, "reopen", core.TicketNew},
 	{"T15", core.TicketReady, "edited", core.TicketNew},
+	{"T16", core.TicketNew, "complete", core.TicketDone},
+	{"T16", core.TicketReady, "complete", core.TicketDone},
+	{"T16", core.TicketPlanning, "complete", core.TicketDone},
+	{"T16", core.TicketInProgress, "complete", core.TicketDone},
+	{"T16", core.TicketInReview, "complete", core.TicketDone},
+	{"T16", core.TicketAwaitingApproval, "complete", core.TicketDone},
+	{"T16", core.TicketCanceled, "complete", core.TicketDone},
 }
 
 // pathTo lists triggers that bring a new ticket to a state.
@@ -153,7 +160,7 @@ var allStates = []core.TicketState{
 
 var allTriggers = []string{
 	"accept", "start", "plan_accepted", "split", "pr_ready", "changes_requested", "review_passed",
-	"merge_failed", "merged", "children_done", "cancel", "reopen", "edited", "create", "approve",
+	"merge_failed", "merged", "children_done", "cancel", "reopen", "edited", "complete", "create", "approve",
 }
 
 func inTable(from core.TicketState, trigger string) bool {
@@ -247,6 +254,13 @@ func TestHoldReasonsAndHeldTransitions(t *testing.T) {
 	}
 	if got, err := tickets.Fire(ctx, "human:alex", ref, "reopen"); err != nil || got.State != core.TicketNew || got.Hold != "" {
 		t.Fatalf("reopen after cancel = %s/%q, %v; want new without a hold", got.State, got.Hold, err)
+	}
+	// So does a human's close as completed (T16).
+	if _, err := tickets.SetHold(ctx, "system", ref, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tickets.Fire(ctx, "human:alex", ref, "complete"); err != nil || got.State != core.TicketDone || got.Hold != "" {
+		t.Fatalf("complete while held = %s/%q, %v; want done without a hold", got.State, got.Hold, err)
 	}
 }
 
