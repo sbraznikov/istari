@@ -1064,37 +1064,102 @@ func TestARerunThatFailsTooGetsItsOwnCIEntry(t *testing.T) {
 	}
 }
 
-func TestASecondUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T) {
+func TestARedRerunIsReportedAnsweredRedOnce(t *testing.T) {
 	t.Parallel()
-	gh, _, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	_, _, w, _, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Rerun: "failure"})
 	mustPoll(t, w)
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
+		t.Fatalf("Rerun of an unanswered red head = %v, %v; want none", got, err)
+	}
 	if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
 		t.Fatalf("Unrelated: %v", err)
 	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunStarted {
+		t.Fatalf("Rerun = %v, %v; want started", got, err)
+	}
+	mustPoll(t, w) // the rerun is red too
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunRed {
+		t.Fatalf("Rerun after the red rerun = %v, %v; want red, as answered", got, err)
+	}
 	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunNone {
-		t.Fatalf("Rerun refused by GitHub = %v, %v; want none started, so the round starts", got, err)
+		t.Fatalf("Rerun again without a new answer = %v, %v; want none", got, err)
+	}
+}
+
+func TestAThirdUnrelatedAnswerOnARedHeadGitHubWouldNotRerunIsSpent(t *testing.T) {
+	t.Parallel()
+	gh, _, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure"}) // no Rerun: GitHub refuses
+	mustPoll(t, w)
+	for i, reason := range []string{"flaky", "flaky again"} {
+		if err := w.Unrelated(ctx, ref.String(), reason); err != nil {
+			t.Fatalf("Unrelated %d: %v", i+1, err)
+		}
+		if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunRed {
+			t.Fatalf("Rerun %d refused by GitHub = %v, %v; want red as answered, so the unrelated round starts", i+1, got, err)
+		}
 	}
 	if err := w.Unrelated(ctx, ref.String(), "still flaky"); err != nil {
-		t.Fatalf("second Unrelated: %v", err)
+		t.Fatalf("third Unrelated: %v", err)
 	}
 	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunSpent {
-		t.Fatalf("Rerun after the second answer = %v, %v; want spent", got, err)
+		t.Fatalf("Rerun after the third answer = %v, %v; want spent", got, err)
 	}
 	if gh.Reruns() != 0 {
 		t.Fatalf("the fake saw %d reruns, want none", gh.Reruns())
 	}
+	notes := notesOf(t, j, ref)
+	if len(notes) != 3 {
+		t.Fatalf("notes = %q, want two refused reruns and the spent answer", notes)
+	}
+	if spent := notes[2]; !strings.Contains(spent, "abc123") || !strings.Contains(spent, "still flaky") || !strings.Contains(spent, "not rerun again") {
+		t.Fatalf("spent note = %q, want the head, the reason and that it is not rerun again", spent)
+	}
+}
+
+func TestARedHeadIsRerunTwiceAndTheThirdAnswerIsSpentEvenAfterARestart(t *testing.T) {
+	t.Parallel()
+	gh, s, w, j, ref := redHead(t, githubtest.Check{Name: "test", Status: "completed", Conclusion: "failure", Log: "--- FAIL: TestFlaky", Rerun: "failure"})
+	mustPoll(t, w)
+	for i := range 2 {
+		if err := w.Unrelated(ctx, ref.String(), "flaky"); err != nil {
+			t.Fatalf("Unrelated %d: %v", i+1, err)
+		}
+		if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunStarted {
+			t.Fatalf("Rerun %d = %v, %v; want started", i+1, got, err)
+		}
+		mustPoll(t, w) // the rerun is red again
+		// istari restarts: a new watcher on the same store
+		w = vcs.NewWatcher(vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)), s, vcs.WatcherOptions{Journal: j})
+	}
+	if err := w.Unrelated(ctx, ref.String(), "still flaky"); err != nil {
+		t.Fatalf("third Unrelated: %v", err)
+	}
+	if got, err := w.Rerun(ctx, ref.String()); err != nil || got != core.RerunSpent {
+		t.Fatalf("Rerun after the third answer = %v, %v; want spent", got, err)
+	}
+	if gh.Reruns() != 2 {
+		t.Fatalf("the fake saw %d reruns, want 2", gh.Reruns())
+	}
+	pr, err := w.PullRequestOf(ctx, ref.String())
+	if err != nil || pr.Reruns != 2 {
+		t.Fatalf("tracked = %+v, %v; want the head rerun twice", pr, err)
+	}
+	notes := notesOf(t, j, ref)
+	if spent := notes[len(notes)-1]; !strings.Contains(spent, "abc123") || !strings.Contains(spent, "`test`") || !strings.Contains(spent, "not rerun again") {
+		t.Fatalf("spent note = %q, want the head, the failed check and that it is not rerun again", spent)
+	}
+}
+
+// notesOf are the texts of the ticket's journal notes.
+func notesOf(t *testing.T, j *journal.Journal, ref tickets.Ref) []string {
+	t.Helper()
 	var notes []string
 	for _, e := range storedEntries(t, j, ref) {
 		if e.Kind == journal.Note {
 			notes = append(notes, e.Text)
 		}
 	}
-	if len(notes) != 2 {
-		t.Fatalf("notes = %q, want the refused rerun and the spent answer", notes)
-	}
-	if spent := notes[1]; !strings.Contains(spent, "abc123") || !strings.Contains(spent, "still flaky") || !strings.Contains(spent, "not rerun again") {
-		t.Fatalf("spent note = %q, want the head, the reason and that it is not rerun again", spent)
-	}
+	return notes
 }
 
 func TestOnlyARedHeadCanBeAnsweredUnrelatedAndOnlyAnAnsweredOneRerun(t *testing.T) {

@@ -12,7 +12,7 @@ You implement one ticket on its own branch, in its own worktree.
 
 When the reviewer flags a code smell, either fix the code or reply in the pull request why it is not a flaw here.
 When the work shows that the size turned out larger than the ticket says, report it in a comment with your reasons.
-When CI on your pull request is red only in a test your change does not touch (a known flake), change nothing and answer with `istari complete --ci-unrelated "<which test and why it is not this change>"`: istari reruns the failed jobs once instead of starting another round. If the rerun is red too, the next round starts.
+When CI on your pull request is red only in a test your change does not touch (a known flake), change nothing and answer with `istari complete --ci-unrelated "<which test and why it is not this change>"`: istari reruns the failed jobs instead of starting another round. If the rerun is red too, the next round starts; it does not count toward `max_review_rounds`. One head is rerun at most twice: a third answer on it holds the ticket for a human.
 
 Every green slice is a checkpoint: commit, push, journal entry. When something
 is unclear, use `istari ask` for a fact and a decision card (`istari decide
