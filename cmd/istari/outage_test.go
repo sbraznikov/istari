@@ -96,6 +96,7 @@ func TestARefineResultIsAcceptedThroughAShortServerOutage(t *testing.T) {
 	if runs[0].Reason != "completed: refined" {
 		t.Fatalf("the refiner run ended %q, want completed on its first submit\nagent log:\n%s", runs[0].Reason, out)
 	}
+	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, issue), "task.completed", 1) // the run ends before its task does
 	if task := showTask(t, d, runs[0].Task); task.State != "completed" || task.Attempts != 0 {
 		t.Fatalf("the refine task is %+v, want completed with no failed attempt", task)
 	}
