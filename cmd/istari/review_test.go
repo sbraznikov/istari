@@ -57,19 +57,20 @@ func newReviewed(t *testing.T, agent string) reviewed {
 // daemon whose claude is agent.
 func newRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
-	return recoverWith(t, startDaemonWithConfig, agent, state, before)
+	return recoverWith(t, startDaemonWithConfig, agent, state, "", before)
 }
 
 // newSteppedRecovered is newRecovered on a stepped daemon: its PR watch and
 // pipeline run one pass per step.
 func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
-	return recoverWith(t, startSteppedDaemon, agent, state, before)
+	return recoverWith(t, startSteppedDaemon, agent, state, "", before)
 }
 
 // recoverWith seeds a ticket with an open pull request, starts a daemon
-// with start and recovers the ticket.
-func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
+// with start and recovers the ticket. extra is appended to the daemon's
+// config, e.g. a [defaults] table.
+func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, env ...string) *daemon, agent, state, extra string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
@@ -104,7 +105,7 @@ func recoverWith(t *testing.T, start func(t *testing.T, dataDir, config string, 
 	bin := t.TempDir()
 	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(agent, binary, log))
 	config := filepath.Join(t.TempDir(), "config.toml")
-	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n\n%s", dataDir, githubtest.Repo, extra)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

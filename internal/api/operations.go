@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -132,6 +134,17 @@ type (
 		Actor string `json:"actor"`
 		Ref   string `json:"ref"`
 	}
+	TicketGrantRoundRequest struct {
+		Actor  string `json:"actor"`
+		Ref    string `json:"ref"`
+		Reason string `json:"reason"`
+	}
+	// TicketGrantRoundResponse says whether a review round was granted and
+	// which round it is.
+	TicketGrantRoundResponse struct {
+		Granted bool `json:"granted"`
+		Round   int  `json:"round,omitempty"`
+	}
 	TicketUnholdBudgetRequest struct {
 		Actor  string `json:"actor"`
 		Ref    string `json:"ref"`
@@ -159,6 +172,8 @@ func needActor(actor string) error {
 	}
 	return nil
 }
+
+func (r *TicketGrantRoundRequest) validate() error { return needActor(r.Actor) }
 
 func (r *TaskCreateRequest) validate() error   { return needActor(r.Actor) }
 func (r *TaskActRequest) validate() error      { return needActor(r.Actor) }
@@ -287,6 +302,24 @@ func (s *Server) operations() map[string]operation {
 		}),
 		"ticket.resume": write(ticketAgain, func(ctx context.Context, r TicketResumeRequest) (any, error) {
 			return s.resume(ctx, r.Actor, r.Ref)
+		}),
+		// ticket.grant_round grants a ticket whose review rounds ran out one
+		// more (spec 4.3, 7.6): humans only. The journal notes who granted
+		// it and why. A repeat answers the last grant.
+		"ticket.grant_round": write(s.lastGrant, func(ctx context.Context, r TicketGrantRoundRequest) (any, error) {
+			round, granted, err := s.engine.GrantRound(ctx, r.Ref, r.Actor, r.Reason)
+			if err != nil || !granted {
+				return TicketGrantRoundResponse{}, err
+			}
+			ref, err := tickets.ParseRef(r.Ref)
+			if err != nil {
+				return nil, err
+			}
+			note := journal.Entry{Kind: journal.Note, Actor: r.Actor, Text: fmt.Sprintf("granted review round %d: %s", round, r.Reason)}
+			if err := s.journal.Append(ctx, ref, note); err != nil {
+				return nil, err
+			}
+			return TicketGrantRoundResponse{Granted: true, Round: round}, nil
 		}),
 		"ticket.unhold_budget": write(ticketAgain, func(ctx context.Context, r TicketUnholdBudgetRequest) (any, error) {
 			return s.unholdBudget(ctx, r.Actor, r.Ref, r.Anyway)
@@ -548,6 +581,25 @@ func (s *Server) operations() map[string]operation {
 			return k.ClearHold(ctx, r.Actor, r.Ref, r.Reason)
 		}),
 	}
+}
+
+// lastGrant answers a repeated ticket.grant_round from the ticket's last
+// ticket.round_granted: only a write that granted a round leaves a record.
+func (s *Server) lastGrant(ctx context.Context, done requestRecord) (any, error) {
+	events, err := s.store.Read(ctx, "", store.Filter{Ticket: done.Ticket, TypePrefix: core.EventTicketRoundGranted}, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return TicketGrantRoundResponse{}, nil
+	}
+	var p struct {
+		Round int `json:"round"`
+	}
+	if err := json.Unmarshal(events[len(events)-1].Payload, &p); err != nil {
+		return nil, err
+	}
+	return TicketGrantRoundResponse{Granted: true, Round: p.Round}, nil
 }
 
 // ciUnrelated records an implementer's answer that the red CI of its pull
