@@ -409,6 +409,60 @@ func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
 	}
 }
 
+// fileAndSpend lets ticket A (S, $5) spend $4, then files ticket B from it, as
+// an implementer does, with size M, and lets B spend $4: the shared $5 is
+// spent.
+func fileAndSpend(t *testing.T, f *runFixture, n int) (a, b core.Ticket) {
+	t.Helper()
+	a, task := f.readyTask(t, n)
+	sized(t, f, a.Ref, "S")
+	f.start(t)
+	spendAndFinish(t, f, task.ID)
+	b, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", n+1), Project: "web", Title: "Found", BudgetOf: a.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, b.Ref, "M")
+	f.fire(t, b.Ref, "accept", "start")
+	spendAndFinish(t, f, implement(t, f, b.Ref).ID)
+	return a, b
+}
+
+func TestAnAdmittedFiledTicketCountsAgainstABudgetOfItsOwnSize(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	a, b := fileAndSpend(t, f, 80)
+	// The admission happens now, after B's first run, on the clock runs use;
+	// the fixture's ticket clock stands still in the past.
+	admit := core.NewTickets(f.store, core.TicketOptions{})
+	if _, err := admit.OwnBudget(ctx, "human:alex", b.Ref); err != nil {
+		t.Fatal(err)
+	}
+	next := implement(t, f, b.Ref)
+	s := f.session(t)
+	if s.spec.MaxBudgetUSD != 15 {
+		t.Fatalf("B's run after the admission is capped at $%v, want its own M budget of $15", s.spec.MaxBudgetUSD)
+	}
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, next.ID, core.TaskCompleted)
+	// B's earlier $4 stays on A's budget: A's $5 is still spent.
+	if blocked := f.waitTask(t, implement(t, f, a.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("A's task block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+}
+
+func TestAFiledTicketNoHumanAdmittedIsBlockedByTheSharedBudget(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: budgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	_, b := fileAndSpend(t, f, 90)
+	if blocked := f.waitTask(t, implement(t, f, b.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("B's task block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+}
+
 // waitHold waits until the ticket's hold is want. It reads the hold rather
 // than waiting on a ticket.hold_set event, since a ticket held a second time
 // already has the first.
