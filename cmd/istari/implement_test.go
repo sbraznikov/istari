@@ -92,11 +92,7 @@ func implementFixture(t *testing.T, full, implementer string) (d *daemon, gh *gi
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	d.step(t, "sync")     // the ticket, admitted
 	d.step(t, "pipeline") // its plan task
-	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, n), "task.completed", 1)
-	d.step(t, "pipeline") // the accepted plan moves the ticket to in_progress
-	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	d.releaseImplementer(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, n), log)
 	return d, gh, n, log
 }
 

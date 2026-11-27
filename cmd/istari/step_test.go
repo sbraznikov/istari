@@ -39,6 +39,19 @@ func (d *daemon) waitForEvents(t *testing.T, ticket, prefix string, n int) {
 	}
 }
 
+// releaseImplementer runs ticket from its open plan task to in_progress and
+// then lets its gated implementer run: the plan task ends, the next pipeline
+// pass takes the accepted plan, and the file log+".go" opens the gate the
+// agent script waits on.
+func (d *daemon) releaseImplementer(t *testing.T, ticket, log string) {
+	t.Helper()
+	d.waitForEvents(t, ticket, "task.completed", 1)
+	d.step(t, "pipeline") // the accepted plan moves the ticket to in_progress
+	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // stepStatus posts a step and returns the status and body of the answer.
 func (d *daemon) stepStatus(t *testing.T, loop string) (int, string) {
 	t.Helper()

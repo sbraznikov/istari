@@ -289,13 +289,7 @@ needs = ["implement"]
 func earlyReview(t *testing.T, report string) (d *daemon, gh *githubtest.Server, ticket int, log string) {
 	t.Helper()
 	d, gh, ticket, log = pipelineDaemon(t, earlyReviewPipeline, func(log string) string { return fmt.Sprintf(earlyReviewAgent, binary, log, report) })
-	// The plan task ends; the next pipeline pass takes the accepted plan
-	// and moves the ticket to in_progress.
-	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, ticket), "task.completed", 1)
-	d.step(t, "pipeline")
-	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	d.releaseImplementer(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, ticket), log)
 	return d, gh, ticket, log
 }
 
