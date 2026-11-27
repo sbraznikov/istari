@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,7 +209,10 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 	}
 
 	// Without the final result line (the process died), the totals are the
-	// sum over messages, each message counted once although it spans lines.
+	// sum over messages, each message counted once although it spans lines,
+	// and the cost is the estimate by claude-opus-5-5's prices: 2700 in,
+	// 65 out, 800 read, 100 write = $0.0108 + $0.0013 + $0.00016 + $0.0008.
+	const estimate = 0.01306
 	truncated := filepath.Join(t.TempDir(), "stream.jsonl")
 	full, _ := os.ReadFile("testdata/stream.jsonl")
 	lines := strings.Split(strings.TrimSpace(string(full)), "\n")
@@ -220,8 +224,88 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	if res, _ = s.Wait(); res.Usage != want || res.ExitCode != 1 {
-		t.Errorf("without a result line: usage %+v exit %d, want %+v exit 1", res.Usage, res.ExitCode, want)
+	res, _ = s.Wait()
+	cost := res.Usage.CostUSD
+	res.Usage.CostUSD = 0
+	if res.Usage != want || !near(cost, estimate) || res.ExitCode != 1 {
+		t.Errorf("without a result line: tokens %+v cost %v exit %d, want %+v cost %v exit 1", res.Usage, cost, res.ExitCode, want, estimate)
+	}
+}
+
+// writeStream writes lines as a stream file for FAKE_STREAM.
+func writeStream(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stream.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// usageCosts runs the fake on a stream and returns the cost of each usage
+// event and the run's result.
+func usageCosts(t *testing.T, lines ...string) ([]float64, harness.Result) {
+	t.Helper()
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": writeStream(t, lines...)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var costs []float64
+	for _, e := range collect(t, s) {
+		if e.Kind == harness.EventUsage {
+			costs = append(costs, e.Usage.CostUSD)
+		}
+	}
+	res, err := s.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	return costs, res
+}
+
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+func TestUsageEventsCarryACostDuringTheRunBeforeAnyResultLine(t *testing.T) {
+	t.Parallel()
+	// claude-opus-5-5 at $4 input, $20 output, $0.20 cache read and $8
+	// cache write per million tokens:
+	// 1000 in + 500 out = $0.004 + $0.010 = $0.014;
+	// 10 in + 100 out + 200000 read + 10000 write = $0.00004 + $0.002 + $0.04 + $0.08 = $0.12204.
+	costs, res := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+		`{"type":"assistant","session_id":"s","message":{"id":"m2","model":"claude-opus-5-5","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}}`,
+	)
+	if len(costs) != 2 || !near(costs[0], 0.014) || !near(costs[1], 0.12204) {
+		t.Fatalf("usage event costs = %v, want [0.014 0.12204]", costs)
+	}
+	if !near(res.Usage.CostUSD, 0.13604) {
+		t.Errorf("without a result line the run cost = %v, want the estimate 0.13604", res.Usage.CostUSD)
+	}
+}
+
+func TestAModelMissingFromThePriceTableIsPricedAtItsHighestRate(t *testing.T) {
+	t.Parallel()
+	// The highest rate in the table is claude-opus-5-5's: 1000 in + 500 out
+	// = $0.014. A message that names no model is priced the same way.
+	costs, _ := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-future-9","content":[],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+		`{"type":"assistant","session_id":"s","message":{"id":"m2","content":[],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+	)
+	if len(costs) != 2 || !near(costs[0], 0.014) || !near(costs[1], 0.014) {
+		t.Fatalf("usage event costs = %v, want [0.014 0.014]", costs)
+	}
+}
+
+func TestTheResultLinesCostIsTheRunsCostEvenBelowTheEstimate(t *testing.T) {
+	t.Parallel()
+	// The estimate of the message is $0.12204; Claude Code says $0.05.
+	_, res := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}}`,
+		`{"type":"result","subtype":"success","is_error":false,"session_id":"s","total_cost_usd":0.05,"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}`,
+	)
+	if res.Usage.CostUSD != 0.05 {
+		t.Fatalf("the run cost = %v, want Claude Code's 0.05", res.Usage.CostUSD)
 	}
 }
 
@@ -511,6 +595,17 @@ func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
 	res, _ := s.Wait()
 	if !res.Failed || res.Reason != "error_max_budget_usd" || res.Usage.CostUSD != 5.01 {
 		t.Fatalf("result = %+v, want a failed run with its reason and cost", res)
+	}
+	if !res.BudgetSpent {
+		t.Errorf("result = %+v, want the budget reported spent", res)
+	}
+}
+
+func TestARunThatFailsForAnotherReasonHasNotSpentItsBudget(t *testing.T) {
+	t.Parallel()
+	_, res := usageCosts(t, `{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s","total_cost_usd":1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if !res.Failed || res.BudgetSpent {
+		t.Fatalf("result = %+v, want a failed run whose budget is not spent", res)
 	}
 }
 

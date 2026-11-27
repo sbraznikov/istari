@@ -3,6 +3,8 @@ package runner_test
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 var budgets = map[string]float64{"XS": 2, "S": 5, "M": 15, "L": 30}
@@ -473,6 +476,77 @@ func TestAFiledTicketNoHumanAdmittedIsBlockedByTheSharedBudget(t *testing.T) {
 	if blocked := f.waitTask(t, implement(t, f, b.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
 		t.Fatalf("B's task block kind = %q, want budget_exceeded", blocked.BlockKind)
 	}
+}
+
+// budgetedImplementer starts the run of an XS ticket ($2) #n with stop
+// checkpoints and a live session, and writes a file in its worktree, as an
+// agent at work does.
+func budgetedImplementer(t *testing.T, n int) (*runFixture, core.Ticket, core.Task, fakeSession) {
+	t.Helper()
+	f := newRunner(t, runner.RunnerOptions{})
+	f.h.live = true
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		Budgets: budgets, DataDir: f.data, Projects: []string{"web"}, Lease: time.Minute,
+		Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+		Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
+	})
+	tk, task := f.readyTask(t, n)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	s := f.session(t)
+	if err := os.WriteFile(filepath.Join(s.spec.Workdir, "spent-work.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f, tk, task, s
+}
+
+// stoppedForBudget checks the end of a run that spent its budget: one stop
+// checkpoint, the task blocked budget_exceeded with no attempt spent, and
+// the ticket held budget_exceeded.
+func stoppedForBudget(t *testing.T, f *runFixture, tk core.Ticket, task core.Task) {
+	t.Helper()
+	blocked := f.waitTask(t, task.ID, core.TaskBlocked)
+	if blocked.BlockKind != "budget_exceeded" || blocked.Attempts != 0 {
+		t.Fatalf("the task is blocked %q with %d attempts, want budget_exceeded with none spent", blocked.BlockKind, blocked.Attempts)
+	}
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 || events[0].Ticket != tk.Ref {
+		t.Fatalf("checkpoints = %d, want one for the stopped run", len(events))
+	}
+	f.waitHold(t, tk.Ref, "budget_exceeded")
+}
+
+func TestARunWhoseUsagePassesItsBudgetIsStoppedWithACheckpoint(t *testing.T) {
+	t.Parallel()
+	// $3 reported while the run goes on, past the XS budget of $2.
+	f, tk, task, s := budgetedImplementer(t, 100)
+	s.out <- harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 3}}
+	stoppedForBudget(t, f, tk, task)
+}
+
+func TestTheHarnesssFinalCostCountsAgainstTheBudgetEvenBelowTheEstimate(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 101)
+	s.out <- harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 1.5}} // the estimate
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0, Usage: harness.Usage{CostUSD: 0.5}} // the harness's own figure
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	implement(t, f, tk.Ref)
+	next := f.session(t)
+	defer next.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
+	if next.spec.MaxBudgetUSD != 1.5 {
+		t.Fatalf("the next run is capped at $%v, want the XS budget of $2 less the harness's $0.50", next.spec.MaxBudgetUSD)
+	}
+}
+
+func TestARunTheHarnessEndsAtItsOwnBudgetCapEndsAsABudgetStop(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 102)
+	// Claude Code ends the run at --max-budget-usd; istari stopped nothing.
+	s.finish <- harness.Result{ExitCode: 1, Failed: true, Reason: "error_max_budget_usd", BudgetSpent: true, Usage: harness.Usage{CostUSD: 2.01}}
+	stoppedForBudget(t, f, tk, task)
 }
 
 // waitHold waits until the ticket's hold is want. It reads the hold rather

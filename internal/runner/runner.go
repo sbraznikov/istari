@@ -818,6 +818,11 @@ loop:
 		}
 	}
 	<-streamDone
+	if end == nil && res.BudgetSpent {
+		// The harness ended the run at its own cap, the run budget: the same
+		// end as istari's own budget stop (spec sections 7.2 and 7.5).
+		end = &ending{reason: fmt.Sprintf("the harness spent the run budget of $%.2f", run.BudgetUSD), outcome: r.blockForBudget(tk.Ref), save: true}
+	}
 
 	// A stopping run's task stays this run's until its checkpoint and its
 	// end are recorded: a stop checkpoint may outlast the lease (spec
@@ -965,10 +970,12 @@ func (r *Runner) event(ctx context.Context, run Run, typ string, payload map[str
 	}
 }
 
-// end records how the run ended.
+// end records how the run ended. The harness's own total, when it reports
+// one, is the run's cost, even below the sum of its usage events, which may
+// be an estimate (spec section 7.5).
 func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage harness.Usage, reason string) {
-	if res.Usage.CostUSD > usage.CostUSD {
-		usage = res.Usage // the harness's own total, when it reports one
+	if res.Usage.CostUSD > 0 {
+		usage = res.Usage
 	}
 	if _, err := r.runs.end(ctx, run.ID, reason, &runExit{code: res.ExitCode, usage: usage}); err != nil {
 		log.Printf("istari: run %s: %v", run.ID, err)
