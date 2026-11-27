@@ -3,13 +3,17 @@ package runner_test
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/harness"
 	"github.com/sbraznikov/istari/internal/runner"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 )
 
 var budgets = map[string]float64{"XS": 2, "S": 5, "M": 15, "L": 30}
@@ -407,6 +411,142 @@ func TestLiftingABudgetHoldAnywayLetsOnlyOneRunStart(t *testing.T) {
 		t.Fatalf("a second run started after one unhold --anyway: capped at $%v", s.spec.MaxBudgetUSD)
 	default:
 	}
+}
+
+// filedBudgets are budgets in which every $4 run fits its cap: a run that
+// spends more than its cap is stopped for budget, so B's first run must not
+// outspend what A left.
+var filedBudgets = map[string]float64{"S": 8, "M": 12}
+
+// fileAndSpend lets ticket A (S, $8) spend $4, then files ticket B from it, as
+// an implementer does, with size M, and lets B spend $4: the shared $8 is
+// spent.
+func fileAndSpend(t *testing.T, f *runFixture, n int) (a, b core.Ticket) {
+	t.Helper()
+	a, task := f.readyTask(t, n)
+	sized(t, f, a.Ref, "S")
+	f.start(t)
+	spendAndFinish(t, f, task.ID)
+	b, err := f.tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: fmt.Sprintf("gh:acme/web#%d", n+1), Project: "web", Title: "Found", BudgetOf: a.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized(t, f, b.Ref, "M")
+	f.fire(t, b.Ref, "accept", "start")
+	spendAndFinish(t, f, implement(t, f, b.Ref).ID)
+	return a, b
+}
+
+func TestAnAdmittedFiledTicketCountsAgainstABudgetOfItsOwnSize(t *testing.T) {
+	t.Parallel()
+	// The runner's and the admission's clock, in Unix nanoseconds. It starts
+	// two hours back, so that an hour on it stays behind the task leases,
+	// which run on the wall clock.
+	var now atomic.Int64
+	now.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	clock := func() time.Time { return time.Unix(0, now.Load()).UTC() }
+	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets, Clock: clock}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	a, b := fileAndSpend(t, f, 80)
+	// A human admits B an hour after B's first run started.
+	now.Add(int64(time.Hour))
+	admit := core.NewTickets(f.store, core.TicketOptions{Clock: clock})
+	if _, err := admit.OwnBudget(ctx, "human:alex", b.Ref); err != nil {
+		t.Fatal(err)
+	}
+	next := implement(t, f, b.Ref)
+	s := f.session(t)
+	if s.spec.MaxBudgetUSD != 12 {
+		t.Fatalf("B's run after the admission is capped at $%v, want its own M budget of $12", s.spec.MaxBudgetUSD)
+	}
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0}
+	f.waitTask(t, next.ID, core.TaskCompleted)
+	// B's earlier $4 stays on A's budget: A's $8 is still spent.
+	if blocked := f.waitTask(t, implement(t, f, a.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("A's task block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+}
+
+func TestAFiledTicketNoHumanAdmittedIsBlockedByTheSharedBudget(t *testing.T) {
+	t.Parallel()
+	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	_, b := fileAndSpend(t, f, 90)
+	if blocked := f.waitTask(t, implement(t, f, b.Ref).ID, core.TaskBlocked); blocked.BlockKind != "budget_exceeded" {
+		t.Fatalf("B's task block kind = %q, want budget_exceeded", blocked.BlockKind)
+	}
+}
+
+// budgetedImplementer starts the run of an XS ticket ($2) #n with stop
+// checkpoints and a live session, and writes a file in its worktree, as an
+// agent at work does.
+func budgetedImplementer(t *testing.T, n int) (*runFixture, core.Ticket, core.Task, fakeSession) {
+	t.Helper()
+	f := newRunner(t, runner.RunnerOptions{})
+	f.h.live = true
+	ws := runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")})
+	f.runner = runner.New(f.store, f.tasks, f.tickets, ws, runner.RunnerOptions{
+		Budgets: budgets, DataDir: f.data, Projects: []string{"web"}, Lease: time.Minute,
+		Slots:       []runner.Slot{{Profile: "implementer-1", Role: "implementer", Harness: harness.Profile{Harness: f.h.name}}},
+		Checkpoints: runner.NewCheckpoints(ws, journal.New(nil, f.store, nil), nil),
+	})
+	tk, task := f.readyTask(t, n)
+	sized(t, f, tk.Ref, "XS")
+	f.start(t)
+	s := f.session(t)
+	if err := os.WriteFile(filepath.Join(s.spec.Workdir, "spent-work.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f, tk, task, s
+}
+
+// stoppedForBudget checks the end of a run that spent its budget: one stop
+// checkpoint, the task blocked budget_exceeded with no attempt spent, and
+// the ticket held budget_exceeded.
+func stoppedForBudget(t *testing.T, f *runFixture, tk core.Ticket, task core.Task) {
+	t.Helper()
+	blocked := f.waitTask(t, task.ID, core.TaskBlocked)
+	if blocked.BlockKind != "budget_exceeded" || blocked.Attempts != 0 {
+		t.Fatalf("the task is blocked %q with %d attempts, want budget_exceeded with none spent", blocked.BlockKind, blocked.Attempts)
+	}
+	if events := f.events(t, "journal.checkpoint"); len(events) != 1 || events[0].Ticket != tk.Ref {
+		t.Fatalf("checkpoints = %d, want one for the stopped run", len(events))
+	}
+	f.waitHold(t, tk.Ref, "budget_exceeded")
+}
+
+func TestARunWhoseUsagePassesItsBudgetIsStoppedWithACheckpoint(t *testing.T) {
+	t.Parallel()
+	// $3 reported while the run goes on, past the XS budget of $2.
+	f, tk, task, s := budgetedImplementer(t, 100)
+	s.out <- harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 3}}
+	stoppedForBudget(t, f, tk, task)
+}
+
+func TestTheHarnesssFinalCostCountsAgainstTheBudgetEvenBelowTheEstimate(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 101)
+	s.out <- harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 1.5}} // the estimate
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0, Usage: harness.Usage{CostUSD: 0.5}} // the harness's own figure
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	implement(t, f, tk.Ref)
+	next := f.session(t)
+	defer next.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
+	if next.spec.MaxBudgetUSD != 1.5 {
+		t.Fatalf("the next run is capped at $%v, want the XS budget of $2 less the harness's $0.50", next.spec.MaxBudgetUSD)
+	}
+}
+
+func TestARunTheHarnessEndsAtItsOwnBudgetCapEndsAsABudgetStop(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 102)
+	// Claude Code ends the run at --max-budget-usd; istari stopped nothing.
+	s.finish <- harness.Result{ExitCode: 1, Failed: true, Reason: "error_max_budget_usd", BudgetSpent: true, Usage: harness.Usage{CostUSD: 2.01}}
+	stoppedForBudget(t, f, tk, task)
 }
 
 // waitHold waits until the ticket's hold is want. It reads the hold rather

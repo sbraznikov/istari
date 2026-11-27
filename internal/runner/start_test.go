@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sbraznikov/istari/internal/core"
 	"github.com/sbraznikov/istari/internal/runner"
 )
 
@@ -157,6 +158,47 @@ func TestOnceTheHarnessStartsAgainTheNextClaimAfterThePauseStartsARun(t *testing
 		after(pause)
 		if s := f.session(t); s.spec.Env["ISTARI_TASK"] != task.ID {
 			t.Fatalf("the run is of task %q, want %q", s.spec.Env["ISTARI_TASK"], task.ID)
+		}
+	})
+}
+
+// count returns how many lines contain want.
+func (l *daemonLog) count(want string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Count(l.buf.String(), want)
+}
+
+func TestASlotStartsNoRunOnATicketWithARunAndTheLogSaysWhyOnce(t *testing.T) {
+	// Not parallel: sets the output of the process's standard logger.
+	logged := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunner(t, runner.RunnerOptions{})
+		tk, running := f.readyTask(t, 1)
+		// Another runner's slot has a run of the ticket's first task.
+		elsewhere, err := f.tasks.Claim(ctx, "agent:implementer-2", running.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting, err := f.tasks.Create(ctx, "system", core.NewTask{Ticket: tk.Ref, Project: "web", Role: "implementer"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.start(t)
+		after(5 * runner.DefaultPoll)
+		if claims := f.events(t, "task.claimed"); len(claims) != 1 {
+			t.Fatalf("%d claims while the ticket has a run, want only the first", len(claims))
+		}
+		want := "runner implementer-1: ticket_busy: ticket " + tk.Ref + " has a run of task " + running.ID
+		if n := logged.count(want); n != 1 {
+			t.Fatalf("the log says %d times %q, want once:\n%s", n, want, logged.buf.String())
+		}
+		if err := f.tasks.Complete(ctx, elsewhere); err != nil {
+			t.Fatal(err)
+		}
+		after(runner.DefaultPoll)
+		if s := f.session(t); s.spec.Env["ISTARI_TASK"] != waiting.ID {
+			t.Fatalf("the run is of task %q, want the waiting %q", s.spec.Env["ISTARI_TASK"], waiting.ID)
 		}
 	})
 }

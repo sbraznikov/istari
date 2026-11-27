@@ -31,6 +31,9 @@ type fakeHarness struct {
 	started chan fakeSession
 	events  []harness.Event
 	fail    error // Start returns it while set
+	// live sessions take their events from the test on out, which Stop
+	// closes, instead of yielding events at once.
+	live bool
 }
 
 // failStart makes Start return err until it is called with nil.
@@ -42,6 +45,7 @@ type fakeSession struct {
 	out    chan harness.Event
 	stop   chan struct{}
 	once   *sync.Once
+	live   bool
 }
 
 func newFakeHarness(name string, events ...harness.Event) *fakeHarness {
@@ -59,11 +63,13 @@ func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Se
 	if fail != nil {
 		return nil, fail
 	}
-	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}}
-	for _, e := range h.events {
-		s.out <- e
+	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}, live: h.live}
+	if !h.live {
+		for _, e := range h.events {
+			s.out <- e
+		}
+		close(s.out)
 	}
-	close(s.out)
 	h.started <- s
 	return s, nil
 }
@@ -71,10 +77,21 @@ func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Se
 func (s fakeSession) ID() string                   { return "fake" }
 func (s fakeSession) Events() <-chan harness.Event { return s.out }
 func (s fakeSession) Send(string) error            { return harness.ErrSendNotSupported }
-func (s fakeSession) Stop(time.Duration) error     { s.once.Do(func() { close(s.stop) }); return nil }
+func (s fakeSession) Stop(time.Duration) error {
+	s.once.Do(func() {
+		close(s.stop)
+		if s.live {
+			close(s.out)
+		}
+	})
+	return nil
+}
 func (s fakeSession) Wait() (harness.Result, error) {
 	select {
 	case r := <-s.finish:
+		if s.live {
+			s.Stop(0) //nolint:errcheck // always nil; ends the live events as the process's exit does
+		}
 		return r, nil
 	case <-s.stop:
 		return harness.Result{ExitCode: -1}, nil
@@ -258,14 +275,15 @@ func TestAnExitWithoutIstariCompleteFailsTheTask(t *testing.T) {
 
 func TestTheLeaseIsRenewedWhileTheRunLivesAndTheTokenDiesWithIt(t *testing.T) {
 	t.Parallel()
-	f := newRunner(t, runner.RunnerOptions{Lease: 600 * time.Millisecond})
+	const lease = 1500 * time.Millisecond
+	f := newRunner(t, runner.RunnerOptions{Lease: lease})
 	_, task := f.readyTask(t, 5)
 	f.start(t)
 	s := f.session(t)
 	token := s.spec.Env["ISTARI_TOKEN"]
-	time.Sleep(1500 * time.Millisecond) // two and a half leases
-	if got := f.waitTask(t, task.ID, core.TaskClaimed); !got.LeaseUntil.After(time.Now()) {
-		t.Fatalf("the lease ran out while the run lived: until %s", got.LeaseUntil)
+	f.waitRenewedPastTheClaim(t, lease)
+	if got := f.waitTask(t, task.ID, core.TaskClaimed); got.Owner != "agent:implementer-1" {
+		t.Fatalf("the living run's task is held by %s, want agent:implementer-1", got.Owner)
 	}
 	if _, err := f.runner.Runs().ByToken(ctx, token); err != nil {
 		t.Fatalf("the token of a living run: %v", err)
@@ -389,7 +407,7 @@ func TestTheRefinerReadsTheMainBranchWithoutATicketWorktree(t *testing.T) {
 	dir := s.spec.Workdir
 	s.finish <- harness.Result{ExitCode: 1}
 	f.waitEvent(t, "run.exited")
-	for deadline := time.Now().Add(5 * time.Second); exists(dir); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(waitFor); exists(dir); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the refiner's checkout outlived its run")
 		}
@@ -600,15 +618,21 @@ func pausedWithSlowChecks(t *testing.T, n int, check string, hooks map[string]st
 
 func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	t.Parallel()
-	// The check outlasts the lease twice over, so a run that stopped
+	// The check holds the checkpoint until the run renewed the lease past
+	// one lease length after the check started, so a run that stopped
 	// renewing would lose it.
-	f, s, task := pausedWithSlowChecks(t, 17, "sleep 3", nil, runner.RunnerOptions{Lease: stopLease})
+	gates := t.TempDir()
+	checking, release := filepath.Join(gates, "checking"), filepath.Join(gates, "release")
+	check := "touch '" + checking + "'; while [ ! -e '" + release + "' ]; do sleep 0.05; done"
+	f, s, task := pausedWithSlowChecks(t, 17, check, nil, runner.RunnerOptions{Lease: stopLease})
 	// The scheduler expires leases on its ticks; here the test does.
 	// The state is read before the events: a task that leaves claimed
 	// between the two reads is then seen with its task.released event.
-	for deadline := time.Now().Add(30 * time.Second); ; {
+	var checked time.Time // when the test saw the check start
+	released := false     // whether the test let the check end
+	for deadline := time.Now().Add(2 * waitFor); ; {
 		if time.Now().After(deadline) {
-			t.Fatal("the paused run did not release its task")
+			t.Fatalf("the paused run did not release its task (check started: %v, let end: %v)", !checked.IsZero(), released)
 		}
 		if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) > 0 {
 			t.Fatalf("leases expired while the run stopped: %v, %v", expired, err)
@@ -623,7 +647,19 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 		if got.State != core.TaskClaimed {
 			t.Fatalf("the stopping run's task is %s, want claimed until the run ended", got.State)
 		}
+		if checked.IsZero() && exists(checking) {
+			checked = time.Now()
+		}
+		if !released && !checked.IsZero() && renewedAfter(ctx, f, checked.Add(stopLease)) {
+			if err := os.WriteFile(release, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			released = true
+		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if !released {
+		t.Fatal("the run released its task before its checkpoint outlasted the lease")
 	}
 	f.waitTask(t, task.ID, core.TaskReady)
 	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
@@ -636,41 +672,71 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 	}
 }
 
-// stopLease is the lease of the tests of a stopping run: a lease this long
-// does not lapse when a loaded machine, as CI's race job, stalls the
-// renewals for a moment.
-const stopLease = 1500 * time.Millisecond
+// stopLease is the lease of the tests of a stopping run; the run sees the
+// hold on a renewal, every third of it. A lease this long does not lapse
+// when a loaded machine, as CI's race job, stalls the renewals for a moment.
+const stopLease = 5 * time.Second
+
+// stopLimit is the stop checkpoint limit of the tests that reach it, as the
+// journal note names it. The clock never reaches it: the test's reachedOnce
+// ends the limit, so however slow the machine the limit is reached only
+// while the hook or check the test blocks runs (#278).
+const stopLimit = 15 * time.Minute
+
+// blocks is a shell script that touches started and then blocks until the
+// checkpoint kills it at its limit; 90s caps it should the limit never come.
+func blocks(started string) string {
+	return "touch '" + started + "'; sleep 90"
+}
+
+// reachedOnce is the timer of a stop checkpoint limit (RunnerOptions.After)
+// that fires once started exists: the limit is reached when the hook or
+// check the test blocks has started, and never before.
+func reachedOnce(t *testing.T, started string) func(time.Duration) <-chan time.Time {
+	t.Helper()
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	t.Cleanup(func() { close(done); wg.Wait() })
+	return func(time.Duration) <-chan time.Time {
+		at := make(chan time.Time, 1)
+		wg.Go(func() {
+			for !exists(started) {
+				select {
+				case <-done:
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			at <- time.Now()
+		})
+		return at
+	}
+}
 
 func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
 	t.Parallel()
-	f, s, task := pausedWithSlowChecks(t, 18, "sleep 5", nil, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: time.Second})
-	abandonedAtItsLimit(t, f, s, task, time.Second) // the check alone takes 5s
+	checking := filepath.Join(t.TempDir(), "checking")
+	f, s, task := pausedWithSlowChecks(t, 18, blocks(checking), nil, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, checking)})
+	abandonedAtItsLimit(t, f, s, task, stopLimit)
 }
 
 func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
 	t.Parallel()
 	// The remote holds the push past the limit and then refuses it.
 	pushing := filepath.Join(t.TempDir(), "pushing")
-	hooks := map[string]string{"pre-receive": "touch '" + pushing + "'; sleep 20; exit 1"}
-	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: 6 * time.Second})
-	abandonedAtItsLimit(t, f, s, task, 6*time.Second)
-	if _, err := os.Stat(pushing); err != nil {
-		t.Fatalf("the push never reached the remote (%v), want the limit reached while pushing", err)
-	}
+	hooks := map[string]string{"pre-receive": blocks(pushing) + "; exit 1"}
+	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, pushing)})
+	abandonedAtItsLimit(t, f, s, task, stopLimit)
 }
 
 // abandonedAtItsLimit checks that a paused run whose stop checkpoint
-// outlasts limit ends soon after it, its task released, with the work
-// uncommitted in the worktree, nothing pushed, no checkpoint and a journal
-// note naming the limit.
+// outlasts limit ends, its task released, with the work uncommitted in the
+// worktree, nothing pushed, no checkpoint and a journal note naming the
+// limit.
 func abandonedAtItsLimit(t *testing.T, f *runFixture, s fakeSession, task core.Task, limit time.Duration) {
 	t.Helper()
 	head := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"))
-	paused := time.Now()
 	f.waitTask(t, task.ID, core.TaskReady)
-	if took := time.Since(paused); took > limit+3*time.Second {
-		t.Fatalf("the paused run ended after %s, want the checkpoint abandoned at its limit of %s", took, limit)
-	}
 	f.waitEvent(t, "run.exited")
 	if got := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD")); got != head {
 		t.Errorf("HEAD = %s, want %s as before the checkpoint", got, head)
@@ -711,7 +777,8 @@ func TestAStopCheckpointWhosePushOutlastsItsLimitIsKept(t *testing.T) {
 	t.Parallel()
 	// The remote takes the push at once and answers after the limit: what
 	// it took is the checkpoint, not abandoned work.
-	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": "sleep 12"}, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: 6 * time.Second})
+	taken := filepath.Join(t.TempDir(), "taken")
+	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": blocks(taken)}, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, taken)})
 	f.waitTask(t, task.ID, core.TaskReady)
 	f.waitEvent(t, "run.exited")
 	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
@@ -865,12 +932,42 @@ func renewedPastTheClaim(ctx context.Context, f *runFixture, lease time.Duration
 	if err != nil || len(claims) == 0 {
 		return false
 	}
+	return renewedAfter(ctx, f, claims[0].At.Add(lease))
+}
+
+// waitRenewedPastTheClaim waits until a task.renewed event is dated after
+// the lease of the first task.claimed event ran out.
+func (f *runFixture) waitRenewedPastTheClaim(t *testing.T, lease time.Duration) {
+	t.Helper()
+	for deadline := time.Now().Add(waitFor); !renewedPastTheClaim(ctx, f, lease); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the lease was not renewed past the lease of the claim: claimed at %v, renewed at %v, want a renewal after claim+%s",
+				eventTimes(f, "task.claimed"), eventTimes(f, "task.renewed"), lease)
+		}
+	}
+}
+
+// eventTimes lists when the events of type typ happened, for a failure
+// message.
+func eventTimes(f *runFixture, typ string) []string {
+	events, err := f.store.Read(ctx, "", store.Filter{TypePrefix: typ}, 0)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	times := make([]string, 0, len(events))
+	for _, e := range events {
+		times = append(times, e.At.Format("15:04:05.000"))
+	}
+	return times
+}
+
+// renewedAfter tells whether a task.renewed event is dated after at.
+func renewedAfter(ctx context.Context, f *runFixture, at time.Time) bool {
 	renewals, err := f.store.Read(ctx, "", store.Filter{TypePrefix: "task.renewed"}, 0)
 	if err != nil {
 		return false
 	}
-	until := claims[0].At.Add(lease)
-	return slices.ContainsFunc(renewals, func(e store.Event) bool { return e.At.After(until) })
+	return slices.ContainsFunc(renewals, func(e store.Event) bool { return e.At.After(at) })
 }
 
 // seedMain commits a file to the main branch of the fixture's repository.

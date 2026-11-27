@@ -45,7 +45,7 @@ type Options struct {
 
 // transient are refusals that may pass later: the action is tried again on
 // the next tick instead of being recorded as refused.
-var transient = []string{core.CodePaused, core.CodeLimitReached, core.CodeNoReadyTask}
+var transient = []string{core.CodePaused, core.CodeLimitReached, core.CodeTicketBusy, core.CodeNoReadyTask}
 
 // TimerState is the state of a delayed action.
 type TimerState string

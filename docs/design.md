@@ -360,6 +360,7 @@ The project key `admission` (section 12) says whether the first condition applie
 
 - A child of a split has a budget of its own, by its own size from `budget_usd` (section 4.7). The parent was split because it is too large to work on, and `XL` has no budget. What the planner spent on the parent stays on the parent and does not count against the children.
 - A ticket an agent files while working on another ticket (a dependency, a problem found on the way) shares the budget of the ticket it was filed from: the runs of both count against one budget, of that ticket's size. An agent cannot escape its budget by filing tickets. A ticket filed while working on a child of a split shares that child's budget.
+- A ticket an agent filed gets a budget of its own, by its own size, once a trusted member admits it with `istari ticket ready`: the member has judged it a piece of work of its own. The command does this in `new` and in any later unfinished state, since the ticket was usually admitted by inheritance already; past `new` it changes no state. Each run counts against the budget its ticket spent from when the run started: the runs before the admission stay on the budget of the ticket it was filed from, the runs after it count against its own. The ticket's journal says so, naming the member, and the event `ticket.budget_owned` records it with the actor. A second `istari ticket ready` changes nothing. Until a human admits it this way, the ticket keeps sharing the budget; the label `istari:ready` and `/istari ready` do not change it. The children of a split are not affected.
 
 **Changes after admission.** Editing a ticket in `ready` triggers the check again (T15). Editing at later stages does not change the state: the worker receives the edit as a message in the thread.
 
@@ -392,6 +393,7 @@ Work on a ticket can be interrupted at any moment and for any reason. Another ag
 | Plan | the plan stage is complete | planner |
 | Checkpoint | a meaningful step of work is complete | implementer — `istari checkpoint`: what is done and what is next. The commit, check results and the list of changed files are added by code |
 | Review result | the review stage is complete | reviewer; details stay in the PR |
+| Reply | the implementer answers a finding of the latest review: why it is not a flaw in this place (section 7.6) | implementer — `istari review reply --finding <n> "<why>"`; code adds the review task, and refuses a number that is not a finding of the latest review |
 | Transition | the state or the hold changed | istari |
 | Note | istari noticed something that cost no attempt, e.g. a review handed out before its ticket was in review (section 4.2) | istari |
 | CI failure | verify saw a failed check on the pull request's head (section 4.3); once more when the rerun of that head fails too | istari: the check's name, the commit, a link to the run and the end of the failure output, with a mark when it was cut; or why the log could not be read; for a failed rerun, that the rerun failed too |
@@ -709,7 +711,7 @@ For each task the Runner:
 3. issues a run token: it lives as long as the lease and is valid only for this ticket;
 4. assembles the brief only from durable sources: the ticket text, its journal, the branch, the PR (section 4.6). Slack history and past harness sessions are not part of the brief;
 5. starts the harness and reads its streaming output, turning it into `run.*` events;
-6. renews the lease while the process is alive; watches the budget and the timeout. When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal. The lease is renewed until this checkpoint and the run's end are recorded; the checkpoint itself is limited by `stop_checkpoint_timeout` (section 4.2);
+6. renews the lease while the process is alive; watches the budget and the timeout. A run the harness ends at its own spending cap counts as a budget stop (section 7.5). When stopping on timeout, budget or pause it saves a checkpoint: pushes the current work to the branch and records it in the journal. The lease is renewed until this checkpoint and the run's end are recorded; the checkpoint itself is limited by `stop_checkpoint_timeout` (section 4.2);
 7. on completion calls `complete` or `fail`. The worktree stays: it belongs to the ticket, not to the run.
 
 **Ticket worktree.** Work on each ticket happens in a separate `git worktree`. The main working copy of the repository, in which the human works, is not used or changed by agents.
@@ -717,7 +719,7 @@ For each task the Runner:
 | Event | What happens to the worktree |
 |---|---|
 | the ticket moves to `planning` (T3) | created in `<data_dir>/workspaces/<project>/<repo>/<ticket>` on a new branch off the main branch |
-| plan, implement, review stages | all runs of the ticket work in the same worktree, one after another |
+| plan, implement, review stages | all runs of the ticket work in the same worktree, one after another: the ticket has at most one run at a time (rules below) |
 | hold, pause, waiting for review | the worktree is kept |
 | return for rework (T7, T9, T10) | the same worktree is used |
 | PR merged, by istari or by a human, ticket in `done` (T11) | the worktree and the local branch are deleted |
@@ -727,12 +729,13 @@ For each task the Runner:
 Rules:
 
 - One worktree, one ticket. Two tickets never share a working copy, so they can proceed in parallel in one repository.
+- One ticket, one run at a time. A ticket has at most one task claimed by an agent (`agent:<profile>`, the owner a Runner slot claims with), whose run works in its worktree. A claim by an agent of another task of that ticket is refused with `ticket_busy`, whatever the tasks' `needs` say: a task created by hand or by an API client waits as a round's task does. The check is part of the claim itself, so two claims at the same moment cannot both pass. The refused task stays `ready` without using an attempt, the slot takes the next ready task of another ticket, and the daemon log says once which ticket and which running task keep it waiting. The task is handed out after the run ends. Claims by code or by a human (verify, a gate) start no run in the worktree: they are neither refused nor do they hold a ticket back.
 - The refiner works before the worktree is created and reads code from the main branch without write access.
 - A parent ticket without tasks of its own has no worktree: only the child tickets have one.
 - Before deleting, istari checks that the worktree has no uncommitted or unpushed changes. If there are any, the worktree is not deleted and a message goes to the `#agents-ops` channel: losing work is worse than leaving a directory behind.
 - `istari doctor` finds worktrees without a ticket and tickets in `done` whose worktree was not removed; `istari workspace prune` removes them.
 
-**Who starts agents.** Only the Runner, a part of the daemon. The human starts the daemon itself once (`istari daemon`, or as a system service via `istari daemon install`); after that agents start without their involvement. A run starts when three conditions are met: the ticket has a task in the `ready` state, there is no hold on the ticket, and there is a free slot within the parallel run limit.
+**Who starts agents.** Only the Runner, a part of the daemon. The human starts the daemon itself once (`istari daemon`, or as a system service via `istari daemon install`); after that agents start without their involvement. A run starts when four conditions are met: the ticket has a task in the `ready` state, there is no hold on the ticket, no other run of the ticket is running, and there is a free slot within the parallel run limit.
 
 This is the same "claim, not get assigned" model as in Board: nobody decides that a task will go to `implementer-2`; the first free slot takes it. The task is claimed by the Runner slot itself in ordinary code, not by the model inside the harness: it takes the ready task of its role with the highest priority (the oldest one on a tie), obtains a lease on it and only then starts the harness. The model starts working with a task already in hand and cannot take someone else's.
 
@@ -830,6 +833,7 @@ istari decide --propose --file card.yaml   # decision card: problem, state, opti
 istari assume "Taking the cache size from the current config"
 istari checkpoint "Cache layer rewritten; next is the race test"   # commit, push, entry in the ticket
 istari pr open --title "..."            # creates a PR with a link to the ticket
+istari review reply --finding 2 "the duplicate is the spec's own wording"   # implementer: why finding 2 of the latest review is not a flaw here (section 7.6)
 istari schedule --in 5m "check CI"
 istari complete "PR #482 is ready for review"
 istari complete --ci-unrelated "red only in the known flaky TestX, not this change"   # implementer: rerun the failed jobs, at most twice per head (section 4.3)
@@ -840,8 +844,10 @@ The usage instructions are installed into the workspace as a skill (`.istari/ski
 ### 7.5 Budgets and loop protection
 
 - Per-run limits: time, tokens, cost. Per ticket: total cost (budget by size, section 4.7), number of attempts, number of review rounds.
-- Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it (section 4.5).
+- Whose budget a ticket spends: its own, by its size, and a child of a split too; a ticket an agent filed during the work spends the budget of the ticket it was filed from, together with it, until a trusted member admits it with `istari ticket ready`; from then on its runs spend a budget of its own size, and its earlier runs stay counted on the budget it shared (section 4.5).
 - Exceeding a limit moves the task to `blocked --kind budget_exceeded` and sets the hold `budget_exceeded` on its ticket (section 4.1), so the block shows on the board and in the tracker. It requires a human decision.
+- Where the cost of a running run comes from: the harness's usage events. A harness that reports no running figure, as Claude Code, has its adapter estimate the cost of each model call from a price table per model; a model missing from the table is priced at the table's highest rate, so the estimate errs toward stopping. The estimate drives the Runner's budget stop during the run (section 7.2). When the run ends, the harness's final figure (Claude Code's `total_cost_usd`) replaces the estimate and counts against the ticket's budget, also when it is lower; the estimate counts only for a run that ends without a final figure, such as one stopped or killed.
+- A run that the harness ends at its own spending cap (`--max-budget-usd`, Claude Code's `error_max_budget_usd`) ends as a budget stop by the Runner: a stop checkpoint, the task blocked `budget_exceeded`, the ticket held `budget_exceeded`, and no attempt spent.
 - The decision on an exceeded budget: a trusted member raises the ticket's size label, which raises its budget (section 4.7), then runs `istari ticket unhold <ref>`. The command unblocks the ticket's tasks blocked `budget_exceeded` and then clears the hold, so an interrupted call leaves the ticket held and a repeat finishes it. While the budget is still spent, the command refuses and names the size label and `--anyway`; `--anyway` lifts the hold without raising the size. On any other hold the command refuses and names the command that lifts it (`istari ticket resume` for `paused`, `istari ticket retry` for `attempts_exhausted`).
 - How far `--anyway` reaches: exactly one more run of the ticket. The next claim of one of its tasks starts that run although the budget is spent, capped at the full budget of the ticket's size (of the ticket whose budget it shares), never uncapped. The grant is recorded with the unhold, so it survives a daemon restart, and the start of the ticket's next run uses it up, even of a run that finds budget left because the size was raised meanwhile. After that run the budget is checked as before: a budget still spent blocks the task `budget_exceeded` and holds the ticket again, and a further run needs another `unhold --anyway` or a larger size. Spending past the budget stays a decision per run.
 - Global concurrency limits: per project, per role, for the whole installation.
@@ -930,7 +936,7 @@ Review rules:
 | Standards axis: a documented repository standard is violated | return for rework (T7) |
 | Standards axis: a code smell from the baseline set | return for rework (T7) |
 
-Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies in the PR why it is not a flaw in this place. In the second case the reviewer, in the next round, accepts the explanation or insists. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets the hold `attempts_exhausted` and waits for a human. A human's `istari ticket retry` grants it one more round, recorded in the journal with who granted it and why (section 4.3); findings in that round hold it again.
+Any finding returns the ticket for rework. For a code smell the implementer either fixes the code or replies why it is not a flaw in this place, with `istari review reply --finding <n>`: the reply is an entry in the ticket journal (section 4.6), not a comment on the PR. In the second case the reviewer, in the next round, accepts the explanation or insists: its brief shows each finding of the latest review with the replies to it next to it, and keeps those replies however long the journal is. The number of rounds is set in the istari config by the `max_review_rounds` parameter (3 by default); once they are exhausted, the ticket gets the hold `attempts_exhausted` and waits for a human. A human's `istari ticket retry` grants it one more round, recorded in the journal with who granted it and why (section 4.3); findings in that round hold it again.
 
 **How results are submitted.** The refiner, the planner and the reviewer submit a structured result (`istari refine submit`, `istari plan submit`, `istari review submit`). The way for a result of any size is the result file: the role writes it to `$ISTARI_RESULT` and runs the submit command without `--file`, which then reads that file. A short result, well under 9,000 characters, may instead go through a heredoc (`--file - <<'EOF'` … `EOF`): a longer shell command is refused by the harness (section 7.3). Without `--file` and without `ISTARI_RESULT` the command fails and says so.
 
@@ -1057,6 +1063,7 @@ istari run list|show|logs [-f]|attach|stop
 istari gate list|approve|reject
 istari plan submit --file plan.yaml  # plan: slices, seams, change zone
 istari review submit --file r.yaml   # review report: findings on two axes
+istari review reply --finding <n> "<why>"  # implementer: reply to a finding of the latest review
 istari report                        # report: PRs in review, holds, spend
 
 istari post|reply|schedule           # messages to the ticket thread

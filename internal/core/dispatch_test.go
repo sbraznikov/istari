@@ -37,9 +37,11 @@ func limitedTasks(t *testing.T, limits core.Limits, delay time.Duration) *core.T
 	return core.NewTasks(s, core.TaskOptions{Clock: clock, Limits: limits, Lease: time.Hour})
 }
 
+// mustCreate creates a task with a ticket of its own, so that only the
+// limits and pauses stand between its claim and the others'.
 func mustCreate(t *testing.T, tasks *core.Tasks, id, project, role string) {
 	t.Helper()
-	if _, err := tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: "gh:acme/" + project + "#1", Project: project, Role: role}); err != nil {
+	if _, err := tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: "gh:acme/" + project + "#" + id, Project: project, Role: role}); err != nil {
 		t.Fatal(err)
 	}
 }

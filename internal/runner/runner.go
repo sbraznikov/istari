@@ -76,6 +76,9 @@ type RunnerOptions struct {
 	// StopCheckpoint limits that checkpoint ([daemon]
 	// stop_checkpoint_timeout, spec section 4.2); 0: DefaultStopCheckpoint.
 	StopCheckpoint time.Duration
+	// After is how that checkpoint waits for its limit: the limit is reached
+	// when the channel fires; nil: time.After.
+	After func(time.Duration) <-chan time.Time
 	// Journal records what the runner notices about a run, such as a merge
 	// of the main branch given up; nil: istari's log only.
 	Journal *journal.Journal
@@ -122,6 +125,9 @@ func New(s store.Store, tasks *core.Tasks, tickets *core.Tickets, ws *Workspaces
 	}
 	if opts.StopCheckpoint <= 0 {
 		opts.StopCheckpoint = DefaultStopCheckpoint
+	}
+	if opts.After == nil {
+		opts.After = time.After
 	}
 	if opts.Poll <= 0 {
 		opts.Poll = DefaultPoll
@@ -231,26 +237,29 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full flo
 	for _, t := range all {
 		byRef[t.Ref] = t
 	}
-	// The budget is the first ticket's of a chain of budget_of. The chain
-	// stops at a child of a split: it has a budget of its own (spec section
-	// 4.5).
-	root := func(t core.Ticket) core.Ticket {
+	// The budget of a run started at a time is the first ticket's of a chain
+	// of budget_of. The chain stops at a child of a split, and at a filed
+	// ticket a human had admitted by then: each has a budget of its own
+	// (spec section 4.5).
+	root := func(t core.Ticket, at time.Time) core.Ticket {
 		for range len(all) + 1 {
 			parent, ok := byRef[t.BudgetOf]
 			if t.BudgetOf == "" || !ok || slices.Contains(parent.Children, t.Ref) {
+				break
+			}
+			if own := t.OwnBudgetSince; !own.IsZero() && !own.After(at) {
 				break
 			}
 			t = parent
 		}
 		return t
 	}
-	owner := root(tk)
-	sharing := map[string]bool{tk.Ref: true}
-	for _, t := range all {
-		if root(t).Ref == owner.Ref {
-			sharing[t.Ref] = true
-		}
+	if fresh, ok := byRef[tk.Ref]; ok {
+		tk = fresh // its own budget may have started since tk was read
+	} else {
+		byRef[tk.Ref] = tk
 	}
+	owner := root(tk, r.opts.Clock())
 	// A ticket that shares a budget has the budget of the one it shares
 	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
@@ -264,7 +273,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full flo
 	full = r.opts.Budgets[size]
 	left = full
 	for _, run := range runs {
-		if sharing[run.Ticket] {
+		if t, ok := byRef[run.Ticket]; ok && root(t, run.Started).Ref == owner.Ref {
 			left -= run.Usage.CostUSD
 		}
 	}
@@ -438,6 +447,7 @@ func (r *Runner) Run(ctx context.Context) {
 
 func (r *Runner) slot(ctx context.Context, slot Slot) {
 	failures := 0 // start failures in a row
+	busy := ""    // the last ticket_busy refusal the log says
 	for ctx.Err() == nil {
 		// While its harness's account is at its usage limit, the slot claims
 		// nothing (spec section 7.3).
@@ -447,6 +457,7 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 		}
 		lease, err := r.tasks.ClaimReadyIn(ctx, "agent:"+slot.Profile, slot.Role, r.opts.Projects)
 		if err == nil {
+			busy = ""
 			startErr := r.execute(ctx, slot, lease)
 			if startErr == nil {
 				failures = 0
@@ -459,8 +470,18 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 			continue
 		}
 		var e *core.Error
-		if !errors.As(err, &e) && ctx.Err() == nil {
-			log.Printf("istari: runner %s: %v", slot.Profile, err)
+		switch {
+		case !errors.As(err, &e):
+			if ctx.Err() == nil {
+				log.Printf("istari: runner %s: %v", slot.Profile, err)
+			}
+		case e.Code == core.CodeTicketBusy:
+			// The task waits for the run on its ticket (spec section 7.2);
+			// the log says so once, not on every poll.
+			if busy != e.Message {
+				busy = e.Message
+				log.Printf("istari: runner %s: %v", slot.Profile, err)
+			}
 		}
 		sleep(ctx, r.opts.Poll)
 	}
@@ -797,6 +818,11 @@ loop:
 		}
 	}
 	<-streamDone
+	if end == nil && res.BudgetSpent {
+		// The harness ended the run at its own cap, the run budget: the same
+		// end as istari's own budget stop (spec sections 7.2 and 7.5).
+		end = &ending{reason: fmt.Sprintf("the harness spent the run budget of $%.2f", run.BudgetUSD), outcome: r.blockForBudget(tk.Ref), save: true}
+	}
 
 	// A stopping run's task stays this run's until its checkpoint and its
 	// end are recorded: a stop checkpoint may outlast the lease (spec
@@ -810,7 +836,7 @@ loop:
 	}
 	if stopping && r.opts.Checkpoints != nil && slot.Role == "implementer" {
 		// Unfinished work is pushed as is: only what came after this is lost.
-		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, run, end.reason+"; continue from here"); err != nil {
+		if _, err := r.opts.Checkpoints.MakeWithin(bg, r.opts.StopCheckpoint, r.opts.After(r.opts.StopCheckpoint), run, end.reason+"; continue from here"); err != nil {
 			log.Printf("istari: run %s: the checkpoint on stopping: %v", run.ID, err)
 		}
 	}
@@ -944,10 +970,12 @@ func (r *Runner) event(ctx context.Context, run Run, typ string, payload map[str
 	}
 }
 
-// end records how the run ended.
+// end records how the run ended. The harness's own total, when it reports
+// one, is the run's cost, even below the sum of its usage events, which may
+// be an estimate (spec section 7.5).
 func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage harness.Usage, reason string) {
-	if res.Usage.CostUSD > usage.CostUSD {
-		usage = res.Usage // the harness's own total, when it reports one
+	if res.Usage.CostUSD > 0 {
+		usage = res.Usage
 	}
 	if _, err := r.runs.end(ctx, run.ID, reason, &runExit{code: res.ExitCode, usage: usage}); err != nil {
 		log.Printf("istari: run %s: %v", run.ID, err)

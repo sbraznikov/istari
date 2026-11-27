@@ -208,7 +208,7 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 	})
 	planSubmit.Flags().StringVar(&planFile, "file", "", "the plan, YAML; - reads it from standard input; without it, $ISTARI_RESULT")
 	plan.AddCommand(planSubmit)
-	review := &cobra.Command{Use: "review", Short: "For the reviewer: submit the review of a pull request", Args: Args(cobra.NoArgs)}
+	review := &cobra.Command{Use: "review", Short: "For the reviewer: submit the review of a pull request; for the implementer: reply to a finding", Args: Args(cobra.NoArgs)}
 	var reviewFile string
 	reviewSubmit := writeCommand(opts, &cobra.Command{
 		Use: "submit [--file <review.yaml>]", Short: "Submit one line per axis and the findings: axis, kind, file, line, source, quote, text", Args: Args(cobra.NoArgs),
@@ -225,7 +225,18 @@ func newAgentCommands(opts *Options) []*cobra.Command {
 		return render(cmd.OutOrStdout(), opts, answer, []string{"FINDINGS", "COUNT"}, rows)
 	})
 	reviewSubmit.Flags().StringVar(&reviewFile, "file", "", "the review, YAML; - reads it from standard input; without it, $ISTARI_RESULT")
-	review.AddCommand(reviewSubmit)
+	var finding int
+	reviewReply := writeCommand(opts, &cobra.Command{
+		Use: "reply --finding <n> \"<why>\"", Short: "For the implementer: reply why finding n of the latest review is not a flaw here", Args: Args(cobra.ExactArgs(1)),
+	}, func(cmd *cobra.Command, args []string, key string) error {
+		var ok api.OK // the next reviewer reads the reply next to the finding
+		if err := opts.call(cmd, "review.reply", key, api.ReviewReplyRequest{Actor: opts.Actor, Finding: finding, Text: args[0]}, &ok); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ok, []string{"OK"}, [][]string{{"reply recorded in the ticket journal"}})
+	})
+	reviewReply.Flags().IntVar(&finding, "finding", 0, "the finding's number in the latest review, from 1")
+	review.AddCommand(reviewSubmit, reviewReply)
 	pr := &cobra.Command{Use: "pr", Short: "For the implementer: open the pull request", Args: Args(cobra.NoArgs)}
 	var prTitle, prBody string
 	prOpen := writeCommand(opts, &cobra.Command{

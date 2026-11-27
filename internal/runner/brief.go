@@ -98,7 +98,7 @@ func Brief(in BriefInput) string {
 		head.WriteString(pr)
 	}
 	if in.Role == "reviewer" {
-		head.WriteString(reviewSection(in.Review))
+		head.WriteString(previousReview(in.Journal) + reviewSection(in.Review))
 	}
 	var pr string
 	if in.PullRequest != "" {
@@ -189,13 +189,17 @@ func newestFailure(entries []journal.Entry) int {
 }
 
 // selectEntries marks the entries a brief always keeps: every decision,
-// assumption, question and answer, the latest plan and review, the latest checkpoints, and the
-// comments newer than the latest checkpoint.
+// assumption, question and answer, the latest plan and review and the
+// replies to its findings, the latest checkpoints, and the comments newer
+// than the latest checkpoint.
 func selectEntries(entries []journal.Entry) []bool {
 	keep := make([]bool, len(entries))
+	latest, _ := journal.LatestReview(entries)
 	lastPlan, lastReview, checkpoints := -1, -1, 0
 	for i := len(entries) - 1; i >= 0; i-- {
 		switch entries[i].Kind {
+		case journal.FindingReply:
+			keep[i] = entries[i].Reply.Review == latest.Task
 		case journal.Decision, journal.Assumption, journal.Question, journal.Answer:
 			keep[i] = true
 		case journal.Comment:
@@ -257,6 +261,30 @@ var closing = regexp.MustCompile(`(?i)</untrusted`)
 func untrusted(source, text string) string {
 	text = closing.ReplaceAllString(text, "<\\/untrusted")
 	return "<untrusted source=\"" + strings.ReplaceAll(source, "\"", "'") + "\">\n" + text + "\n</untrusted>\n"
+}
+
+// previousReview shows the reviewer the findings of the latest review, each
+// followed by the implementer's replies to it (spec 7.6). Without a review
+// it is empty.
+func previousReview(entries []journal.Entry) string {
+	latest, ok := journal.LatestReview(entries)
+	if !ok || len(latest.Findings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## The previous review\n\nThe latest review returned these findings. Where the implementer replied why a code smell is not a flaw in its place, accept the explanation, or insist and report the finding again.\n\n")
+	for i, f := range latest.Findings {
+		n := i + 1
+		fmt.Fprintf(&b, "**Finding %d**\n\n", n)
+		b.WriteString(untrusted(fmt.Sprintf("finding %d of review %s", n, latest.Task), f))
+		for _, e := range entries {
+			if e.Kind == journal.FindingReply && e.Reply.Review == latest.Task && e.Reply.Finding == n {
+				b.WriteString(untrusted(fmt.Sprintf("reply to finding %d by %s", n, e.Actor), e.Text))
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // reviewSection tells the reviewer what code prepared and how to submit the

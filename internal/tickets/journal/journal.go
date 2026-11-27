@@ -37,10 +37,16 @@ const (
 	Comment    Kind = "comment" // a trusted member's comment on the issue while the ticket is in work
 )
 
+// FindingReply is the implementer's reply to a finding of a review: why it is
+// not a flaw in this place (spec 7.6). Its name keeps clear of Reply, an
+// answer to an open question.
+const FindingReply Kind = "reply"
+
 // Entry is one journal entry. Which fields it uses depends on its kind:
 // question and answer use ID, Text and (answer) Link; assumption uses Text;
 // note uses Text and ID, the task it is about; comment uses Text, a trusted
-// member's comment verbatim, and Link; the others their own part.
+// member's comment verbatim, and Link; reply uses Text and Reply; the others
+// their own part.
 type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
@@ -53,6 +59,7 @@ type Entry struct {
 	Plan       *PlanEntry       `json:"plan,omitempty"`
 	Checkpoint *CheckpointEntry `json:"checkpoint,omitempty"`
 	Review     *ReviewEntry     `json:"review,omitempty"`
+	Reply      *ReplyEntry      `json:"reply,omitempty"`
 	Transition *TransitionEntry `json:"transition,omitempty"`
 	CI         *CIEntry         `json:"ci,omitempty"`
 }
@@ -137,6 +144,13 @@ type ReviewEntry struct {
 	Dropped  []string `json:"dropped,omitempty"`  // dropped by code, with why
 }
 
+// ReplyEntry names the finding a reply answers: the review task whose entry
+// holds it and its number there, from 1.
+type ReplyEntry struct {
+	Review  string `json:"review"`
+	Finding int    `json:"finding"`
+}
+
 // TransitionEntry is a change of the ticket's state or hold.
 type TransitionEntry struct {
 	From    string `json:"from,omitempty"`
@@ -177,6 +191,10 @@ func (e Entry) validate() error {
 	case Review:
 		if e.Review == nil || e.Review.Verdict == "" {
 			return missing("a verdict")
+		}
+	case FindingReply:
+		if e.Text == "" || e.Reply == nil || e.Reply.Review == "" || e.Reply.Finding < 1 {
+			return missing("a text, the review task and the finding")
 		}
 	case Transition:
 		if e.Transition == nil || e.Transition.To == "" {
@@ -352,12 +370,14 @@ func Text(e Entry) string {
 	case Review:
 		s := "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
 		if len(e.Review.Findings) > 0 {
-			s += "\n\nFindings:" + bullets(e.Review.Findings)
+			s += "\n\nFindings:" + numbered(e.Review.Findings)
 		}
 		if len(e.Review.Dropped) > 0 {
 			s += "\n\nDropped by istari:" + bullets(e.Review.Dropped)
 		}
 		return s
+	case FindingReply:
+		return fmt.Sprintf("**Reply** to finding %d of review %s%s\n\n%s", e.Reply.Finding, e.Reply.Review, by, e.Text)
 	case Transition:
 		t := e.Transition
 		s := "**Transition**" + by + ": `" + t.To + "`"
@@ -394,6 +414,26 @@ func bullets(items []string) string {
 		b.WriteString("\n- " + it)
 	}
 	return b.String()
+}
+
+// numbered lists the items from 1, the number a reply names a finding by.
+func numbered(items []string) string {
+	var b strings.Builder
+	for i, it := range items {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, it)
+	}
+	return b.String()
+}
+
+// LatestReview returns the last review entry of the entries; ok is false
+// when they have none.
+func LatestReview(entries []Entry) (r ReviewEntry, ok bool) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == Review {
+			return *entries[i].Review, true
+		}
+	}
+	return ReviewEntry{}, false
 }
 
 // WorkState is the "Work state" summary (spec section 4.6).

@@ -85,6 +85,9 @@ type Result struct {
 	SessionID string // for Resume
 	Failed    bool   // the harness reported that the run ended in an error
 	Reason    string // how the harness says the run ended, e.g. success or error_max_budget_usd
+	// BudgetSpent means the harness ended the run at its own spending cap,
+	// RunSpec.MaxBudgetUSD: a budget stop, not a failure of the agent.
+	BudgetSpent bool
 }
 
 // Session is one running harness process.

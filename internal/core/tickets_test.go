@@ -487,12 +487,13 @@ func (f *fixture) endingTicket(t *testing.T, tickets *core.Tickets) {
 	f.complete(t, "t_done")
 	f.create(t, "t_ready", "implementer")
 	f.create(t, "t_waiting", "reviewer", "t_ready")
-	f.create(t, "t_claimed", "implementer")
-	f.claim(t, "t_claimed")
+	// Blocked first: a ticket has one claimed task at a time (spec 7.2).
 	f.create(t, "t_blocked", "implementer")
 	if err := f.tasks.Block(ctx, f.claim(t, "t_blocked"), "needs_input"); err != nil {
 		t.Fatal(err)
 	}
+	f.create(t, "t_claimed", "implementer")
+	f.claim(t, "t_claimed")
 	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_other", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -565,6 +566,55 @@ func TestAHeldTicketThatIsMergedCancelsItsOpenTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.assertEnded(t)
+}
+
+func TestGivingATicketItsOwnBudgetIsAnEventWithTheActorAndReplays(t *testing.T) {
+	t.Parallel()
+	tickets, s := newTickets(t, nil)
+	const parent = "gh:acme/web#100"
+	if _, err := tickets.CreateWith(ctx, "agent:implementer-1", core.NewTicket{Ref: ref, Project: "web", BudgetOf: parent}); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := tickets.OwnBudget(ctx, "human:alex", ref)
+	if err != nil {
+		t.Fatalf("OwnBudget: %v", err)
+	}
+	since := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	if !owned.OwnBudgetSince.Equal(since) || owned.BudgetOf != parent {
+		t.Fatalf("owned = since %v, budget_of %q; want since %v, budget_of %s", owned.OwnBudgetSince, owned.BudgetOf, since, parent)
+	}
+	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
+	last := events[len(events)-1]
+	if last.Type != "ticket.budget_owned" || last.Actor != "human:alex" {
+		t.Fatalf("last event = %s by %s, want ticket.budget_owned by human:alex", last.Type, last.Actor)
+	}
+	var p struct{ Actor, From string }
+	if err := json.Unmarshal(last.Payload, &p); err != nil || p.Actor != "human:alex" || p.From != parent {
+		t.Fatalf("payload = %s, want actor human:alex and from %s", last.Payload, parent)
+	}
+	replayed, err := core.ReplayTicket(events)
+	if err != nil {
+		t.Fatalf("ReplayTicket: %v", err)
+	}
+	if !replayed.OwnBudgetSince.Equal(since) {
+		t.Fatalf("replayed own budget since %v, want %v", replayed.OwnBudgetSince, since)
+	}
+	if got, _ := tickets.Get(ctx, ref); !got.OwnBudgetSince.Equal(since) {
+		t.Fatalf("projection own budget since %v, want %v", got.OwnBudgetSince, since)
+	}
+
+	if _, err := tickets.OwnBudget(ctx, "human:alex", ref); err != nil {
+		t.Fatalf("second OwnBudget: %v", err)
+	}
+	if again, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0); len(again) != len(events) {
+		t.Fatalf("a second OwnBudget appended %d events, want none", len(again)-len(events))
+	}
+
+	if _, err := tickets.Create(ctx, "human:alex", "gh:acme/web#124", "web"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tickets.OwnBudget(ctx, "human:alex", "gh:acme/web#124")
+	assertCode(t, err, core.CodeInvalidTicket)
 }
 
 func TestOnlyAHumanGrantsAReviewRoundAndTheJournalRecordsIt(t *testing.T) {

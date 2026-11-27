@@ -38,7 +38,15 @@ func (d *daemon) mustCLI(t *testing.T, out any, args ...string) {
 
 func (d *daemon) createTask(t *testing.T, id, role string) {
 	t.Helper()
-	d.call(t, "task.create", map[string]any{"actor": "system", "id": id, "ticket": "gh:acme/web#1", "project": "web", "role": role}, nil)
+	d.createTaskOf(t, "gh:acme/web#1", id, role)
+}
+
+// createTaskOf creates a task of ticket ref. Tests that hold several claims
+// at once give each task a ticket of its own: a ticket has one run at a time
+// (spec 7.2).
+func (d *daemon) createTaskOf(t *testing.T, ref, id, role string) {
+	t.Helper()
+	d.call(t, "task.create", map[string]any{"actor": "system", "id": id, "ticket": ref, "project": "web", "role": role}, nil)
 }
 
 type lease struct {
@@ -440,8 +448,8 @@ func TestTailAfterACursorResumesExactly(t *testing.T) {
 func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
-	d.createTask(t, "t_1", "implementer")
-	d.createTask(t, "t_2", "implementer")
+	d.createTaskOf(t, "gh:acme/web#1", "t_1", "implementer")
+	d.createTaskOf(t, "gh:acme/web#2", "t_2", "implementer")
 	var now []struct{ Cursor string }
 	d.mustCLI(t, &now, "tail")
 	cursor := now[len(now)-1].Cursor
@@ -463,7 +471,7 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome; 100 runs because the shells never complete
 	const n = 40
 	for i := range n {
-		d.createTask(t, fmt.Sprintf("t_%02d", i), "implementer")
+		d.createTaskOf(t, fmt.Sprintf("gh:acme/web#%d", i), fmt.Sprintf("t_%02d", i), "implementer")
 	}
 	var mu sync.Mutex
 	got := map[string][]string{}
@@ -512,8 +520,8 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 func TestPauseAndResumeTheHandOut(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
-	d.createTask(t, "t_1", "implementer")
-	d.createTask(t, "t_2", "implementer")
+	d.createTaskOf(t, "gh:acme/web#1", "t_1", "implementer")
+	d.createTaskOf(t, "gh:acme/web#2", "t_2", "implementer")
 	var running lease
 	d.mustCLI(t, &running, "task", "claim", "t_1", "--actor", "agent:a")
 	d.mustCLI(t, nil, "pause", "--all")
@@ -531,8 +539,8 @@ func TestPauseAndResumeTheHandOut(t *testing.T) {
 func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1") //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
-	d.createTask(t, "t_1", "implementer")
-	d.createTask(t, "t_2", "implementer")
+	d.createTaskOf(t, "gh:acme/web#1", "t_1", "implementer")
+	d.createTaskOf(t, "gh:acme/web#2", "t_2", "implementer")
 	d.mustCLI(t, nil, "task", "claim", "t_1", "--actor", "agent:a")
 	if _, stderr, code := d.cli(t, "task", "claim", "t_2", "--actor", "agent:b"); code != 1 || !strings.Contains(stderr, "limit_reached") {
 		t.Fatalf("second claim with max_concurrent_runs = 1: exit %d %q", code, stderr)
@@ -631,7 +639,7 @@ name = "api"
 		{"web_1", "web", "implementer"}, {"web_2", "web", "implementer"},
 		{"rev_1", "api", "reviewer"}, {"rev_2", "api", "reviewer"}, {"api_1", "api", "implementer"},
 	} {
-		d.call(t, "task.create", map[string]any{"actor": "system", "id": task.id, "ticket": "gh:acme/" + task.project + "#1", "project": task.project, "role": task.role}, nil)
+		d.call(t, "task.create", map[string]any{"actor": "system", "id": task.id, "ticket": "gh:acme/" + task.project + "#" + task.id, "project": task.project, "role": task.role}, nil)
 	}
 	for _, step := range []struct {
 		id      string
