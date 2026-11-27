@@ -482,7 +482,9 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 		return e.verdict(ctx, tk, r, fire)
 	case core.TicketAwaitingApproval:
-		if r.done(StageMerge) {
+		// Only istari's own merge task fires T11 here: a round cut short
+		// before it made the merge task has merged nothing.
+		if m, ok := r.tasks[StageMerge]; ok && m.State == core.TaskCompleted {
 			return fire("merged") // T11
 		}
 	}

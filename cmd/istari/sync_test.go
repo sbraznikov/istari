@@ -270,6 +270,14 @@ func (h *humanMerge) state(t *testing.T) string {
 	return tk.State
 }
 
+// evidence is what a failed check prints: the ticket's events and the
+// daemon's stderr.
+func (h *humanMerge) evidence(t *testing.T) string {
+	t.Helper()
+	events, stderr, _ := h.d.cli(t, "tail", "--ticket", h.ref) // a failed tail shows its stderr in place of the events
+	return fmt.Sprintf("events:\n%s%s\ndaemon stderr:\n%s", events, stderr, h.d.stderr)
+}
+
 // finished asserts the ticket ended in done the way istari's own merge ends
 // it: the issue closed as completed with istari:done, nothing undone.
 func (h *humanMerge) finished(t *testing.T) {
@@ -316,13 +324,13 @@ func TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone(t *testing.T) {
 	h.gh.HumanClose(h.pr, "alex", "")
 	h.d.step(t, "watch")
 	if closed := h.d.eventTypes(t, h.ref, "vcs.closed"); len(closed) != 1 {
-		t.Fatalf("the watch pass recorded %v, want one vcs.closed\n%s", closed, h.d.stderr)
+		t.Fatalf("the watch pass recorded %v, want one vcs.closed\n%s", closed, h.evidence(t))
 	}
 	h.d.step(t, "pipeline")
 	h.d.step(t, "sync")
 	h.d.step(t, "pipeline")
 	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval\nevents %v\n%s", st, h.d.eventTypes(t, h.ref, ""), h.d.stderr)
+		t.Fatalf("the ticket of a pull request closed without a merge is %s, want awaiting_approval\n%s", st, h.evidence(t))
 	}
 }
 

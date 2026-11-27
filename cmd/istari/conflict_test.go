@@ -80,13 +80,13 @@ func TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket(t *testing.T) {
 	h.gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "in_progress"}) // so the poll leaves a trace
 	h.d.step(t, "watch")
 	if checks := h.d.eventTypes(t, h.ref, "vcs.checks"); len(checks) == 0 {
-		t.Fatalf("the watch pass recorded no checks\n%s", h.d.stderr)
+		t.Fatalf("the watch pass recorded no checks\n%s", h.evidence(t))
 	}
 	h.d.step(t, "pipeline")
 	if conflicts := h.d.eventTypes(t, h.ref, "vcs.conflicted"); len(conflicts) != 0 {
-		t.Fatalf("an unknown mergeable recorded %d conflicts", len(conflicts))
+		t.Fatalf("an unknown mergeable recorded %d conflicts\n%s", len(conflicts), h.evidence(t))
 	}
 	if st := h.state(t); st != "awaiting_approval" {
-		t.Fatalf("with mergeable unknown the ticket is %s after a watch and a pipeline pass, want awaiting_approval", st)
+		t.Fatalf("with mergeable unknown the ticket is %s after a watch and a pipeline pass, want awaiting_approval\n%s", st, h.evidence(t))
 	}
 }
