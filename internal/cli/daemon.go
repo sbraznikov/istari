@@ -73,6 +73,7 @@ func newDaemonCommand(opts *Options) *cobra.Command {
 					log.Printf("istari: pushes and pull requests are off: %v", err)
 				} else {
 					daemonOpts.VCS = client.WithTransport(transport)
+					daemonOpts.GitHubApp = cfg.GitHubApp.AppID > 0 // vcsOf's App
 				}
 			}
 			daemonOpts.Runner = runnerOf(cmd.Context(), cfg)

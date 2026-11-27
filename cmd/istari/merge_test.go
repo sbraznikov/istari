@@ -39,7 +39,7 @@ type approvalWait struct {
 func newApprovalWait(t *testing.T) *approvalWait {
 	t.Helper()
 	w := &approvalWait{}
-	w.reviewed = recoverWith(t, startSteppedDaemon, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n", func(gh *githubtest.Server, pr int) {
+	w.reviewed = recoverWith(t, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n", func(gh *githubtest.Server, pr int) {
 		gh.SetFile(".github/CODEOWNERS", "* @kim\n")
 		gh.SetHeadSHA(pr, "h1")
 		w.branch = gh.Issue(pr).Branch
@@ -146,9 +146,62 @@ func TestAMergeGitHubRefusesReturnsTheTicketToInProgress(t *testing.T) {
 	}
 }
 
+// gate is a task as istari gate list shows it.
+type gate struct{ ID, Ticket, Role string }
+
+// approveGate returns the approve gate of the ticket istari gate list shows,
+// "" when it shows none.
+func (w *approvalWait) approveGate(t *testing.T) string {
+	t.Helper()
+	var gates []gate
+	w.d.mustCLI(t, &gates, "gate", "list")
+	for _, g := range gates {
+		if g.Ticket == w.ref.String() && g.Role == "github_review" {
+			return g.ID
+		}
+	}
+	return ""
+}
+
+// The fake seeds the pull request as bob, the gh user istari opened it as
+// without a GitHub App; bob has write access and no trusted list is set, so
+// bob is trusted (spec 4.5).
+func TestWithoutAGitHubAppThePullRequestsTrustedAuthorApprovesWithGateApprove(t *testing.T) {
+	t.Parallel()
+	w := newApprovalWait(t)
+	w.gh.SetPermission("bob", "write")
+	id := w.approveGate(t)
+	if id == "" {
+		t.Fatalf("gate list shows no approve gate of %s awaiting approval\n%s", w.ref, w.d.stderr)
+	}
+	w.d.mustCLI(t, nil, "gate", "approve", id, "--actor", "human:bob")
+	w.d.step(t, "pipeline") // the approval at h1 completes approve; istari merges
+	if pr := w.gh.Issue(w.pr); !pr.Merged {
+		t.Fatalf("after the author's gate approve the pull request is not merged\n%s", w.d.stderr)
+	}
+	if st := w.state(t, w.ref.String()); st != "done" {
+		t.Fatalf("the ticket is %s, want done (T11)\n%s", st, w.d.stderr)
+	}
+	var approved []struct {
+		Actor   string
+		Payload struct{ By, Head string }
+	}
+	w.d.mustCLI(t, &approved, "tail", "--ticket", w.ref.String(), "--type", "gate.approved")
+	if len(approved) != 1 || approved[0].Actor != "human:bob" || approved[0].Payload.By != "bob" || approved[0].Payload.Head != "h1" {
+		t.Fatalf("gate.approved events = %+v, want one by bob at h1", approved)
+	}
+	var notes []struct{ Payload struct{ Text string } }
+	w.d.mustCLI(t, &notes, "tail", "--ticket", w.ref.String(), "--type", "journal.note")
+	if !slices.ContainsFunc(notes, func(n struct{ Payload struct{ Text string } }) bool {
+		return strings.Contains(n.Payload.Text, "human:bob approved") && strings.Contains(n.Payload.Text, "h1")
+	}) {
+		t.Fatalf("journal notes = %+v, want one naming bob and h1", notes)
+	}
+}
+
 func TestInAutoModeAPullRequestThatMeetsEveryConditionMergesWithoutAHumanReview(t *testing.T) {
 	t.Parallel()
-	r := recoverWith(t, startSteppedDaemon, cleanReviewer, "in_review", "[defaults.merge]\nmode = \"auto\"\n", func(gh *githubtest.Server, pr int) {
+	r := recoverWith(t, cleanReviewer, "in_review", "[defaults.merge]\nmode = \"auto\"\n", func(gh *githubtest.Server, pr int) {
 		gh.SetHeadSHA(pr, "h1")
 		gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
 		gh.SetPullFiles(pr, githubtest.File{Path: "feature.txt", Additions: 1})

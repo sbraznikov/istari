@@ -1126,6 +1126,24 @@ func (s *Syncer) trusted(ctx context.Context, repo SyncRepo, login string) (bool
 	return s.provider.CanWrite(ctx, repo.Repo, login)
 }
 
+// RequireTrusted refuses login with CodeNotTrusted, naming who is trusted,
+// unless login is a trusted member of ref's project (spec 4.5).
+func (s *Syncer) RequireTrusted(ctx context.Context, ref Ref, login string) error {
+	repo, ok := s.repoOf(ref)
+	if !ok {
+		return &core.Error{Code: CodeNotTrusted, Message: fmt.Sprintf("%s belongs to no synced project: nobody there is trusted", ref)}
+	}
+	trusted, err := s.trusted(ctx, repo, login)
+	if err != nil || trusted {
+		return err
+	}
+	who := "the members with write access to " + repo.Repo
+	if len(repo.Trusted) > 0 {
+		who = strings.Join(repo.Trusted, ", ")
+	}
+	return &core.Error{Code: CodeNotTrusted, Message: fmt.Sprintf("%s is not a trusted member of %s; trusted are %s", login, repo.Project, who)}
+}
+
 // conformance checks a ticket against its repository's standard; without
 // Standards every ticket conforms.
 func (s *Syncer) conformance(ctx context.Context, repo SyncRepo, t Ticket) (Conformance, error) {

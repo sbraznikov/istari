@@ -67,6 +67,8 @@ type DaemonOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side; nil turns pushes and pull requests off.
 	VCS *vcs.Client
+	// GitHubApp tells that VCS acts as a GitHub App (ServerOptions.GitHubApp).
+	GitHubApp bool
 	// GitHub is the transport under Tracker and VCS (ServerOptions.GitHub).
 	GitHub *ratelimit.Transport
 	// PausedBy, when set, pauses the hand-out of tasks for all projects in
@@ -112,7 +114,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) (err error) {
 	defer os.Remove(socket) //nolint:errcheck // a socket left behind is removed by the next start
 
 	srv := NewServer(st, ServerOptions{Clock: time.Now, Limits: opts.Limits, Priority: opts.Priority, Tracker: opts.Tracker, Repos: opts.Repos, Standards: opts.Standards,
-		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS, GitHub: opts.GitHub, Stepped: opts.Stepped})
+		Workspaces: runner.WorkspaceOptions{DataDir: dataDir, Server: opts.GitServer}, Runner: runnerOptions(opts.Runner, dataDir, socket), Defaults: opts.Defaults, VCS: opts.VCS, GitHubApp: opts.GitHubApp, GitHub: opts.GitHub, Stepped: opts.Stepped})
 	// The lock proves no other daemon owns a run still recorded running.
 	if err := srv.EndRunsLeftRunning(ctx); err != nil {
 		return fmt.Errorf("ending runs left running: %w", err)
