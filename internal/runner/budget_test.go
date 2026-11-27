@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -435,11 +436,17 @@ func fileAndSpend(t *testing.T, f *runFixture, n int) (a, b core.Ticket) {
 
 func TestAnAdmittedFiledTicketCountsAgainstABudgetOfItsOwnSize(t *testing.T) {
 	t.Parallel()
-	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
+	// The runner's and the admission's clock, in Unix nanoseconds. It starts
+	// two hours back, so that an hour on it stays behind the task leases,
+	// which run on the wall clock.
+	var now atomic.Int64
+	now.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	clock := func() time.Time { return time.Unix(0, now.Load()).UTC() }
+	f := newRunner(t, runner.RunnerOptions{Budgets: filedBudgets, Clock: clock}, harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 4}})
 	a, b := fileAndSpend(t, f, 80)
-	// The admission happens now, after B's first run, on the clock runs use;
-	// the fixture's ticket clock stands still in the past.
-	admit := core.NewTickets(f.store, core.TicketOptions{})
+	// A human admits B an hour after B's first run started.
+	now.Add(int64(time.Hour))
+	admit := core.NewTickets(f.store, core.TicketOptions{Clock: clock})
 	if _, err := admit.OwnBudget(ctx, "human:alex", b.Ref); err != nil {
 		t.Fatal(err)
 	}

@@ -253,7 +253,7 @@ func (r *Runner) budgetLeft(ctx context.Context, tk core.Ticket) (left, full flo
 	} else {
 		byRef[tk.Ref] = tk
 	}
-	owner := root(tk, time.Now())
+	owner := root(tk, r.opts.Clock())
 	// A ticket that shares a budget has the budget of the one it shares
 	// (spec section 4.5: a ticket filed during the work shares its origin's).
 	size := owner.Size
