@@ -346,6 +346,9 @@ func TestClaimReadyTakesTheOldestReadyTaskOfTheRole(t *testing.T) {
 	if err != nil || lease.Task != "t_b" {
 		t.Fatalf("first ClaimReady = %s, %v; want t_b", lease.Task, err)
 	}
+	if err := f.tasks.Complete(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
 	if lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err != nil || lease.Task != "t_a" {
 		t.Fatalf("second ClaimReady = %s, %v; want t_a", lease.Task, err)
 	}
@@ -443,7 +446,7 @@ func TestATaskWhoseLastNeedsCompleteTogetherBecomesReady(t *testing.T) {
 	tasks := slowTasks(t)
 	for _, nt := range []core.NewTask{
 		{ID: "a", Ticket: "gh:acme/web#1", Role: "implementer"},
-		{ID: "b", Ticket: "gh:acme/web#1", Role: "verifier"},
+		{ID: "b", Ticket: "gh:acme/web#2", Role: "verifier"},
 		{ID: "d", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"a", "b"}},
 	} {
 		if _, err := tasks.Create(ctx, "system", nt); err != nil {
@@ -610,5 +613,54 @@ func TestCancelOfFinishedCancelsTheOpenTasksOfFinishedTicketsOnce(t *testing.T) 
 				t.Fatalf("the second call appended %d events", after-before)
 			}
 		})
+	}
+}
+
+func TestTwoConcurrentClaimsOfTasksOfOneTicketGiveOneRun(t *testing.T) {
+	t.Parallel()
+	for round := range 20 {
+		f := newFixture(t)
+		f.create(t, "t_1", "implementer")
+		f.create(t, "t_2", "implementer")
+		ids := []string{"t_1", "t_2"}
+		leases := make([]core.Lease, 2)
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				leases[i], errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), ids[i])
+			}()
+		}
+		wg.Wait()
+		winner, loser := -1, -1
+		for i, err := range errs {
+			var e *core.Error
+			switch {
+			case err == nil:
+				winner = i
+			case errors.As(err, &e) && e.Code == core.CodeTicketBusy:
+				loser = i
+			default:
+				t.Fatalf("round %d: unexpected error %v", round, err)
+			}
+		}
+		if winner < 0 || loser < 0 {
+			t.Fatalf("round %d: errors %v, want one claim to win and one to get ticket_busy", round, errs)
+		}
+		waiting, err := f.tasks.Get(ctx, ids[loser])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting.State != core.TaskReady || waiting.Attempts != 0 {
+			t.Fatalf("round %d: refused task is %s with %d attempts, want ready with 0", round, waiting.State, waiting.Attempts)
+		}
+		if err := f.tasks.Complete(ctx, leases[winner]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.tasks.Claim(ctx, "agent:implementer-3", ids[loser]); err != nil {
+			t.Fatalf("round %d: claim after the run ended: %v", round, err)
+		}
 	}
 }

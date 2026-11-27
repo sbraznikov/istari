@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/sbraznikov/istari/internal/store"
 )
@@ -64,9 +65,16 @@ func (d dispatchState) change() store.Change {
 	return store.Change{Kind: dispatchKind, ID: dispatchID, Data: data, IfVersion: d.version}
 }
 
-// admit checks that task may be claimed now: hand-out is not paused for it and
-// no limit is full. It returns the change that records the claim.
-func (t *Tasks) admit(ctx context.Context, task Task) (store.Change, error) {
+// agentActor is the prefix of the actor an agent's run claims with
+// (agent:<profile>). Only such a claim starts a run in the ticket's worktree.
+const agentActor = "agent:"
+
+// admit checks that actor may claim task now: hand-out is not paused for it,
+// no limit is full, and, for an agent, no other run works in the ticket's
+// worktree (spec section 7.2). It returns the change that records the claim;
+// because every claim rewrites the dispatch record on its version, two claims
+// at the same moment cannot both pass these checks.
+func (t *Tasks) admit(ctx context.Context, actor string, task Task) (store.Change, error) {
 	d, err := t.dispatchState(ctx)
 	if err != nil {
 		return store.Change{}, err
@@ -74,33 +82,35 @@ func (t *Tasks) admit(ctx context.Context, task Task) (store.Change, error) {
 	if d.PausedAll || slices.Contains(d.PausedProjects, task.Project) {
 		return store.Change{}, errorf(CodePaused, "the hand-out of tasks is paused")
 	}
+	all, err := t.List(ctx)
+	if err != nil {
+		return store.Change{}, err
+	}
+	agent := strings.HasPrefix(actor, agentActor)
+	var total, project, role int
+	for _, other := range all {
+		if other.State != TaskClaimed || other.ID == task.ID {
+			continue
+		}
+		if agent && other.Ticket == task.Ticket && strings.HasPrefix(other.Owner, agentActor) {
+			return store.Change{}, errorf(CodeTicketBusy, "ticket %s has a run of task %s in its worktree", task.Ticket, other.ID)
+		}
+		total++
+		if other.Project == task.Project {
+			project++
+		}
+		if other.Role == task.Role {
+			role++
+		}
+	}
 	lim := t.opts.Limits
-	if lim.Total > 0 || len(lim.PerProject) > 0 || len(lim.PerRole) > 0 {
-		all, err := t.List(ctx)
-		if err != nil {
-			return store.Change{}, err
-		}
-		var total, project, role int
-		for _, other := range all {
-			if other.State != TaskClaimed || other.ID == task.ID {
-				continue
-			}
-			total++
-			if other.Project == task.Project {
-				project++
-			}
-			if other.Role == task.Role {
-				role++
-			}
-		}
-		switch {
-		case lim.Total > 0 && total >= lim.Total:
-			return store.Change{}, errorf(CodeLimitReached, "%d of %d tasks are claimed", total, lim.Total)
-		case lim.PerProject[task.Project] > 0 && project >= lim.PerProject[task.Project]:
-			return store.Change{}, errorf(CodeLimitReached, "%d of %d tasks of project %s are claimed", project, lim.PerProject[task.Project], task.Project)
-		case lim.PerRole[task.Role] > 0 && role >= lim.PerRole[task.Role]:
-			return store.Change{}, errorf(CodeLimitReached, "%d of %d %s tasks are claimed", role, lim.PerRole[task.Role], task.Role)
-		}
+	switch {
+	case lim.Total > 0 && total >= lim.Total:
+		return store.Change{}, errorf(CodeLimitReached, "%d of %d tasks are claimed", total, lim.Total)
+	case lim.PerProject[task.Project] > 0 && project >= lim.PerProject[task.Project]:
+		return store.Change{}, errorf(CodeLimitReached, "%d of %d tasks of project %s are claimed", project, lim.PerProject[task.Project], task.Project)
+	case lim.PerRole[task.Role] > 0 && role >= lim.PerRole[task.Role]:
+		return store.Change{}, errorf(CodeLimitReached, "%d of %d %s tasks are claimed", role, lim.PerRole[task.Role], task.Role)
 	}
 	d.Claims++
 	return d.change(), nil

@@ -391,7 +391,7 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return Lease{}, err
 	}
-	admitted, err := t.admit(ctx, task)
+	admitted, err := t.admit(ctx, actor, task)
 	if err != nil {
 		return Lease{}, err
 	}

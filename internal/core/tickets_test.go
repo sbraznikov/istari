@@ -487,12 +487,13 @@ func (f *fixture) endingTicket(t *testing.T, tickets *core.Tickets) {
 	f.complete(t, "t_done")
 	f.create(t, "t_ready", "implementer")
 	f.create(t, "t_waiting", "reviewer", "t_ready")
-	f.create(t, "t_claimed", "implementer")
-	f.claim(t, "t_claimed")
+	// Blocked first: a ticket has one claimed task at a time (spec 7.2).
 	f.create(t, "t_blocked", "implementer")
 	if err := f.tasks.Block(ctx, f.claim(t, "t_blocked"), "needs_input"); err != nil {
 		t.Fatal(err)
 	}
+	f.create(t, "t_claimed", "implementer")
+	f.claim(t, "t_claimed")
 	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_other", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
 		t.Fatal(err)
 	}
