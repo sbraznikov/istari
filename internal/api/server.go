@@ -44,6 +44,7 @@ type Server struct {
 	tickets   *core.Tickets
 	sched     *scheduler.Scheduler
 	syncer    *tickets.Syncer
+	journal   *journal.Journal // the one of the syncer and the runner
 	spaces    *runner.Workspaces
 	runs      *runner.Runs
 	runner    *runner.Runner
@@ -125,6 +126,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		jt = t
 	}
 	j := journal.New(jt, ns, opts.Clock)
+	srv.journal = j
 	if opts.Tracker != nil {
 		note := func(ctx context.Context, ref tickets.Ref, text string) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: text})

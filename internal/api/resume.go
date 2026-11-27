@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/sbraznikov/istari/internal/core"
@@ -64,6 +66,33 @@ func (s *Server) unholdBudget(ctx context.Context, actor, ref string, anyway boo
 		r = runner.New(s.store, s.tasks, s.tickets, s.spaces, runner.RunnerOptions{})
 	}
 	return r.LiftBudgetHold(ctx, actor, ref, anyway)
+}
+
+// answer records a human's answer to an open question of the ticket (spec
+// section 4.6, istari ticket answer); the answer to the last one lifts
+// needs_input.
+func (s *Server) answer(ctx context.Context, r TicketAnswerRequest) (core.Ticket, error) {
+	if err := requireHuman(r.Actor, "a question is answered"); err != nil {
+		return core.Ticket{}, err
+	}
+	if strings.TrimSpace(r.Text) == "" {
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidTicket, Message: "an answer needs a text"}
+	}
+	ref, err := tickets.ParseRef(r.Ref)
+	if err != nil {
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidTicket, Message: err.Error()}
+	}
+	if _, err := s.tickets.Get(ctx, r.Ref); err != nil {
+		return core.Ticket{}, err
+	}
+	_, err = s.journal.Answer(ctx, s.tickets, ref, journal.Reply{Question: r.Question, Actor: r.Actor, Text: r.Text})
+	if errors.Is(err, journal.ErrNoOpenQuestion) {
+		return core.Ticket{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("ticket %s has no open question", r.Ref)}
+	}
+	if err != nil {
+		return core.Ticket{}, err
+	}
+	return s.tickets.Get(ctx, r.Ref)
 }
 
 // recoverTickets rebuilds what istari lost with its database from the

@@ -334,7 +334,7 @@ func (r *Runner) useBudgetWaiver(ctx context.Context, ref, run string) (use stor
 // holdLiftedBy says what lifts each hold but budget_exceeded (spec section
 // 4.1), for a refusal that names the way out.
 var holdLiftedBy = map[string]string{
-	"needs_input":        "a reply in the ticket thread lifts it",
+	"needs_input":        "an answer to every open question lifts it: a trusted member's comment on the ticket or istari ticket answer",
 	"attempts_exhausted": "istari ticket retry lifts it",
 	"paused":             "istari ticket resume lifts it",
 	"waiting_dependency": "istari lifts it when every need is done",

@@ -22,7 +22,7 @@ func ticketRows(tickets ...core.Ticket) [][]string {
 }
 
 func newTicketCommand(opts *Options) *cobra.Command {
-	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry, unhold", Args: Args(cobra.NoArgs)}
+	cmd := &cobra.Command{Use: "ticket", Short: "Tickets: list, show, check, pause, resume, cancel, reopen, retry, unhold, answer", Args: Args(cobra.NoArgs)}
 	cmd.AddCommand(newTicketCheckCommand(opts), newTicketCreateCommand(opts), newTicketDepsCommand(opts))
 	cmd.AddCommand(writeCommand(opts, &cobra.Command{
 		Use:   "ready <ref>",
@@ -150,6 +150,20 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		var ticket core.Ticket
 		req := api.TicketUnholdBudgetRequest{Actor: opts.Actor, Ref: args[0], Anyway: *anyway}
 		if err := opts.call(cmd, "ticket.unhold_budget", key, req, &ticket); err != nil {
+			return err
+		}
+		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
+	}))
+	answer := &cobra.Command{
+		Use:   "answer <ref> \"<text>\"",
+		Short: "Answer an open question of the ticket (a human only); the last answer lifts needs_input",
+		Args:  Args(cobra.ExactArgs(2)),
+	}
+	question := answer.Flags().String("question", "", "the id of the question (default: the one the text names, else the oldest open one)")
+	cmd.AddCommand(writeCommand(opts, answer, func(cmd *cobra.Command, args []string, key string) error {
+		var ticket core.Ticket
+		req := api.TicketAnswerRequest{Actor: opts.Actor, Ref: args[0], Question: *question, Text: args[1]}
+		if err := opts.call(cmd, "ticket.answer", key, req, &ticket); err != nil {
 			return err
 		}
 		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
