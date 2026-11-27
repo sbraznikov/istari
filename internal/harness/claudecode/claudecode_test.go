@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,6 +223,58 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 	collect(t, s)
 	if res, _ = s.Wait(); res.Usage != want || res.ExitCode != 1 {
 		t.Errorf("without a result line: usage %+v exit %d, want %+v exit 1", res.Usage, res.ExitCode, want)
+	}
+}
+
+// writeStream writes lines as a stream file for FAKE_STREAM.
+func writeStream(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stream.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// usageCosts runs the fake on a stream and returns the cost of each usage
+// event and the run's result.
+func usageCosts(t *testing.T, lines ...string) ([]float64, harness.Result) {
+	t.Helper()
+	f := newFake(t)
+	s, err := claudecode.New(claudecode.Options{Binary: f.bin}).Start(ctx, f.spec(t, "stream", map[string]string{"FAKE_STREAM": writeStream(t, lines...)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var costs []float64
+	for _, e := range collect(t, s) {
+		if e.Kind == harness.EventUsage {
+			costs = append(costs, e.Usage.CostUSD)
+		}
+	}
+	res, err := s.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	return costs, res
+}
+
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+func TestUsageEventsCarryACostDuringTheRunBeforeAnyResultLine(t *testing.T) {
+	t.Parallel()
+	// claude-opus-5-5 at $4 input, $20 output, $0.20 cache read and $8
+	// cache write per million tokens:
+	// 1000 in + 500 out = $0.004 + $0.010 = $0.014;
+	// 10 in + 100 out + 200000 read + 10000 write = $0.00004 + $0.002 + $0.04 + $0.08 = $0.12204.
+	costs, res := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+		`{"type":"assistant","session_id":"s","message":{"id":"m2","model":"claude-opus-5-5","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}}`,
+	)
+	if len(costs) != 2 || !near(costs[0], 0.014) || !near(costs[1], 0.12204) {
+		t.Fatalf("usage event costs = %v, want [0.014 0.12204]", costs)
+	}
+	if !near(res.Usage.CostUSD, 0.13604) {
+		t.Errorf("without a result line the run cost = %v, want the estimate 0.13604", res.Usage.CostUSD)
 	}
 }
 

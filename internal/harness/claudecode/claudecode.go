@@ -398,6 +398,7 @@ type streamLine struct {
 	SessionID string `json:"session_id"`
 	Message   struct {
 		ID      string `json:"id"`
+		Model   string `json:"model"`
 		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
@@ -455,15 +456,17 @@ func (s *session) readOutput() {
 				}
 			}
 			if u := line.Message.Usage; u != nil {
+				usage := u.usage()
+				usage.CostUSD = estimate(line.Message.Model, usage)
 				s.mu.Lock()
 				first := line.Message.ID == "" || !s.seen[line.Message.ID]
 				s.seen[line.Message.ID] = true
 				if first {
-					s.summed = s.summed.Add(u.usage())
+					s.summed = s.summed.Add(usage)
 				}
 				s.mu.Unlock()
 				if first {
-					s.queue.push(harness.Event{Kind: harness.EventUsage, Usage: u.usage()})
+					s.queue.push(harness.Event{Kind: harness.EventUsage, Usage: usage})
 				}
 			}
 		case "result":
