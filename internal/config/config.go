@@ -68,6 +68,11 @@ type Merge struct {
 	Mode        string `toml:"mode"`
 	AutoMaxSize string `toml:"auto_max_size"`
 	Method      string `toml:"method"`
+	// AutoMaxLines and AutoMaxFiles limit, per ticket size, the changed lines
+	// (additions plus deletions) and files of a pull request merged in auto
+	// mode (spec section 4.8). A table overrides only the sizes it names.
+	AutoMaxLines map[string]int `toml:"auto_max_lines"`
+	AutoMaxFiles map[string]int `toml:"auto_max_files"`
 }
 
 // Slack holds the Slack app tokens and the operations channel.
@@ -200,7 +205,11 @@ func Default() Config {
 			MaxAttempts:     3,
 			Priority:        "P2",
 			Zones:           "serialize",
-			Merge:           Merge{Mode: "after_approval", AutoMaxSize: "S", Method: "squash"},
+			Merge: Merge{
+				Mode: "after_approval", AutoMaxSize: "S", Method: "squash",
+				AutoMaxLines: map[string]int{"XS": 50, "S": 200, "M": 500, "L": 1000},
+				AutoMaxFiles: map[string]int{"XS": 3, "S": 10, "M": 20, "L": 40},
+			},
 			BudgetUSD:       map[string]float64{"XS": 2, "S": 5, "M": 15, "L": 30},
 		},
 		TUI:    TUI{Theme: "terminal"},
@@ -269,6 +278,19 @@ func (c *Config) validate() error {
 	oneOf("defaults.merge.mode", c.Defaults.Merge.Mode, mergeModes)
 	oneOf("defaults.merge.auto_max_size", c.Defaults.Merge.AutoMaxSize, workSizes)
 	oneOf("defaults.merge.method", c.Defaults.Merge.Method, mergeMethods)
+	for _, table := range []struct {
+		key    string
+		limits map[string]int
+	}{
+		{"defaults.merge.auto_max_lines", c.Defaults.Merge.AutoMaxLines},
+		{"defaults.merge.auto_max_files", c.Defaults.Merge.AutoMaxFiles},
+	} {
+		for _, size := range slices.Sorted(maps.Keys(table.limits)) {
+			key := table.key + "." + size
+			oneOf(key, size, workSizes)
+			positive(key, table.limits[size])
+		}
+	}
 	for _, size := range slices.Sorted(maps.Keys(c.Defaults.BudgetUSD)) {
 		key := "defaults.budget_usd." + size
 		oneOf(key, size, workSizes)
