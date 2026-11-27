@@ -245,7 +245,11 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		}
 	}
 	// The engine's notes go to the ticket when the tracker takes comments.
-	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Rerun: rerun, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j})
+	eo := pipeline.EngineOptions{Defaults: opts.Defaults, Files: files, Clock: opts.Clock, NeedsRefine: needsRefine, HasPlan: hasPlan, Checks: checks, Rerun: rerun, Ready: ready, Review: srv.reviewOf, Merged: merged, Conflict: conflict, Journal: j, Log: ns}
+	if srv.watch != nil {
+		eo.Approval, eo.Changes, eo.Merge = srv.mergeHooks()
+	}
+	srv.engine = pipeline.NewEngine(srv.tasks, srv.tickets, eo)
 	if srv.runner != nil {
 		srv.runner.SetSelfReview(func(ctx context.Context, repo string) bool {
 			s, err := srv.engine.SettingsOf(ctx, repo)
@@ -350,6 +354,62 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 		}
 	}
 	return out
+}
+
+// mergeHooks are the merge stage's ways to GitHub (spec 4.8), on the ticket's
+// tracked pull request. The approval is asked only once the PR watch has seen
+// an approving review, and the diff is read once per head, so a pull request
+// that waits for a human costs no requests on every reconcile.
+func (s *Server) mergeHooks() (
+	approval func(ctx context.Context, ref string) (string, error),
+	changes func(ctx context.Context, ref string) (vcs.Changes, error),
+	merge func(ctx context.Context, ref, method string) error,
+) {
+	var mu sync.Mutex                // serializes read: reconciles and requests may ask at once
+	read := map[string]vcs.Changes{} // "<ticket> <head>" → its changes
+	approval = func(ctx context.Context, ref string) (string, error) {
+		pr, err := s.watch.PullRequestOf(ctx, ref)
+		if errors.Is(err, store.ErrNotFound) || err == nil && pr.Review != "approved" {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return s.vcs.Approval(ctx, pr.Repo, pr.Number)
+	}
+	changes = func(ctx context.Context, ref string) (vcs.Changes, error) {
+		pr, err := s.watch.PullRequestOf(ctx, ref)
+		if err != nil {
+			return vcs.Changes{}, err
+		}
+		key := ref + " " + pr.SHA
+		mu.Lock()
+		c, ok := read[key]
+		mu.Unlock()
+		if ok && pr.SHA != "" {
+			return c, nil
+		}
+		if c, err = s.vcs.Changes(ctx, pr.Repo, pr.Number); err != nil {
+			return vcs.Changes{}, err
+		}
+		mu.Lock()
+		read[key] = c
+		mu.Unlock()
+		return c, nil
+	}
+	merge = func(ctx context.Context, ref, method string) error {
+		pr, err := s.watch.PullRequestOf(ctx, ref)
+		if err != nil {
+			return err
+		}
+		// A merge istari made before its task completed is not merged again:
+		// GitHub would refuse it, and the refusal would read as T10.
+		if merged, err := s.watch.Merged(ctx, ref); err != nil || merged {
+			return err
+		}
+		return s.vcs.Merge(ctx, pr.Repo, pr.Number, method)
+	}
+	return approval, changes, merge
 }
 
 // merged tells sync whether a ticket's pull request is merged (spec 4.8):

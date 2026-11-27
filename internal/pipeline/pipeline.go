@@ -187,8 +187,13 @@ func (p Pipeline) Warnings() []string {
 }
 
 // Validate checks the stages: a name each, once; a known role or kind;
-// needs that name stages; no cycle.
+// needs that name stages; no cycle. It checks the [merge] keys the merge
+// stage reads too: a mistyped irreversible_paths would let auto mode merge
+// what it protects (spec 4.8).
 func (p Pipeline) Validate() error {
+	if err := p.validateMerge(); err != nil {
+		return err
+	}
 	index := map[string]Stage{}
 	for _, s := range p.Stages {
 		switch {
@@ -249,7 +254,29 @@ type Settings struct {
 	PlanGate        bool
 	MaxReviewRounds int
 	MaxAttempts     int
+	Merge           MergeSettings
 }
+
+// MergeSettings say how the merge stage merges (spec section 4.8): the
+// installation's [defaults.merge], overridden by the pipeline's [merge].
+type MergeSettings struct {
+	Mode   string // manual, after_approval (the default) or auto
+	Method string // squash (the default), merge or rebase
+	// AutoMaxSize, AutoMaxLines, AutoMaxFiles and IrreversiblePaths bound
+	// what auto mode merges without a human; a size without a line or file
+	// limit has none.
+	AutoMaxSize       string
+	AutoMaxLines      map[string]int
+	AutoMaxFiles      map[string]int
+	IrreversiblePaths []string
+}
+
+// Merge modes (spec section 4.8).
+const (
+	MergeManual        = "manual"
+	MergeAfterApproval = "after_approval"
+	MergeAuto          = "auto"
+)
 
 // Settings resolves the pipeline's values over the installation's defaults.
 func (p Pipeline) Settings(global config.Defaults) Settings {
@@ -268,7 +295,65 @@ func (p Pipeline) Settings(global config.Defaults) Settings {
 			s.PlanGate = *st.Gate
 		}
 	}
+	s.Merge = p.mergeSettings(global.Merge)
 	return s
+}
+
+// mergeSettings resolves the pipeline's [merge] over the installation's
+// [defaults.merge], whose defaults config.Default gives; Validate has checked
+// the types of the pipeline's keys.
+func (p Pipeline) mergeSettings(global config.Merge) MergeSettings {
+	m := MergeSettings{Mode: global.Mode, Method: global.Method, AutoMaxSize: global.AutoMaxSize,
+		AutoMaxLines: global.AutoMaxLines, AutoMaxFiles: global.AutoMaxFiles}
+	for key, into := range map[string]*string{"mode": &m.Mode, "method": &m.Method, "auto_max_size": &m.AutoMaxSize} {
+		if v, ok := p.Merge[key].(string); ok {
+			*into = v
+		}
+	}
+	// Validate has refused any irreversible_paths that is not a string list.
+	m.IrreversiblePaths, _ = stringList(p.Merge["irreversible_paths"])
+	return m
+}
+
+// validateMerge checks the [merge] keys mergeSettings reads.
+func (p Pipeline) validateMerge() error {
+	for _, k := range []struct {
+		key     string
+		allowed []string
+	}{
+		{"mode", config.MergeModes()},
+		{"method", config.MergeMethods()},
+		{"auto_max_size", config.WorkSizes()},
+	} {
+		v, ok := p.Merge[k.key]
+		if !ok {
+			continue
+		}
+		if s, isString := v.(string); !isString || !slices.Contains(k.allowed, s) {
+			return fmt.Errorf("%s: merge.%s = %v is not one of %s", Path, k.key, v, strings.Join(k.allowed, ", "))
+		}
+	}
+	if _, ok := stringList(p.Merge["irreversible_paths"]); !ok {
+		return fmt.Errorf("%s: merge.irreversible_paths is not a list of path patterns such as [\"migrations/**\"]", Path)
+	}
+	return nil
+}
+
+// stringList reads a TOML array of strings; ok is false for anything else
+// but an absent value.
+func stringList(v any) (out []string, ok bool) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, v == nil
+	}
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 // TaskSpec is one task a ticket gets when its work starts.

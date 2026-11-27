@@ -196,7 +196,7 @@ any unfinished state ──► canceled ──► new (reopen)
 | T7 | `in_review` | `changes_requested` | `in_progress` | system, based on reviewer findings | the accepted reviewer report contains findings; there have been fewer than `max_review_rounds` rounds plus the rounds humans granted (section 4.3), otherwise hold |
 | T8 | `in_review` | `review_passed` | `awaiting_approval` | system, based on reviewer findings | the accepted reviewer report contains no findings; CI is green |
 | T9 | `awaiting_approval` | `changes_requested` | `in_progress` | human via GitHub review | — |
-| T10 | `in_review`, `awaiting_approval` | `merge_failed` | `in_progress` | system | the PR watch sees GitHub report the PR `mergeable: false` (`dirty`) at istari's head, or the merge queue meets a conflict or red CI after the branch is updated (section 4.9). The round's open tasks are canceled and a conflict round starts from `implement`; a `mergeable` that is still unknown (`null`) changes nothing until GitHub answers. The journal records the conflict once. The repeat review is limited to the conflict resolution (sections 4.8, 4.9) |
+| T10 | `in_review`, `awaiting_approval` | `merge_failed` | `in_progress` | system | the PR watch sees GitHub report the PR `mergeable: false` (`dirty`) at istari's head, or the merge queue meets a conflict or red CI after the branch is updated (section 4.9), or GitHub refuses istari's own merge of the PR (a conflict, a red or missing required check; section 4.8), which is not retried blindly. The round's open tasks are canceled and a conflict round starts from `implement`; a `mergeable` that is still unknown (`null`) changes nothing until GitHub answers. The journal records the conflict once. The repeat review is limited to the conflict resolution (sections 4.8, 4.9) |
 | T11 | `in_progress`, `in_review`, `awaiting_approval`, `canceled` | `merged` | `done` | system or human, depending on the merge mode (section 4.8); from `in_progress`, `in_review` and `canceled` only the system, after a human merged the PR | istari's own merge: required checks have passed and human approval, if the mode requires it. A human's merge: istari sees that the ticket's PR is merged (section 4.8). From `canceled`: a repair of a ticket canceled because the merge closed its issue. Applies while a hold is set, and clears it |
 | T12 | `in_progress` | `children_done` | `done` | system | the ticket has child tickets, and all of them are in `done` |
 | T13 | any except `done` and `canceled` | `cancel` | `canceled` | human | runs are stopped, the PR is closed; the ticket's open tasks are canceled. In GitHub Issues also: the human closes the issue as not planned or as a duplicate |
@@ -488,10 +488,10 @@ The merge mode is set in the config (`[defaults.merge]`, overridden in the repos
 - the ticket size is no larger than `auto_max_size` (`S` by default);
 - the reviewer left no findings, CI is green;
 - the change does not touch paths from the `irreversible_paths` list in the config (migrations, data schemas, public interfaces, infrastructure). Code checks this against the diff; the Merge Danger section written by the agent can only tighten the conclusion, not relax it;
-- the number of changed lines and files fits within the limits for the ticket size;
+- the number of changed lines (additions plus deletions) and files fits within the limits for the ticket size, `[defaults.merge.auto_max_lines]` and `[defaults.merge.auto_max_files]` (section 12); a table in the config overrides only the sizes it names;
 - during the work the agents recorded no assumptions awaiting human verification.
 
-A PR that fails at least one condition waits for a human as in `after_approval` mode. The reason is shown in the ticket card in Slack and on the Decisions tab.
+A PR that fails at least one condition waits for a human as in `after_approval` mode; the journal and an event name each failed condition. The reason is shown in the ticket card in Slack and on the Decisions tab.
 
 **A human merges first.** In every mode a human may merge the ticket's PR before istari does, also while the ticket is still in `in_progress` or `in_review`. When istari sees that the PR is merged, the ticket moves to `done` (T11, actor `system`), whoever merged it; istari's own review and approval steps that had not run yet are skipped, because the human who merged had the last word. istari sees the merge in two places, whichever comes first:
 
@@ -1231,6 +1231,18 @@ zones             = "serialize"       # "serialize" | "warn" | "off": what to do
 mode          = "after_approval"      # "manual" | "after_approval" | "auto"
 auto_max_size = "S"                   # in auto mode: tickets no larger than this size are merged without a human
 method        = "squash"              # "squash" | "merge" | "rebase"
+
+[defaults.merge.auto_max_lines]       # in auto mode: changed lines (additions + deletions) by ticket size
+XS = 50
+S  = 200
+M  = 500
+L  = 1000
+
+[defaults.merge.auto_max_files]       # in auto mode: changed files by ticket size
+XS = 3
+S  = 10
+M  = 20
+L  = 40
 
 [defaults.max_concurrent_runs_by_role] # claimed tasks at once per role; a role not listed has no own limit
 reviewer = 2

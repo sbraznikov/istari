@@ -22,6 +22,12 @@ func TestSpecExampleLoads(t *testing.T) {
 	if got := cfg.Defaults.Merge.AutoMaxSize; got != "S" {
 		t.Errorf("defaults.merge.auto_max_size = %q, want S", got)
 	}
+	if got := cfg.Defaults.Merge.AutoMaxLines["S"]; got != 200 {
+		t.Errorf("defaults.merge.auto_max_lines.S = %d, want 200", got)
+	}
+	if got := cfg.Defaults.Merge.AutoMaxFiles["L"]; got != 40 {
+		t.Errorf("defaults.merge.auto_max_files.L = %d, want 40", got)
+	}
 	if got := cfg.Defaults.BudgetUSD["M"]; got != 15 {
 		t.Errorf("defaults.budget_usd.M = %v, want 15", got)
 	}
@@ -109,6 +115,10 @@ func TestInvalidValueIsNamed(t *testing.T) {
 		{"[defaults.merge]\nauto_max_size = \"XXL\"\n", "defaults.merge.auto_max_size"},
 		{"[defaults.merge]\nmethod = \"octopus\"\n", "defaults.merge.method"},
 		{"[defaults.budget_usd]\nHUGE = 100\n", "defaults.budget_usd.HUGE"},
+		{"[defaults.merge.auto_max_lines]\nXL = 100\n", "defaults.merge.auto_max_lines.XL"},
+		{"[defaults.merge.auto_max_lines]\nS = 0\n", "defaults.merge.auto_max_lines.S"},
+		{"[defaults.merge.auto_max_files]\nHUGE = 5\n", "defaults.merge.auto_max_files.HUGE"},
+		{"[defaults.merge.auto_max_files]\nM = -1\n", "defaults.merge.auto_max_files.M"},
 		{"[[project]]\nrepo = \"acme/web\"\n", "project[0].name"},
 		{"[[project]]\nname = \"web\"\nmax_concurrent_runs = 0\n", "project[0].max_concurrent_runs"},
 		{"[[project]]\nname = \"web\"\nmax_concurrent_runs = -1\n", "project[0].max_concurrent_runs"},
@@ -144,7 +154,7 @@ func TestUnknownAdmissionNamesFileAndLine(t *testing.T) {
 
 func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Load(writeConfig(t, "[defaults.budget_usd]\nM = 20\n"))
+	cfg, err := config.Load(writeConfig(t, "[defaults.budget_usd]\nM = 20\n\n[defaults.merge.auto_max_lines]\nM = 600\n"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -166,6 +176,14 @@ func TestOmittedKeysTakeTheSpecDefaults(t *testing.T) {
 		{"defaults.budget_usd.S", cfg.Defaults.BudgetUSD["S"], 5.0},
 		{"defaults.budget_usd.M", cfg.Defaults.BudgetUSD["M"], 20.0},
 		{"defaults.budget_usd.L", cfg.Defaults.BudgetUSD["L"], 30.0},
+		{"defaults.merge.auto_max_lines.XS", cfg.Defaults.Merge.AutoMaxLines["XS"], 50},
+		{"defaults.merge.auto_max_lines.S", cfg.Defaults.Merge.AutoMaxLines["S"], 200},
+		{"defaults.merge.auto_max_lines.M", cfg.Defaults.Merge.AutoMaxLines["M"], 600},
+		{"defaults.merge.auto_max_lines.L", cfg.Defaults.Merge.AutoMaxLines["L"], 1000},
+		{"defaults.merge.auto_max_files.XS", cfg.Defaults.Merge.AutoMaxFiles["XS"], 3},
+		{"defaults.merge.auto_max_files.S", cfg.Defaults.Merge.AutoMaxFiles["S"], 10},
+		{"defaults.merge.auto_max_files.M", cfg.Defaults.Merge.AutoMaxFiles["M"], 20},
+		{"defaults.merge.auto_max_files.L", cfg.Defaults.Merge.AutoMaxFiles["L"], 40},
 		{"tui.theme", cfg.TUI.Theme, "terminal"},
 		{"report.at", cfg.Report.At, "08:00"},
 	}

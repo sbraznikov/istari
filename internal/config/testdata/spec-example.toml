@@ -15,6 +15,18 @@ mode          = "after_approval"      # "manual" | "after_approval" | "auto"
 auto_max_size = "S"                   # in auto mode: tickets no larger than this size are merged without a human
 method        = "squash"              # "squash" | "merge" | "rebase"
 
+[defaults.merge.auto_max_lines]       # in auto mode: changed lines (additions + deletions) by ticket size
+XS = 50
+S  = 200
+M  = 500
+L  = 1000
+
+[defaults.merge.auto_max_files]       # in auto mode: changed files by ticket size
+XS = 3
+S  = 10
+M  = 20
+L  = 40
+
 [defaults.max_concurrent_runs_by_role] # claimed tasks at once per role; a role not listed has no own limit
 reviewer = 2
 
