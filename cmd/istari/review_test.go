@@ -457,6 +457,8 @@ func TestTheImplementerRepliesToAFindingOfTheLatestReview(t *testing.T) {
 	t.Parallel()
 	r := newReviewed(t, replyingAgent)
 	review := endedReviews(t, r.d, r.log, 1)[0].Task
+	r.d.waitForEvents(t, r.ref.String(), "task.completed", 1) // the review task
+	r.d.step(t, "pipeline")                                   // the finding returns the ticket for rework
 	endedRuns(t, r.d, r.log, "implementer", 1)
 	out, _ := os.ReadFile(r.log)
 	if !strings.Contains(string(out), "token_forbidden") {
