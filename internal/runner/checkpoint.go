@@ -177,8 +177,9 @@ func (c *Checkpoints) check(ctx context.Context, run Run, ref tickets.Ref, ws Wo
 // 4.2). The limit bounds the commit, the checks and the push. Past the limit,
 // a push the remote took still makes the checkpoint; otherwise it is
 // abandoned: a commit it made of the leftovers is undone, the work stays
-// uncommitted in the worktree, and a journal note names the limit.
-func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run Run, message string) (journal.Entry, error) {
+// uncommitted in the worktree, and a journal note names the limit. The limit
+// is reached when reached fires, time.After(limit) outside tests.
+func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, reached <-chan time.Time, run Run, message string) (journal.Entry, error) {
 	ref, ws, err := c.resolve(ctx, run)
 	if err != nil {
 		return journal.Entry{}, err
@@ -187,14 +188,21 @@ func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run R
 	if err != nil {
 		return journal.Entry{}, err
 	}
-	limited, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
+	limited, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil) // also ends the wait for the limit
+	go func() {
+		select {
+		case <-reached:
+			cancel(errLimitReached)
+		case <-limited.Done():
+		}
+	}()
 	e, err := c.check(limited, run, ref, ws, message)
 	pushing := err == nil
 	if pushing {
 		err = c.push(limited, ws, run.Dir)
 	}
-	if err != nil && errors.Is(limited.Err(), context.DeadlineExceeded) {
+	if err != nil && errors.Is(context.Cause(limited), errLimitReached) {
 		var taken bool
 		var unknown error // why the remote could not tell whether it took the push
 		if pushing {
@@ -213,6 +221,9 @@ func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, run R
 	}
 	return e, nil
 }
+
+// errLimitReached is why a stop checkpoint's work was cut short at its limit.
+var errLimitReached = errors.New("the stop checkpoint reached its limit")
 
 // confirmTimeout bounds asking the remote whether it took a push cut short.
 const confirmTimeout = 30 * time.Second

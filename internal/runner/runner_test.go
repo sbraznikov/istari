@@ -148,13 +148,7 @@ func (f *runFixture) session(t *testing.T) fakeSession {
 
 func (f *runFixture) waitTask(t *testing.T, id string, want core.TaskState) core.Task {
 	t.Helper()
-	return f.waitTaskWithin(t, id, want, waitFor)
-}
-
-// waitTaskWithin waits up to d for the task to be in state want.
-func (f *runFixture) waitTaskWithin(t *testing.T, id string, want core.TaskState, d time.Duration) core.Task {
-	t.Helper()
-	deadline := time.Now().Add(d)
+	deadline := time.Now().Add(waitFor)
 	for {
 		task, err := f.tasks.Get(ctx, id)
 		if err == nil && task.State == want {
@@ -666,33 +660,46 @@ func TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt(t *testing.T) {
 // when a loaded machine, as CI's race job, stalls the renewals for a moment.
 const stopLease = 5 * time.Second
 
-// stopLimit is the stop checkpoint limit of the tests that reach it. It is
-// long enough for the commit and the checks before the hook or check that
-// the test blocks, however loaded the machine (they take well under a
-// second unloaded; #278 saw them use 6s): the limit is reached only while
-// that blocks. A test that reaches it takes as long, so it is no longer:
-// twenty rounds of the tests that reach it fit the checkpoint's flaky check.
-//
-// This is the one wall-clock margin left (#278): MakeWithin's limit is a
-// real context timeout, so a machine that spends 15s before the gate still
-// reaches it early. Removing it needs a seam in production code that lets
-// the test end the limit; that is a choice for a human, not this test.
-const stopLimit = 15 * time.Second
+// stopLimit is the stop checkpoint limit of the tests that reach it, as the
+// journal note names it. The clock never reaches it: the test's reachedOnce
+// ends the limit, so however slow the machine the limit is reached only
+// while the hook or check the test blocks runs (#278).
+const stopLimit = 15 * time.Minute
 
-// blocks is a shell script that touches started and then blocks past
-// stopLimit; the checkpoint kills it at the limit.
+// blocks is a shell script that touches started and then blocks until the
+// checkpoint kills it at its limit; 90s caps it should the limit never come.
 func blocks(started string) string {
 	return "touch '" + started + "'; sleep 90"
+}
+
+// reachedOnce is the timer of a stop checkpoint limit (RunnerOptions.After)
+// that fires once started exists: the limit is reached when the hook or
+// check the test blocks has started, and never before.
+func reachedOnce(t *testing.T, started string) func(time.Duration) <-chan time.Time {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	return func(time.Duration) <-chan time.Time {
+		at := make(chan time.Time, 1)
+		go func() {
+			for !exists(started) {
+				select {
+				case <-done:
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			at <- time.Now()
+		}()
+		return at
+	}
 }
 
 func TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree(t *testing.T) {
 	t.Parallel()
 	checking := filepath.Join(t.TempDir(), "checking")
-	f, s, task := pausedWithSlowChecks(t, 18, blocks(checking), nil, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit})
+	f, s, task := pausedWithSlowChecks(t, 18, blocks(checking), nil, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, checking)})
 	abandonedAtItsLimit(t, f, s, task, stopLimit)
-	if !exists(checking) {
-		t.Fatal("the check never started, want the limit reached while checking")
-	}
 }
 
 func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
@@ -700,11 +707,8 @@ func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
 	// The remote holds the push past the limit and then refuses it.
 	pushing := filepath.Join(t.TempDir(), "pushing")
 	hooks := map[string]string{"pre-receive": blocks(pushing) + "; exit 1"}
-	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit})
+	f, s, task := pausedWithSlowChecks(t, 20, "true", hooks, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, pushing)})
 	abandonedAtItsLimit(t, f, s, task, stopLimit)
-	if !exists(pushing) {
-		t.Fatal("the push never reached the remote, want the limit reached while pushing")
-	}
 }
 
 // abandonedAtItsLimit checks that a paused run whose stop checkpoint
@@ -714,7 +718,7 @@ func TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned(t *testing.T) {
 func abandonedAtItsLimit(t *testing.T, f *runFixture, s fakeSession, task core.Task, limit time.Duration) {
 	t.Helper()
 	head := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD"))
-	f.waitTaskWithin(t, task.ID, core.TaskReady, limit+waitFor)
+	f.waitTask(t, task.ID, core.TaskReady)
 	f.waitEvent(t, "run.exited")
 	if got := strings.TrimSpace(gitIn(t, s.spec.Workdir, "rev-parse", "HEAD")); got != head {
 		t.Errorf("HEAD = %s, want %s as before the checkpoint", got, head)
@@ -756,12 +760,9 @@ func TestAStopCheckpointWhosePushOutlastsItsLimitIsKept(t *testing.T) {
 	// The remote takes the push at once and answers after the limit: what
 	// it took is the checkpoint, not abandoned work.
 	taken := filepath.Join(t.TempDir(), "taken")
-	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": blocks(taken)}, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit})
-	f.waitTaskWithin(t, task.ID, core.TaskReady, stopLimit+waitFor)
+	f, s, task := pausedWithSlowChecks(t, 19, "true", map[string]string{"post-receive": blocks(taken)}, runner.RunnerOptions{Lease: stopLease, StopCheckpoint: stopLimit, After: reachedOnce(t, taken)})
+	f.waitTask(t, task.ID, core.TaskReady)
 	f.waitEvent(t, "run.exited")
-	if !exists(taken) {
-		t.Fatal("the remote never took the push, want the limit reached after it took it")
-	}
 	if events := f.events(t, "journal.checkpoint"); len(events) != 1 {
 		t.Fatalf("checkpoints = %d, want the pushed one", len(events))
 	}
