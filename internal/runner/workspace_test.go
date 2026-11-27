@@ -419,6 +419,12 @@ func TestPruneReturnsAWorktreeWithoutARecordItKeeps(t *testing.T) {
 		}
 	})
 	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{DataDir: f.data})
+	// istari doctor reads the orphans: they say the directory is kept, so it
+	// does not advise a prune that keeps it again.
+	orphans, err := ws.Orphans(ctx, nil)
+	if err != nil || len(orphans) != 1 || orphans[0].State != runner.WorkspaceKept || orphans[0].Reason != "uncommitted changes" {
+		t.Fatalf("Orphans = %+v, %v; want %s kept for uncommitted changes", orphans, err, w.Dir)
+	}
 	pruned, err := ws.Prune(ctx, nil)
 	if err != nil || len(pruned) != 1 || pruned[0].State != runner.WorkspaceKept || pruned[0].Dir != w.Dir || pruned[0].Reason != "uncommitted changes" {
 		t.Fatalf("Prune = %+v, %v; want %s kept for uncommitted changes", pruned, err, w.Dir)

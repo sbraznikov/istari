@@ -377,14 +377,21 @@ func (w *Workspaces) orphans(ctx context.Context, all []core.Ticket) ([]Workspac
 		}
 	}
 	// Directories istari has no record of, e.g. after its database was lost.
+	// No record keeps their kept state, so it is checked here: a prune would
+	// keep one with unsaved work again.
 	dirs, err := filepath.Glob(filepath.Join(w.opts.DataDir, "workspaces", "*", "*", "*"))
 	if err != nil {
 		return nil, err
 	}
 	for _, dir := range dirs {
-		if !recorded[dir] && !recorded[strings.TrimSuffix(dir, redSuffix)] && isWorktree(ctx, dir) {
-			out = append(out, Workspace{Dir: dir, State: WorkspaceActive, Reason: "no record"})
+		if recorded[dir] || recorded[strings.TrimSuffix(dir, redSuffix)] || !isWorktree(ctx, dir) {
+			continue
 		}
+		o := Workspace{Dir: dir, State: WorkspaceActive, Reason: "no record"}
+		if reason, err := w.unsaved(ctx, dir, "HEAD"); err == nil && reason != "" {
+			o.State, o.Reason = WorkspaceKept, reason
+		}
+		out = append(out, o)
 	}
 	return out, nil
 }
