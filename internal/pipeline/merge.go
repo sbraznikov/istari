@@ -123,14 +123,17 @@ func approveTask(r round) (core.Task, bool) {
 func (e *Engine) approve(ctx context.Context, tk core.Ticket, r round, s MergeSettings, a core.Task) (approved bool, err error) {
 	if s.Mode == MergeAuto {
 		head, refused, err := e.autoRefusals(ctx, tk, r, s)
-		if err != nil {
+		switch {
+		case errors.Is(err, errCIUnknown):
+			// Undecided, not refused: a human may still approve.
+		case err != nil:
 			return false, err
-		}
-		if len(refused) == 0 {
+		case len(refused) == 0:
 			return true, e.complete(ctx, a.ID)
-		}
-		if err := e.refuseAuto(ctx, tk.Ref, head, refused); err != nil {
-			return false, err
+		default:
+			if err := e.refuseAuto(ctx, tk.Ref, head, refused); err != nil {
+				return false, err
+			}
 		}
 	}
 	if e.opts.Approval == nil {
@@ -151,6 +154,10 @@ func (e *Engine) complete(ctx context.Context, id string) error {
 	}
 	return e.tasks.Complete(ctx, lease)
 }
+
+// errCIUnknown: the head's CI has no state yet, so auto mode decides on a
+// later reconcile instead of noting a refusal that would stand for the head.
+var errCIUnknown = errors.New("CI has no state yet")
 
 // autoRefusals checks the conditions of auto mode at once (spec 4.8) and
 // returns the head they were checked at and each one the pull request fails.
@@ -179,7 +186,9 @@ func (e *Engine) autoRefusals(ctx context.Context, tk core.Ticket, r round, s Me
 	}
 	if e.opts.Checks == nil {
 		refuse(CondCI, "CI is not watched")
-	} else if state, _ := e.opts.Checks(ctx, tk.Ref); state != "success" {
+	} else if state, ok := e.opts.Checks(ctx, tk.Ref); !ok {
+		return "", nil, errCIUnknown
+	} else if state != "success" {
 		refuse(CondCI, "CI is %q, not green", state)
 	}
 	if e.opts.Changes == nil {

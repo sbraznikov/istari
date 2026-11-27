@@ -242,12 +242,20 @@ func Load(path string) (*Config, error) {
 // Scales from spec sections 4.7 (sizes) and 4.9 (priorities). XL never goes
 // into work, so it is not a valid auto-merge limit or budget row.
 var (
-	workSizes    = []string{"XS", "S", "M", "L"}
-	priorities   = []string{"P0", "P1", "P2", "P3"}
-	zoneModes    = []string{"serialize", "warn", "off"}
-	mergeModes   = []string{"manual", "after_approval", "auto"}
-	mergeMethods = []string{"squash", "merge", "rebase"}
+	workSizes  = WorkSizes()
+	priorities = []string{"P0", "P1", "P2", "P3"}
+	zoneModes  = []string{"serialize", "warn", "off"}
 )
+
+// WorkSizes are the ticket sizes that go into work (spec 4.7), the rows of
+// the auto-merge and budget limits.
+func WorkSizes() []string { return []string{"XS", "S", "M", "L"} }
+
+// MergeModes are the values of a merge mode (spec 4.8).
+func MergeModes() []string { return []string{"manual", "after_approval", "auto"} }
+
+// MergeMethods are the values of a merge method (spec 12).
+func MergeMethods() []string { return []string{"squash", "merge", "rebase"} }
 
 func (c *Config) validate() error {
 	var errs []error
@@ -275,9 +283,9 @@ func (c *Config) validate() error {
 	positive("defaults.max_attempts", c.Defaults.MaxAttempts)
 	oneOf("defaults.priority", c.Defaults.Priority, priorities)
 	oneOf("defaults.zones", c.Defaults.Zones, zoneModes)
-	oneOf("defaults.merge.mode", c.Defaults.Merge.Mode, mergeModes)
+	oneOf("defaults.merge.mode", c.Defaults.Merge.Mode, MergeModes())
 	oneOf("defaults.merge.auto_max_size", c.Defaults.Merge.AutoMaxSize, workSizes)
-	oneOf("defaults.merge.method", c.Defaults.Merge.Method, mergeMethods)
+	oneOf("defaults.merge.method", c.Defaults.Merge.Method, MergeMethods())
 	for _, table := range []struct {
 		key    string
 		limits map[string]int

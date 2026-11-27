@@ -300,7 +300,8 @@ func (p Pipeline) Settings(global config.Defaults) Settings {
 }
 
 // mergeSettings resolves the pipeline's [merge] over the installation's
-// [defaults.merge]; Validate has checked the types of its keys.
+// [defaults.merge], whose defaults config.Default gives; Validate has checked
+// the types of the pipeline's keys.
 func (p Pipeline) mergeSettings(global config.Merge) MergeSettings {
 	m := MergeSettings{Mode: global.Mode, Method: global.Method, AutoMaxSize: global.AutoMaxSize,
 		AutoMaxLines: global.AutoMaxLines, AutoMaxFiles: global.AutoMaxFiles}
@@ -309,13 +310,8 @@ func (p Pipeline) mergeSettings(global config.Merge) MergeSettings {
 			*into = v
 		}
 	}
+	// Validate has refused any irreversible_paths that is not a string list.
 	m.IrreversiblePaths, _ = stringList(p.Merge["irreversible_paths"])
-	if m.Mode == "" {
-		m.Mode = MergeAfterApproval
-	}
-	if m.Method == "" {
-		m.Method = "squash"
-	}
 	return m
 }
 
@@ -325,9 +321,9 @@ func (p Pipeline) validateMerge() error {
 		key     string
 		allowed []string
 	}{
-		{"mode", []string{MergeManual, MergeAfterApproval, MergeAuto}},
-		{"method", []string{"squash", "merge", "rebase"}},
-		{"auto_max_size", []string{"XS", "S", "M", "L"}}, // XL never goes into work
+		{"mode", config.MergeModes()},
+		{"method", config.MergeMethods()},
+		{"auto_max_size", config.WorkSizes()},
 	} {
 		v, ok := p.Merge[k.key]
 		if !ok {

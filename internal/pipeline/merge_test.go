@@ -224,6 +224,26 @@ func TestInAutoModeEachFailedConditionLeavesThePullRequestToAHumanNamingIt(t *te
 	}
 }
 
+func TestInAutoModeAHeadWhoseCIHasNoStateYetWaitsUnrefused(t *testing.T) {
+	t.Parallel()
+	f := newMergeEngine(t, merging("auto"), nil)
+	f.awaitingApproval(t)
+	f.gh.ci = "" // e.g. the watch has not polled the head since a restart
+	f.reconcile(t)
+	f.reconcile(t)
+	if len(f.gh.merges) != 0 {
+		t.Fatalf("merges = %v, want none while CI has no state", f.gh.merges)
+	}
+	if events, _ := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: pipeline.EventAutoMergeRefused}, 0); len(events) != 0 {
+		t.Fatalf("%d %s events, want none: an unknown CI state is no reason", len(events), pipeline.EventAutoMergeRefused)
+	}
+	f.gh.ci = "success"
+	f.reconcile(t)
+	if len(f.gh.merges) != 1 || f.state(t, ref) != core.TicketDone {
+		t.Fatalf("with CI green: merges %v, ticket %s; want merged and done", f.gh.merges, f.state(t, ref))
+	}
+}
+
 func TestAMergeGitHubRefusesReturnsTheTicketThroughT10Once(t *testing.T) {
 	t.Parallel()
 	f := newMergeEngine(t, merging("after_approval"), nil)
