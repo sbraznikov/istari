@@ -56,9 +56,10 @@ The feature file.
 **Blast Radius:** none
 BODY`
 
-// implementFixture starts a daemon whose repository's full check is full and
-// whose agent's implementer runs implementer; it returns the ticket's number
-// and the agent's log.
+// implementFixture starts a stepped daemon whose repository's full check is
+// full and whose agent's implementer runs implementer; it returns, with the
+// ticket's number and the agent's log, once the ticket is in_progress and
+// its implementer may run. Any later pass is the caller's.
 func implementFixture(t *testing.T, full, implementer string) (d *daemon, gh *githubtest.Server, n int, log string) {
 	t.Helper()
 	server := gitServer(t)
@@ -79,14 +80,23 @@ func implementFixture(t *testing.T, full, implementer string) (d *daemon, gh *gi
 	dataDir := newDataDir(t)
 	log = filepath.Join(t.TempDir(), "agent.log")
 	bin := t.TempDir()
-	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(stageAgent, binary, log, implementer))
+	// The implementer waits until the test lets it (the file $log.go).
+	gated := "  while [ ! -e \"$log.go\" ]; do sleep 0.05; done\n" + implementer
+	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(stageAgent, binary, log, gated))
 	config := filepath.Join(t.TempDir(), "config.toml")
 	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d = startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+	d = startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the ticket, admitted
+	d.step(t, "pipeline") // its plan task
+	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, n), "task.completed", 1)
+	d.step(t, "pipeline") // the accepted plan moves the ticket to in_progress
+	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return d, gh, n, log
 }
 

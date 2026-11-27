@@ -42,8 +42,9 @@ func TestARefineResultCorrectedInTheSameRunCompletesTheRefineTask(t *testing.T) 
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	d.mustCLI(t, nil, "sync")
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the raw ticket
+	d.step(t, "pipeline") // its refine task
 
 	runs := endedRuns(t, d, log, "refiner", 1)
 	out, _ := os.ReadFile(log)

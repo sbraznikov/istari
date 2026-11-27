@@ -23,7 +23,8 @@ func TestTicketCreateMakesAPlanOnceAndDepsPrintsItsTree(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	// Stepped, with no pass: the tickets stay new while deps reads them.
+	d := startSteppedDaemon(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	plan := filepath.Join(t.TempDir(), "plan.yaml")
 	if err := os.WriteFile(plan, []byte("tickets:\n  - key: base\n    title: The base\n    body: \"## Context\\n\\nFirst.\\n\"\n  - key: top\n    title: On top\n    needs: [base]\n    body: \"## Context\\n\\nNeeds #base.\\n\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -266,7 +267,8 @@ func TestTicketCreateTakesThePriorityOfTheTicketsTable(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	// Stepped, with no pass: only ticket create writes the priority.
+	d := startSteppedDaemon(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
 	md := filepath.Join(t.TempDir(), "ticket.md")
 	if err := os.WriteFile(md, []byte("# Rate limits\n\n## Context\n\nLimits protect the API.\n\n---\n\n| Type | Size | Priority | Repository |\n|---|---|---|---|\n| feature | S | P1 | `acme/web` |\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -328,8 +330,10 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server,
 		"PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the ticket, admitted
+	d.step(t, "pipeline") // its plan task
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		out, _ := os.ReadFile(log)
 		if strings.Contains(string(out), "submit exit") {
