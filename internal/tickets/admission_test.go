@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
 	"github.com/sbraznikov/istari/internal/tickets/standard"
@@ -51,6 +52,55 @@ func TestATicketAnAgentCreatesIsCreatedByTheAgentAndAdmittedAsAnAgents(t *testin
 	}
 	if tr[1].Trigger != "accept" || tr[1].Rule != "agent" || tr[1].Parent != ref(parent) {
 		t.Fatalf("T2 = %+v, want accept by the rule agent with the parent %s", tr[1], ref(parent))
+	}
+}
+
+func TestTicketReadyOnAnAgentFiledTicketGivesItItsOwnBudget(t *testing.T) {
+	t.Parallel()
+	f := newSync(t)
+	parent := f.gh.Seed("Parent", conforming, "alex")
+	f.run(t)
+	filed := f.gh.Seed("Found while working", conforming, "alex")
+	split := f.gh.Seed("A part of the parent", conforming, "alex")
+	refs := []tickets.Ref{{Provider: "gh", Repo: githubtest.Repo, Number: filed}, {Provider: "gh", Repo: githubtest.Repo, Number: split}}
+	if err := f.sync.Created(ctx, "agent:implementer-2", refs, ref(parent)); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	if _, err := f.tickets.SetChildren(ctx, "agent:planner-1", ref(parent), []string{ref(split)}); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(t, filed); tk.State != core.TicketReady || tk.BudgetOf != ref(parent) {
+		t.Fatalf("filed ticket = %s sharing %q, want ready sharing %s", tk.State, tk.BudgetOf, ref(parent))
+	}
+	before := len(f.transitions(t, filed))
+
+	err := f.sync.Ready(ctx, "mallory", ref(filed))
+	var e *core.Error
+	if !errors.As(err, &e) || e.Code != tickets.CodeNotTrusted {
+		t.Fatalf("Ready by a non-member = %v, want not_trusted", err)
+	}
+	if err := f.sync.Ready(ctx, "alex", ref(filed)); err != nil {
+		t.Fatalf("Ready by alex: %v", err)
+	}
+	if tk := f.ticket(t, filed); tk.OwnBudgetSince.IsZero() || tk.State != core.TicketReady {
+		t.Fatalf("filed ticket after Ready = %s, own budget since %v; want ready with a budget of its own", tk.State, tk.OwnBudgetSince)
+	}
+	owned := f.events(t, store.Filter{Ticket: ref(filed), TypePrefix: core.EventTicketBudgetOwned})
+	if len(owned) != 1 || owned[0].Actor != "human:alex" {
+		t.Fatalf("budget_owned events = %+v, want one by human:alex", owned)
+	}
+	if after := len(f.transitions(t, filed)); after != before {
+		t.Fatalf("Ready made %d transitions, want none", after-before)
+	}
+
+	for _, n := range []int{split, parent} { // a split child, a ticket filed by nobody
+		err := f.sync.Ready(ctx, "alex", ref(n))
+		if !errors.As(err, &e) || e.Code != core.CodeInvalidState {
+			t.Fatalf("Ready on #%d = %v, want invalid_state as before", n, err)
+		}
+		if tk := f.ticket(t, n); !tk.OwnBudgetSince.IsZero() {
+			t.Fatalf("#%d got a budget of its own", n)
+		}
 	}
 }
 

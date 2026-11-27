@@ -50,6 +50,7 @@ const (
 	EventTicketSized        = "ticket.sized"
 	EventTicketNeedsSet     = "ticket.needs_set"
 	EventTicketChildrenSet  = "ticket.children_set"
+	EventTicketBudgetOwned  = "ticket.budget_owned"
 	EventTicketRoundGranted = "ticket.round_granted"
 )
 
@@ -83,6 +84,11 @@ type Ticket struct {
 	// on it, and whose admission it inherits. It shares that ticket's budget
 	// unless it is one of that ticket's Children (spec section 4.5).
 	BudgetOf string `json:"budget_of,omitempty"`
+	// OwnBudgetSince is when a human admitted this agent-filed ticket and gave
+	// it a budget of its own: runs started from then on count against it, the
+	// earlier ones stay on BudgetOf's (spec section 4.5). Zero means it still
+	// shares.
+	OwnBudgetSince time.Time `json:"own_budget_since,omitzero"`
 	// Children are the tickets a split made of this one (T5); it is done
 	// when they all are (T12).
 	Children []string `json:"children,omitempty"`
@@ -540,6 +546,33 @@ func (m *Tickets) SetChildren(ctx context.Context, actor, ref string, children [
 	return ticket, nil
 }
 
+// OwnBudget gives a ticket that shares the budget of the one it was filed
+// from a budget of its own, from now on (spec section 4.5). A ticket that
+// shares no budget is refused with invalid_ticket; one that has its own
+// already records nothing.
+func (m *Tickets) OwnBudget(ctx context.Context, actor, ref string) (Ticket, error) {
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		if ticket.BudgetOf == "" {
+			return errorf(CodeInvalidTicket, "ticket %s shares no budget; it has its own", ref)
+		}
+		if !ticket.OwnBudgetSince.IsZero() {
+			return nil
+		}
+		ticket.Updated = m.opts.Clock()
+		ticket.OwnBudgetSince = ticket.Updated
+		return m.commit(ctx, actor, EventTicketBudgetOwned, ticket, map[string]any{"from": ticket.BudgetOf, "actor": actor})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
 func transitionPayload(from, to TicketState, trigger, actor string) map[string]any {
 	return map[string]any{"from": from, "to": to, "trigger": trigger, "actor": actor}
 }
@@ -579,7 +612,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet, EventTicketChildrenSet, EventTicketRoundGranted:
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet, EventTicketChildrenSet, EventTicketBudgetOwned, EventTicketRoundGranted:
 		default:
 			continue
 		}
@@ -633,6 +666,8 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			ticket.Needs = p.Needs
 		case EventTicketChildrenSet:
 			ticket.Children = p.Children
+		case EventTicketBudgetOwned:
+			ticket.OwnBudgetSince = e.At
 		case EventTicketRoundGranted:
 			ticket.GrantedRounds++
 		}
