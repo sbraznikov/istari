@@ -209,7 +209,10 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 	}
 
 	// Without the final result line (the process died), the totals are the
-	// sum over messages, each message counted once although it spans lines.
+	// sum over messages, each message counted once although it spans lines,
+	// and the cost is the estimate by claude-opus-5-5's prices: 2700 in,
+	// 65 out, 800 read, 100 write = $0.0108 + $0.0013 + $0.00016 + $0.0008.
+	const estimate = 0.01306
 	truncated := filepath.Join(t.TempDir(), "stream.jsonl")
 	full, _ := os.ReadFile("testdata/stream.jsonl")
 	lines := strings.Split(strings.TrimSpace(string(full)), "\n")
@@ -221,8 +224,11 @@ func TestUsageIsSummedOncePerMessageAndTheExitCodeIsSurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect(t, s)
-	if res, _ = s.Wait(); res.Usage != want || res.ExitCode != 1 {
-		t.Errorf("without a result line: usage %+v exit %d, want %+v exit 1", res.Usage, res.ExitCode, want)
+	res, _ = s.Wait()
+	cost := res.Usage.CostUSD
+	res.Usage.CostUSD = 0
+	if res.Usage != want || !near(cost, estimate) || res.ExitCode != 1 {
+		t.Errorf("without a result line: tokens %+v cost %v exit %d, want %+v cost %v exit 1", res.Usage, cost, res.ExitCode, want, estimate)
 	}
 }
 
@@ -275,6 +281,31 @@ func TestUsageEventsCarryACostDuringTheRunBeforeAnyResultLine(t *testing.T) {
 	}
 	if !near(res.Usage.CostUSD, 0.13604) {
 		t.Errorf("without a result line the run cost = %v, want the estimate 0.13604", res.Usage.CostUSD)
+	}
+}
+
+func TestAModelMissingFromThePriceTableIsPricedAtItsHighestRate(t *testing.T) {
+	t.Parallel()
+	// The highest rate in the table is claude-opus-5-5's: 1000 in + 500 out
+	// = $0.014. A message that names no model is priced the same way.
+	costs, _ := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-future-9","content":[],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+		`{"type":"assistant","session_id":"s","message":{"id":"m2","content":[],"usage":{"input_tokens":1000,"output_tokens":500}}}`,
+	)
+	if len(costs) != 2 || !near(costs[0], 0.014) || !near(costs[1], 0.014) {
+		t.Fatalf("usage event costs = %v, want [0.014 0.014]", costs)
+	}
+}
+
+func TestTheResultLinesCostIsTheRunsCostEvenBelowTheEstimate(t *testing.T) {
+	t.Parallel()
+	// The estimate of the message is $0.12204; Claude Code says $0.05.
+	_, res := usageCosts(t,
+		`{"type":"assistant","session_id":"s","message":{"id":"m1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}}`,
+		`{"type":"result","subtype":"success","is_error":false,"session_id":"s","total_cost_usd":0.05,"usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":200000,"cache_creation_input_tokens":10000}}`,
+	)
+	if res.Usage.CostUSD != 0.05 {
+		t.Fatalf("the run cost = %v, want Claude Code's 0.05", res.Usage.CostUSD)
 	}
 }
 
