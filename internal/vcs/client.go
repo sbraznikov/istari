@@ -304,6 +304,11 @@ func (c *Client) PublishReview(ctx context.Context, repo string, n int, r Review
 	return c.do(ctx, repo, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, n), body, nil)
 }
 
+// ErrMergeRefused is a merge GitHub refused: the pull request is in
+// conflict, or a required check is red or missing (spec section 4.8). It is
+// not retried blindly; a server error is no refusal.
+var ErrMergeRefused = errors.New("merge refused")
+
 // Merge merges the pull request with the method (squash, merge or rebase)
 // and deletes its branch.
 func (c *Client) Merge(ctx context.Context, repo string, n int, method string) error {
@@ -319,6 +324,9 @@ func (c *Client) Merge(ctx context.Context, repo string, n int, method string) e
 		return err
 	}
 	if err := c.do(ctx, repo, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, n), map[string]string{"merge_method": method}, nil); err != nil {
+		if s := status(err); s == http.StatusMethodNotAllowed || s == http.StatusConflict {
+			return fmt.Errorf("%w: %w", ErrMergeRefused, err)
+		}
 		return err
 	}
 	if !strings.EqualFold(pr.Head.Repo.FullName, repo) {
@@ -434,14 +442,16 @@ func status(err error) int {
 // send makes a request and returns the body of its answer; an answer other
 // than 2xx is an error that names GitHub's message.
 func (c *Client) send(ctx context.Context, repo, method, url string, payload []byte) ([]byte, error) {
-	return c.sendAs(ctx, repo, method, url, "application/vnd.github+json", payload)
+	data, _, err := c.sendAs(ctx, repo, method, url, "application/vnd.github+json", payload)
+	return data, err
 }
 
-// sendAs is send with the media type accept.
-func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, payload []byte) ([]byte, error) {
+// sendAs is send with the media type accept; it also returns the answer's
+// headers.
+func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, payload []byte) ([]byte, http.Header, error) {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var reader io.Reader
 	if payload != nil {
@@ -449,7 +459,7 @@ func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, p
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", accept)
@@ -457,9 +467,9 @@ func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, p
 	res, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return nil, transientError{err}
+		return nil, nil, transientError{err}
 	}
 	defer res.Body.Close()
 	data, _ := io.ReadAll(res.Body)
@@ -473,11 +483,11 @@ func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, p
 		}
 		err = statusError{res.StatusCode, err}
 		if limited || tickets.TransientStatus(res.StatusCode, res.Header) {
-			return nil, transientError{err}
+			return nil, nil, transientError{err}
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	return data, nil
+	return data, res.Header, nil
 }
 
 // CodePushRefused refuses a push outside the agent's own ticket branch.

@@ -213,6 +213,32 @@ func TestAMemberOfAnOwningTeamApproves(t *testing.T) {
 	}
 }
 
+func TestChangesCountTheFilesAndLinesOfEveryPageAndReadTheMergeDanger(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	gh.SetPageSize(2)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	body := "## Summary\n\nX.\n\n## Merge Danger\n\nOne-way door; blast radius: data.\n\n## Assumptions\n\nNone."
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X", Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.SetPullFiles(pr.Number,
+		githubtest.File{Path: "a.go", Additions: 10, Deletions: 2},
+		githubtest.File{Path: "b.go", Additions: 1},
+		githubtest.File{Path: "db/old/001.sql", Previous: "db/migrations/001.sql", Additions: 30, Deletions: 5})
+	got, err := c.Changes(ctx, githubtest.Repo, pr.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Paths, " ") != "a.go b.go db/old/001.sql db/migrations/001.sql" || got.Files != 3 || got.Lines != 48 {
+		t.Fatalf("Changes = %+v, want three files, four paths (a rename names its old one) and 48 lines", got)
+	}
+	if got.MergeDanger != "One-way door; blast radius: data." {
+		t.Fatalf("MergeDanger = %q", got.MergeDanger)
+	}
+}
+
 func TestWithoutCodeOwnersNoReviewApproves(t *testing.T) {
 	t.Parallel()
 	gh := githubtest.New(t)
@@ -228,6 +254,40 @@ func TestWithoutCodeOwnersNoReviewApproves(t *testing.T) {
 	}
 	if by != "" {
 		t.Fatalf("Approval = %q, want none without CODEOWNERS", by)
+	}
+}
+
+func TestAMergeGitHubRefusesIsAMergeRefusal(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusMethodNotAllowed, http.StatusConflict} {
+		gh := githubtest.New(t)
+		c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+		pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gh.RefuseMerge(pr.Number, status, "Required status check \"test\" is failing.")
+		err = c.Merge(ctx, githubtest.Repo, pr.Number, "squash")
+		if !errors.Is(err, vcs.ErrMergeRefused) || !strings.Contains(err.Error(), "Required status check") {
+			t.Fatalf("Merge answered %d: err = %v, want ErrMergeRefused with GitHub's message", status, err)
+		}
+		if got := gh.Issue(pr.Number); got.Merged || len(gh.DeletedBranches()) != 0 {
+			t.Fatalf("after a refused merge: merged %v, deleted %v", got.Merged, gh.DeletedBranches())
+		}
+	}
+}
+
+func TestAMergeMetByAServerErrorIsNoRefusal(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token)).WithBackoff(nil)
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.RefuseMerge(pr.Number, http.StatusBadGateway, "Bad Gateway")
+	if err := c.Merge(ctx, githubtest.Repo, pr.Number, "squash"); err == nil || errors.Is(err, vcs.ErrMergeRefused) {
+		t.Fatalf("Merge met a 502: err = %v, want an error that is no ErrMergeRefused", err)
 	}
 }
 

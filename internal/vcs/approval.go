@@ -99,7 +99,7 @@ func (c *Client) latestReviews(ctx context.Context, repo string, n int) (map[str
 // org/team slugs, without the @. A repository without CODEOWNERS has none.
 func (c *Client) codeowners(ctx context.Context, repo, ref string) ([]string, error) {
 	for _, path := range codeownersPaths {
-		body, err := c.sendAs(ctx, repo, http.MethodGet, fmt.Sprintf("%s/repos/%s/contents/%s?ref=%s", c.base, repo, path, url.QueryEscape(ref)), "application/vnd.github.raw+json", nil)
+		body, _, err := c.sendAs(ctx, repo, http.MethodGet, fmt.Sprintf("%s/repos/%s/contents/%s?ref=%s", c.base, repo, path, url.QueryEscape(ref)), "application/vnd.github.raw+json", nil)
 		if status(err) == http.StatusNotFound {
 			continue
 		}

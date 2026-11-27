@@ -100,9 +100,14 @@ type Issue struct {
 	Draft       bool
 	ClosedAt    time.Time
 	Commits     []string // a pull request's commit messages
-	Updated     time.Time
-	Events      []Event
-	Comments    []Comment
+	Files       []File   // a pull request's changed files
+	// MergeRefusal is the status a merge of the pull request answers; 0
+	// merges.
+	MergeRefusal        int
+	MergeRefusalMessage string
+	Updated             time.Time
+	Events              []Event
+	Comments            []Comment
 }
 
 // Event is an issue event: labeled, unlabeled, closed or reopened.
@@ -167,6 +172,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("GET "+repo+"/installation", s.repoInstallation)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/commits", s.listPullCommits)
+	mux.HandleFunc("GET "+repo+"/pulls/{n}/files", s.listPullFiles)
 	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /orgs/{org}/teams/{team}/memberships/{user}", s.teamMembership)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -155,6 +155,37 @@ func (s *Server) AddReview(n int, user, state string) {
 	i.Reviews = append(i.Reviews, Review{User: user, State: state, CommitID: i.HeadSHA})
 }
 
+// File is one changed file of a pull request.
+type File struct {
+	Path                 string
+	Previous             string // a renamed file's old path
+	Additions, Deletions int
+}
+
+// SetPullFiles sets the changed files of a pull request.
+func (s *Server) SetPullFiles(n int, files ...File) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[n].Files = files
+}
+
+func (s *Server) listPullFiles(w http.ResponseWriter, r *http.Request) {
+	i := s.pull(w, r)
+	if i == nil {
+		return
+	}
+	var all []map[string]any
+	for _, f := range i.Files {
+		file := map[string]any{"filename": f.Path, "additions": f.Additions, "deletions": f.Deletions,
+			"changes": f.Additions + f.Deletions, "status": "modified"}
+		if f.Previous != "" {
+			file["status"], file["previous_filename"] = "renamed", f.Previous
+		}
+		all = append(all, file)
+	}
+	s.page(w, r, all)
+}
+
 // AddTeamMember makes login an active member of the team org/slug.
 func (s *Server) AddTeamMember(org, slug, login string) {
 	s.mu.Lock()
@@ -382,9 +413,22 @@ func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
 	s.write(w, http.StatusOK, map[string]any{"id": len(i.Reviews), "state": state})
 }
 
+// RefuseMerge makes every merge of a pull request answer status with
+// message, as GitHub refuses one in conflict (405, 409) or whose required
+// checks are red or missing (405); RefuseMerge(n, 0, "") lifts it.
+func (s *Server) RefuseMerge(n, status int, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[n].MergeRefusal, s.issues[n].MergeRefusalMessage = status, message
+}
+
 func (s *Server) mergePull(w http.ResponseWriter, r *http.Request) {
 	i := s.pull(w, r)
 	if i == nil {
+		return
+	}
+	if i.MergeRefusal != 0 {
+		s.write(w, i.MergeRefusal, map[string]string{"message": i.MergeRefusalMessage})
 		return
 	}
 	var req struct {
