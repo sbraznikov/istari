@@ -19,6 +19,23 @@ istari runs the development lifecycle for coding agents: it takes a ticket to a 
 3. **Do not start a ticket whose `Needs` are still open.**
 4. **Do not change the spec silently.** If it is wrong or incomplete, stop and say so.
 5. **Report checks exactly.** Never call work verified without running it.
+6. **Write every text in a controlled language:** ASD-STE100 for English, УТР for Russian (see "Language").
+
+## Language
+
+The language rule applies to all text you write: documents, code comments, commit messages, issues, pull requests, review findings and messages to the user.
+
+- **English:** ASD-STE100 (Simplified Technical English), its latest issue. Use its writing rules and its dictionary. For a technical name, use the term from `GLOSSARY.md`.
+- **Russian:** УТР (упрощённый технический русский). There is no published standard for it. These rules apply STE100 to Russian:
+  - Одна мысль в предложении. Инструкция: до 20 слов. Описание: до 25 слов.
+  - Абзац: до 6 предложений.
+  - Действительный залог и названный исполнитель: «Демон удаляет worktree».
+  - Глагол, а не отглагольное существительное: «Проверь тикет».
+  - Инструкция: повелительное наклонение, одно действие в предложении.
+  - Одно понятие: один термин, как в `GLOSSARY.md`. Одно слово: одно значение.
+  - Местоимение: только если его предмет однозначен.
+  - Шаги и перечни: списком.
+- Code identifiers, commands, paths and quotes stay as they are.
 
 ## How to work
 
