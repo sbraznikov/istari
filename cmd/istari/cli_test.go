@@ -175,7 +175,8 @@ func TestTicketCommands(t *testing.T) {
 func TestUnholdLiftsOnlyABudgetHold(t *testing.T) {
 	t.Parallel()
 	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
-	ref := "gh:acme/web#1" // the ticket of createTask's tasks
+	// The ticket of createTask's tasks.
+	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
 	hold := func() string {
 		var tk struct{ Hold string }
