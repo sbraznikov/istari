@@ -338,7 +338,9 @@ func (c *Checkpoints) onPrevious(ctx context.Context, ws Workspace, dir, prev, p
 		}
 	}
 	for _, t := range gone {
-		os.Remove(filepath.Join(scratch, t))
+		if err := os.Remove(filepath.Join(scratch, t)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, false, err
+		}
 	}
 	for _, t := range tests {
 		data, err := os.ReadFile(filepath.Join(dir, t))

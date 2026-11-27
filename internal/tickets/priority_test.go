@@ -19,7 +19,9 @@ func (f *syncFixture) prioritized(t *testing.T, n int) []prioritized {
 	var out []prioritized
 	for _, e := range f.events(t, store.Filter{Ticket: ghRef(n), TypePrefix: "ticket.prioritized"}) {
 		var p prioritized
-		json.Unmarshal(e.Payload, &p)
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
 		out = append(out, p)
 	}
 	return out

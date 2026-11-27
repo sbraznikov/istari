@@ -44,7 +44,9 @@ func TestDoctorNamesTheSlotPausedBecauseItsHarnessDidNotStart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	gh := githubtest.New(t)
 	for range 5 { // issue #5 is the ticket; closed, they are not synced or refined

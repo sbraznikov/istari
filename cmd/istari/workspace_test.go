@@ -66,7 +66,9 @@ func startPipelineDaemon(t *testing.T, ref string, before func(s store.Store, se
 	if before != nil {
 		before(s, server, dataDir)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	gh := githubtest.New(t) // the tracker of acme/web
 	config := filepath.Join(t.TempDir(), "config.toml")

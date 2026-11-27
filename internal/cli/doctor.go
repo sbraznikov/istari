@@ -60,8 +60,8 @@ func newDoctorCommand(opts *Options) *cobra.Command {
 				// Pushes and pull requests: the GitHub App, or the gh CLI's
 				// token as that user (spec section 11).
 				v := check{Name: "vcs github", OK: true}
-				switch {
-				case cfg.GitHubApp.AppID == 0:
+				switch cfg.GitHubApp.AppID {
+				case 0:
 					// Without an App the token is the gh CLI's (spec 11).
 					if _, err := github.CLIToken(cmd.Context()); err != nil {
 						v.OK, v.Detail = false, "no [github_app], and "+err.Error()

@@ -65,7 +65,7 @@ func Open(path string) (*SQLite, error) {
 	}
 	s := &SQLite{db: db}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		db.Close() //nolint:errcheck // the migration's error is the one returned
 		return nil, err
 	}
 	return s, nil

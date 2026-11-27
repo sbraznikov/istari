@@ -223,7 +223,7 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 			errs = append(errs, err)
 			continue
 		}
-		if base.side.Closed && finished(tk.State) {
+		if base.Closed && finished(tk.State) {
 			repaired, err := s.repairMerged(ctx, tk)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
@@ -674,7 +674,7 @@ func (s *Syncer) reconcileState(ctx context.Context, x *syncing) error {
 		// Closed before istari labelled it: a request to cancel.
 		return s.request(ctx, x, tracker)
 	case tracker == x.base.side || tracker.State == "" || tracker == local,
-		tracker.Closed && local.State == core.TicketDone && tracker.State == x.base.side.State:
+		tracker.Closed && local.State == core.TicketDone && tracker.State == x.base.State:
 		// The tracker still has what istari last wrote, or no state yet, or
 		// only stray extra labels, or only the close of the issue that the
 		// merge of its PR made after istari finished the ticket (spec 4.8):

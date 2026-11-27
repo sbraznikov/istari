@@ -80,7 +80,9 @@ func startAgentDaemon(t *testing.T, agent string) *agentDaemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	bin := t.TempDir()
 	exectest.Write(t, filepath.Join(bin, "claude"), agent)

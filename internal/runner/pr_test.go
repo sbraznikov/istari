@@ -42,7 +42,11 @@ func prFixture(t *testing.T, pipelineToml string) (*cpFixture, *githubtest.Serve
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	return f, gh, runner.NewPullRequests(f.cp, c, vcs.NewWatcher(c, s, vcs.WatcherOptions{}), f.tickets)
 }
@@ -66,7 +70,9 @@ func loggedPrFixture(t *testing.T, full string) (f *cpFixture, gh *githubtest.Se
 	f, gh, prs = prFixture(t, "[checks]\ntypecheck = \"true\"\ntest = \"true\"\nfull = \"pwd -P >> "+log+"; "+full+"\"\n")
 	runs = func() []string {
 		data, _ := os.ReadFile(log)
-		os.Remove(log)
+		if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 		return strings.Fields(string(data))
 	}
 	return f, gh, prs, runs

@@ -22,7 +22,11 @@ func newTickets(t *testing.T, guards core.Guards) (*core.Tickets, *store.SQLite)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := func() time.Time { return time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC) }
 	return core.NewTickets(s, core.TicketOptions{Clock: clock, Guards: guards}), s
 }

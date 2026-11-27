@@ -49,7 +49,11 @@ func start(t *testing.T, path string, c *clock, exec func(scheduler.Exec) schedu
 		run = exec(run)
 	}
 	d := &daemon{store: s, srv: srv, sched: scheduler.New(srv.Store(), srv.Tasks(), run, scheduler.Options{Clock: c.Now, Prepare: srv.Prepare})}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return d
 }
 
@@ -113,7 +117,9 @@ func TestAScheduledActionFiresOnceAtItsTimeAndSurvivesARestart(t *testing.T) {
 	if tk, _ := d.srv.Tickets().Get(ctx, ref); tk.State != core.TicketNew {
 		t.Fatalf("the action fired early: %s", tk.State)
 	}
-	d.store.Close()
+	if err := d.store.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	d = start(t, path, c, nil) // a restarted daemon
 	c.Advance(5 * time.Minute)
@@ -153,7 +159,7 @@ func TestAnInterruptionBetweenTheActionAndItsRecordDoesNotRepeatTheAction(t *tes
 	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "task.create", create); err != nil {
 		t.Fatal(err)
 	}
-	d.sched.Step(ctx) // runs the action, "dies"
+	d.sched.Step(ctx) //nolint:errcheck // runs the action, "dies": the interruption is the point
 	if err := d.sched.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -212,12 +218,18 @@ func TestAnActionRefusedForNowIsTriedAgainOnTheNextTick(t *testing.T) {
 	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "task.claim", claim); err != nil {
 		t.Fatal(err)
 	}
-	d.sched.Step(ctx) // paused: not yet
+	if err := d.sched.Step(ctx); err != nil { // paused: not yet
+		t.Fatal(err)
+	}
 	if timers, _ := d.sched.List(ctx); timers[0].State != scheduler.TimerPending {
 		t.Fatalf("a paused claim marked the timer %s", timers[0].State)
 	}
-	d.srv.Tasks().Resume(ctx, "human:alex", "")
-	d.sched.Step(ctx)
+	if err := d.srv.Tasks().Resume(ctx, "human:alex", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.sched.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if task, _ := d.srv.Tasks().Get(ctx, "t_1"); task.State != core.TaskClaimed {
 		t.Fatalf("after resume the scheduled claim left t_1 %s", task.State)
 	}
@@ -235,7 +247,9 @@ func TestScheduleChecksTheRequestAndFillsTheActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.sched.Step(ctx)
+	if err := d.sched.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
 	events, _ := d.store.Read(ctx, "", store.Filter{Ticket: "gh:acme/web#1"}, 0)
 	if len(events) != 1 || events[0].Actor != "human:alex" {
 		t.Fatalf("timer %s created %v, want one event by human:alex", timer.ID, events)

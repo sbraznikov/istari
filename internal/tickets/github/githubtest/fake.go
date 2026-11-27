@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -251,7 +253,18 @@ func (s *Server) tick() time.Time {
 func (s *Server) write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck // the status is sent; a body that fails to write means the client went away
+}
+
+// decode reads the request's JSON body into v; an empty body leaves v as it
+// is. A body that is not JSON is answered 400, as GitHub does, and decode
+// reports false.
+func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		s.write(w, http.StatusBadRequest, map[string]string{"message": "Problems parsing JSON"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) issueJSON(i *Issue) map[string]any {
@@ -353,7 +366,9 @@ func (s *Server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		StateReason *string `json:"state_reason"`
 		Body        *string `json:"body"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if req.Body != nil {
 		i.Body = *req.Body
 		i.Updated = s.tick()
@@ -425,7 +440,9 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		Title, Body string
 		Labels      []string
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if !s.checkLabels(w, req.Labels) {
 		return
 	}
@@ -450,7 +467,9 @@ func (s *Server) setLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Labels []string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if !s.checkLabels(w, req.Labels) {
 		return
 	}
@@ -493,7 +512,9 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Body string }
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	if s.failComments > 0 && strings.Contains(req.Body, s.failCommentsOn) {
 		s.failComments--
 		s.write(w, s.failCommentsWith, map[string]string{"message": http.StatusText(s.failCommentsWith)})
@@ -519,7 +540,9 @@ func (s *Server) addSubIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SubIssueID int64 `json:"sub_issue_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !s.decode(w, r, &req) {
+		return
+	}
 	s.subIssues[i.Number] = append(s.subIssues[i.Number], req.SubIssueID)
 	s.write(w, http.StatusCreated, s.issueJSON(i))
 }
@@ -535,7 +558,9 @@ func (s *Server) getLabel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createLabel(w http.ResponseWriter, r *http.Request) {
 	var l Label
-	json.NewDecoder(r.Body).Decode(&l)
+	if !s.decode(w, r, &l) {
+		return
+	}
 	if _, exists := s.labels[l.Name]; exists {
 		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "already_exists"})
 		return

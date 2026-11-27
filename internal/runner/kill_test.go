@@ -52,7 +52,10 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { child.Process.Kill(); child.Wait() })
+	t.Cleanup(func() {
+		child.Process.Kill() //nolint:errcheck // the test has usually killed it already
+		child.Wait()         //nolint:errcheck // it reports the kill
+	})
 	if got := f.waitTask(t, task.ID, core.TaskClaimed); got.Owner != "agent:implementer-1" {
 		t.Fatalf("owner = %s, want the child's implementer-1", got.Owner)
 	}
@@ -60,8 +63,10 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskClaimed || got.Owner != "agent:implementer-1" {
 		t.Fatalf("while the child lives the task is %s by %s", got.State, got.Owner)
 	}
-	child.Process.Signal(syscall.SIGKILL)
-	child.Wait()
+	if err := child.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	child.Wait() //nolint:errcheck // it reports the kill
 
 	time.Sleep(700 * time.Millisecond) // past the last lease
 	if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) != 1 {

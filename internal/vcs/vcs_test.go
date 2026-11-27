@@ -88,7 +88,11 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
@@ -120,7 +124,9 @@ func TestCheckAndReviewStateSurfaceAsEvents(t *testing.T) {
 			continue
 		}
 		var p struct{ Checks, Review string }
-		json.Unmarshal(e.Payload, &p)
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
 		got = append(got, change{e.Type, p.Checks, p.Review})
 	}
 	want := []change{{"vcs.checks", "pending", ""}, {"vcs.checks", "success", ""}, {"vcs.review", "", "approved"}}
@@ -333,7 +339,9 @@ func TestAnAgentCannotRedirectThePush(t *testing.T) {
 	git(t, work, "config", "remote.origin.pushurl", elsewhere)
 	git(t, work, "config", "url."+elsewhere+".pushInsteadOf", remote)
 	hooks := filepath.Join(root, "evil-hooks")
-	os.MkdirAll(hooks, 0o755)
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	exectest.Write(t, filepath.Join(hooks, "pre-push"), "#!/bin/sh\nenv > "+filepath.Join(root, "stolen")+"\n")
 	git(t, work, "config", "core.hooksPath", hooks)
 	spec.Token = "secret-installation-token"
@@ -358,16 +366,24 @@ func TestAMergedPullRequestIsNoLongerPolled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
-	w.Track(ctx, ticket, githubtest.Repo, pr)
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Merge(ctx, githubtest.Repo, pr.Number, "squash"); err != nil {
 		t.Fatal(err)
 	}
-	w.Poll(ctx)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if tr, err := w.PullRequestOf(ctx, ticket); err != nil || !tr.Done {
 		t.Fatalf("after the merge: %+v, %v; want done", tr, err)
 	}
@@ -380,7 +396,11 @@ func TestAPollOfAnUnchangedOrMergedPullRequestMakesNoRequestThatCounts(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
@@ -432,23 +452,35 @@ func TestADismissedReviewAndCommitStatusesAreSeen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
 	pr, _ := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: ticket, Head: "istari/3/x", Base: "main", Title: "X"})
-	w.Track(ctx, ticket, githubtest.Repo, pr)
+	if err := w.Track(ctx, ticket, githubtest.Repo, pr); err != nil {
+		t.Fatal(err)
+	}
 	gh.SetHeadSHA(pr.Number, "def456")
 	gh.SetStatus("def456", "failure") // a repository with commit statuses only
 	gh.AddReview(pr.Number, "alex", "CHANGES_REQUESTED")
-	w.Poll(ctx)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
 	gh.DismissReviews(pr.Number)
-	w.Poll(ctx)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var got []string
 	events, _ := s.Read(ctx, "", store.Filter{Ticket: ticket, TypePrefix: "vcs."}, 0)
 	for _, e := range events {
 		var p struct{ Checks, Review string }
-		json.Unmarshal(e.Payload, &p)
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
 		got = append(got, e.Type+":"+p.Checks+p.Review)
 	}
 	if want := "vcs.tracked: vcs.checks:failure vcs.review:changes_requested vcs.review:none"; strings.Join(got, " ") != want {
@@ -478,7 +510,11 @@ func TestChecksOfACommitOlderThanTheLastPushAreNotTaken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"
@@ -630,7 +666,11 @@ func noCIFixture(t *testing.T) (gh *githubtest.Server, s store.Store, w *vcs.Wat
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	clock := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	now = &clock
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
@@ -734,7 +774,11 @@ func redHead(t *testing.T, checks ...githubtest.Check) (*githubtest.Server, stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	j := journal.New(nil, s, nil)
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{Journal: j})
@@ -1076,7 +1120,11 @@ func watchFixture(t *testing.T) (*githubtest.Server, store.Store, *vcs.Watcher, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
 	w := vcs.NewWatcher(c, s, vcs.WatcherOptions{})
 	ticket := "gh:" + githubtest.Repo + "#3"

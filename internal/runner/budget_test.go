@@ -36,7 +36,7 @@ func TestARunIsCappedAtWhatIsLeftOfItsTicketsBudget(t *testing.T) {
 	if second.spec.MaxBudgetUSD != 3 {
 		t.Fatalf("after $2 spent the next run is capped at $%v, want $3", second.spec.MaxBudgetUSD)
 	}
-	second.Stop(0)
+	second.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 }
 
 func TestNoRunStartsWhenTheTicketsBudgetIsSpent(t *testing.T) {
@@ -99,7 +99,7 @@ func TestTicketsThatShareABudgetSpendItTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := f.session(t)
-	defer c.Stop(0)
+	defer c.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if c.spec.MaxBudgetUSD != 11 {
 		t.Fatalf("the child's run is capped at $%v, want the parent's M budget of $15 less the $4 spent", c.spec.MaxBudgetUSD)
 	}
@@ -138,7 +138,7 @@ func TestAGrandchildSharesTheBudgetOfTheFirstTicket(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := f.session(t)
-	defer g.Stop(0)
+	defer g.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if g.spec.MaxBudgetUSD != 26 {
 		t.Fatalf("the grandchild's run is capped at $%v, want the first ticket's L budget of $30 less the child's $4", g.spec.MaxBudgetUSD)
 	}
@@ -192,7 +192,7 @@ func TestAChildOfASplitHasABudgetOfItsOwnSize(t *testing.T) {
 	child := split(t, f, parent.Ref, 51, "S")
 	implement(t, f, child.Ref)
 	c := f.session(t)
-	defer c.Stop(0)
+	defer c.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if c.spec.MaxBudgetUSD != 5 {
 		t.Fatalf("the split child's run is capped at $%v, want its own S budget of $5", c.spec.MaxBudgetUSD)
 	}
@@ -217,7 +217,7 @@ func TestATicketFiledWhileWorkingOnASplitChildSharesTheChildsBudget(t *testing.T
 	f.fire(t, filed.Ref, "accept", "start")
 	implement(t, f, filed.Ref)
 	g := f.session(t)
-	defer g.Stop(0)
+	defer g.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if g.spec.MaxBudgetUSD != 1 {
 		t.Fatalf("the filed ticket's run is capped at $%v, want the child's S budget of $5 less the child's $4", g.spec.MaxBudgetUSD)
 	}
@@ -249,7 +249,7 @@ func TestLiftingABudgetHoldAfterRaisingTheSizeRunsTheTaskAgain(t *testing.T) {
 		t.Fatalf("hold = %q after lifting, want none", lifted.Hold)
 	}
 	s := f.session(t) // the task is ready again and handed out
-	defer s.Stop(0)
+	defer s.Stop(0)   //nolint:errcheck // the fake session's Stop always returns nil
 	if s.spec.MaxBudgetUSD != 3 {
 		t.Fatalf("the next run is capped at $%v, want the S budget of $5 less the $2 spent", s.spec.MaxBudgetUSD)
 	}
@@ -327,7 +327,7 @@ func TestLiftingABudgetHoldAnywayLetsTheNextRunStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := f.session(t)
-	defer s.Stop(0)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if s.spec.MaxBudgetUSD != 2 {
 		t.Fatalf("the run let start anyway is capped at $%v, want the XS budget of $2", s.spec.MaxBudgetUSD)
 	}
@@ -356,7 +356,7 @@ func TestARunLetStartAnywayStartsAfterADaemonRestart(t *testing.T) {
 	})
 	f.start(t)
 	s := f.session(t)
-	defer s.Stop(0)
+	defer s.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
 	if s.spec.MaxBudgetUSD != 2 {
 		t.Fatalf("the run let start anyway is capped at $%v after a restart, want the XS budget of $2", s.spec.MaxBudgetUSD)
 	}
