@@ -127,9 +127,15 @@ var transitions = func() []transition {
 		{"T14", TicketCanceled, "reopen", TicketNew},
 		{"T15", TicketReady, "edited", TicketNew},
 	}
-	// T13: any state except done and canceled → canceled.
+	// T13: any state except done and canceled → canceled. T16: a human who
+	// closes the issue as completed finishes the ticket; from canceled it
+	// repairs one an earlier sync canceled for that close. After T11 and T12,
+	// so that TriggerTo(…, done) stays theirs.
 	for _, from := range []TicketState{TicketNew, TicketReady, TicketPlanning, TicketInProgress, TicketInReview, TicketAwaitingApproval} {
 		rows = append(rows, transition{"T13", from, "cancel", TicketCanceled})
+	}
+	for _, from := range []TicketState{TicketNew, TicketReady, TicketPlanning, TicketInProgress, TicketInReview, TicketAwaitingApproval, TicketCanceled} {
+		rows = append(rows, transition{"T16", from, "complete", TicketDone})
 	}
 	return rows
 }()
@@ -159,7 +165,7 @@ func findTransition(from TicketState, trigger string) (transition, bool) {
 // transition, or an error that explains the refusal.
 type Guard func(ctx context.Context, t Ticket) error
 
-// Guards maps a transition id ("T2" … "T15") to its condition. A transition
+// Guards maps a transition id ("T2" … "T16") to its condition. A transition
 // without a guard is allowed whenever the table allows it. The conditions
 // themselves (admission, free slots, plan, CI…) belong to later components.
 type Guards map[string]Guard
@@ -284,11 +290,14 @@ func (m *Tickets) Recover(ctx context.Context, actor string, nt NewTicket, state
 
 const triggerRecover = "recover"
 
+// endTriggers end a ticket whatever its hold, and clear it (spec section 4.1).
+var endTriggers = []string{"cancel", "merged", "complete"}
+
 // Fire applies the transition for trigger from the ticket's current state.
 // A pair (state, trigger) outside the table fails with invalid_transition and
 // a refused guard with guard_failed; neither appends anything. While a hold is
-// set the state does not change: only cancel and merged are allowed, and they
-// clear it (spec section 4.1).
+// set the state does not change: only cancel, merged and complete are
+// allowed, and they clear it (spec section 4.1).
 func (m *Tickets) Fire(ctx context.Context, actor, ref, trigger string) (Ticket, error) {
 	return m.FireWith(ctx, actor, ref, trigger, nil)
 }
@@ -307,7 +316,7 @@ func (m *Tickets) FireWith(ctx context.Context, actor, ref, trigger string, more
 		if !ok {
 			return errorf(CodeInvalidTransition, "ticket %s is %s; %s is not allowed from there", ref, ticket.State, trigger)
 		}
-		if ticket.Hold != "" && trigger != "cancel" && trigger != "merged" {
+		if ticket.Hold != "" && !slices.Contains(endTriggers, trigger) {
 			return errorf(CodeTicketHeld, "ticket %s is on hold (%s)", ref, ticket.Hold)
 		}
 		if guard := m.opts.Guards[row.id]; guard != nil {
@@ -323,7 +332,7 @@ func (m *Tickets) FireWith(ctx context.Context, actor, ref, trigger string, more
 		}
 		ticket.State = row.to
 		if row.to.Finished() && ticket.Hold != "" {
-			// A finished ticket carries no hold; cancel and merged end it.
+			// A finished ticket carries no hold; the end triggers end it.
 			payload["hold_cleared"] = ticket.Hold
 			ticket.Hold = ""
 		}

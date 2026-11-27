@@ -19,7 +19,7 @@ The words of istari, as `docs/design.md` and the code use them. Code, tests, mes
 ## States
 
 - **Ticket state**: one of `new`, `ready`, `planning`, `in_progress`, `in_review`, `awaiting_approval`, `done`, `canceled`. Stored as the label `istari:<state>`. [4.1]
-- **Transition**: a change of a ticket's state by an event of the transition table, named T1 to T15 (T7 `changes_requested`, T8 `review_passed`, …). There are no others. [4.1]
+- **Transition**: a change of a ticket's state by an event of the transition table, named T1 to T16 (T7 `changes_requested`, T8 `review_passed`, …). There are no others. [4.1]
 - **Hold**: a flag over a ticket's state that stops its tasks from being handed out: `needs_input`, `attempts_exhausted`, `budget_exceeded`, `paused`, `waiting_dependency`, `waiting_zone`. Stored as the label `istari:hold:<reason>`. [4.1]
 - **Task state**: one of `waiting`, `ready`, `claimed`, `blocked`, `completed`, `failed`, `canceled`. [4.2]
 - **Lease**: a claimed task's time-limited ownership, renewed by its runner; when it runs out the task returns to `ready`. [4.2]

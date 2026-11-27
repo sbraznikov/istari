@@ -154,6 +154,39 @@ func TestAStandardsQuoteIsCheckedInItsFileOnMainAcrossLineBreaks(t *testing.T) {
 	}
 }
 
+func TestASpecFindingMayQuoteARepositoryFileOnMain(t *testing.T) {
+	t.Parallel()
+	f := newReviewsWith(t, map[string]string{"docs/design.md": "# Design\n\nA cache entry expires\nafter one minute.\n"})
+	checked := f.submit(t, `
+standards: 0 findings
+spec: 1 finding
+findings:
+  - {axis: spec, kind: missing, file: cache/cache.go, line: 3, source: docs/design.md, quote: A cache entry expires after one minute., text: Get never expires an entry}
+`)
+	if len(checked.Accepted) != 1 || checked.Accepted[0].Source != "docs/design.md" {
+		t.Fatalf("checked = %+v, want the finding accepted with source docs/design.md", checked)
+	}
+}
+
+func TestASpecFindingWhoseQuoteIsNotInTheRepositoryFileIsDropped(t *testing.T) {
+	t.Parallel()
+	f := newReviewsWith(t, map[string]string{"docs/design.md": "# Design\n\nA cache entry expires after one minute.\n"})
+	finding := func(source, quote string) string {
+		return "  - {axis: spec, kind: wrong, file: cache/cache.go, line: 3, source: " + source + ", quote: " + quote + ", text: t}\n"
+	}
+	checked := f.submit(t, "standards: 0 findings\nspec: 2 findings\nfindings:\n"+
+		finding("docs/design.md", "A cache entry never expires.")+
+		finding("docs/adr/0001-cache.md", "A cache entry expires after one minute."))
+	if len(checked.Accepted) != 0 || len(checked.Dropped) != 2 {
+		t.Fatalf("checked = %+v, want both dropped", checked)
+	}
+	for i, want := range []string{"the quote is not in docs/design.md", "docs/adr/0001-cache.md is not a file on the main branch"} {
+		if !strings.Contains(checked.Dropped[i].Reason, want) {
+			t.Errorf("finding %d dropped for %q, want %q", i+1, checked.Dropped[i].Reason, want)
+		}
+	}
+}
+
 func TestAReportOutsideItsSchemaIsRejected(t *testing.T) {
 	t.Parallel()
 	const good = "{axis: spec, kind: missing, file: a.go, line: 1, source: ticket, quote: q, text: t}"
@@ -337,7 +370,7 @@ func TestAQuoteMustComeFromTheSourceItsAxisAndKindAllow(t *testing.T) {
 		return "  - {axis: " + axis + ", kind: " + kind + ", file: cache/cache.go, line: 3, source: " + source + ", quote: \"" + quote + "\", text: t}\n"
 	}
 	checked := f.submit(t, "standards: s\nspec: s\nfindings:\n"+
-		finding("spec", "missing", "CODING_STANDARDS.md", "Every exported function has a doc comment.")+ // Spec quotes the ticket
+		finding("spec", "missing", "instructions", "Mysterious name")+ // Spec quotes the ticket or a repository file
 		finding("standards", "standard", "ticket", "Add a cache in front of the store.")+ // a standard quotes a standard
 		finding("standards", "standard", "cache/cache.go", "package cache")+ // code is no standard
 		finding("standards", "smell", "CODING_STANDARDS.md", "Every exported function has a doc comment.")+ // a smell quotes the baseline
@@ -345,7 +378,7 @@ func TestAQuoteMustComeFromTheSourceItsAxisAndKindAllow(t *testing.T) {
 	if len(checked.Accepted) != 0 || len(checked.Dropped) != 5 {
 		t.Fatalf("checked = %+v, want all five dropped", checked)
 	}
-	for i, want := range []string{"a spec finding quotes the ticket", "a standard finding quotes a standards file", "cache/cache.go is not a standards file", "a smell finding quotes the baseline", "not a code smell of the baseline"} {
+	for i, want := range []string{"a spec finding quotes the ticket or a repository file", "a standard finding quotes a standards file", "cache/cache.go is not a standards file", "a smell finding quotes the baseline", "not a code smell of the baseline"} {
 		if !strings.Contains(checked.Dropped[i].Reason, want) {
 			t.Errorf("finding %d dropped for %q, want %q", i+1, checked.Dropped[i].Reason, want)
 		}

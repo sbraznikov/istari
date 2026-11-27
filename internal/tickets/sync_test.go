@@ -256,6 +256,9 @@ func TestATicketThatIsDoneIsNotReadAgain(t *testing.T) {
 			if got := f.gh.Issue(n).State; got != "closed" {
 				t.Fatalf("issue state after the sync = %s, want closed", got)
 			}
+			if state == core.TicketCanceled {
+				f.run(t) // reads the close reason once, for the repair to done (T16)
+			}
 			before := len(f.gh.Counted())
 			f.run(t)
 			f.run(t)
@@ -641,8 +644,8 @@ func TestATicketMadeInIstariForAClosedIssueDoesNotReopenIt(t *testing.T) {
 	if issue := f.gh.Issue(n); issue.State != "closed" {
 		t.Fatalf("the closed issue was reopened: %+v", issue)
 	}
-	if tk := f.ticket(t, n); tk.State != core.TicketCanceled {
-		t.Fatalf("state = %s, want canceled: the issue is closed", tk.State)
+	if tk := f.ticket(t, n); tk.State != core.TicketDone {
+		t.Fatalf("state = %s, want done: the issue is closed as completed (T16)", tk.State)
 	}
 }
 
