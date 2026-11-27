@@ -132,7 +132,10 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
 			return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
 		}
-		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Merged: srv.merged}
+		answer := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) (bool, error) {
+			return j.AnswerComment(ctx, srv.tickets, ref, c)
+		}
+		syncOpts := tickets.SyncOptions{Clock: opts.Clock, Standards: opts.Standards, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Answer: answer, Merged: srv.merged}
 		if opts.GitHub != nil {
 			syncOpts.Hold = opts.GitHub.Hold
 		}

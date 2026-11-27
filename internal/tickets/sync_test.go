@@ -32,6 +32,7 @@ type syncFixture struct {
 	tickets *core.Tickets
 	sync    *tickets.Syncer
 	adapter *github.Provider
+	journal *journal.Journal
 }
 
 // newSync syncs acme/web; trusted is its project's trusted list (empty:
@@ -58,8 +59,11 @@ func newSync(t *testing.T, trusted ...string) *syncFixture {
 	comment := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) error {
 		return j.Append(ctx, ref, journal.Entry{Kind: journal.Comment, Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
 	}
-	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment})
-	return &syncFixture{gh: gh, store: s, tickets: k, sync: syncer, adapter: adapter}
+	answer := func(ctx context.Context, ref tickets.Ref, c tickets.Comment) (bool, error) {
+		return j.AnswerComment(ctx, k, ref, c)
+	}
+	syncer := tickets.NewSyncer(adapter, k, s, []tickets.SyncRepo{{Repo: githubtest.Repo, Project: "web", Trusted: trusted}}, tickets.SyncOptions{Clock: clock, Standards: standard.ForTracker{Tracker: adapter, DefaultPriority: "P2"}, Needs: standard.Needs, Parent: standard.Parent, Note: note, Comment: comment, Answer: answer})
+	return &syncFixture{gh: gh, store: s, tickets: k, sync: syncer, adapter: adapter, journal: j}
 }
 
 func (f *syncFixture) run(t *testing.T) tickets.SyncReport {
@@ -427,6 +431,67 @@ func TestATrustedMembersCommentOnATicketInWorkIsAJournalEntry(t *testing.T) {
 	}
 	if want := []string{"human:alex: TestX fails on CI only: it needs TZ=UTC."}; !slices.Equal(got, want) {
 		t.Fatalf("comment entries = %q, want %q", got, want)
+	}
+}
+
+func TestATrustedMembersCommentAnswersAnOpenQuestionOfATicketInNew(t *testing.T) {
+	t.Parallel()
+	f := newSync(t) // no trusted list: alex administers, and istari writes as alex too
+	f.gh.SetPermission("mallory", "read")
+	n := f.gh.Seed("Add a cache", "", "bob") // does not meet the standard: stays new
+	f.run(t)
+	ref, _ := tickets.ParseRef(ghRef(n))
+	for _, q := range []journal.Entry{
+		{Kind: journal.Question, Actor: "agent:refiner-1", ID: "r_1-q1", Text: "Is the type chore?"},
+		{Kind: journal.Question, Actor: "agent:refiner-1", ID: "r_1-q2", Text: "Which size?"},
+	} {
+		if err := f.journal.Append(ctx, ref, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.tickets.SetHold(ctx, "agent:refiner-1", ghRef(n), "needs_input"); err != nil {
+		t.Fatal(err)
+	}
+	answers := func() []string {
+		t.Helper()
+		entries, err := f.journal.Stored(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range entries {
+			if e.Kind == journal.Answer || e.Kind == journal.Comment {
+				got = append(got, string(e.Kind)+" "+e.ID+" "+e.Actor+": "+e.Text)
+			}
+		}
+		return got
+	}
+	if err := f.journal.Append(ctx, ref, journal.Entry{Kind: journal.Note, Actor: "system", Text: "istari's own note, as alex"}); err != nil {
+		t.Fatal(err)
+	}
+	f.gh.HumanComment(n, "alex", "<!-- istari:journal {\"kind\":\"note\",\"actor\":\"system\",\"text\":\"copied\"} -->")
+	f.gh.HumanComment(n, "mallory", "Yes, chore.")
+	f.run(t)
+	if got := answers(); len(got) != 0 {
+		t.Fatalf("answers before a trusted member's comment = %q", got)
+	}
+	if h := f.ticket(t, n).Hold; h != "needs_input" {
+		t.Fatalf("hold = %q, want needs_input", h)
+	}
+	f.gh.HumanComment(n, "alex", "Yes, chore.")
+	f.run(t)
+	f.run(t) // taken once
+	if h := f.ticket(t, n).Hold; h != "needs_input" {
+		t.Fatalf("after one of two answers the hold = %q, want needs_input", h)
+	}
+	f.gh.HumanComment(n, "alex", "Size S.")
+	f.run(t)
+	want := []string{"answer r_1-q1 human:alex: Yes, chore.", "answer r_1-q2 human:alex: Size S."}
+	if got := answers(); !slices.Equal(got, want) {
+		t.Fatalf("entries = %q, want %q", got, want)
+	}
+	if tk := f.ticket(t, n); tk.Hold != "" || tk.State != core.TicketNew {
+		t.Fatalf("ticket = %s (hold %q), want new without a hold", tk.State, tk.Hold)
 	}
 }
 

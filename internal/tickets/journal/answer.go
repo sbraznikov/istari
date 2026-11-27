@@ -81,6 +81,21 @@ func liftNeedsInput(ctx context.Context, holds *core.Tickets, actor, ref string)
 
 const needsInput = "needs_input"
 
+// AnswerComment takes a trusted member's comment on the ticket as the answer
+// to an open question (SyncOptions.Answer) and tells whether it did. A
+// comment with a journal marker is istari's, or a copy of it: never an
+// answer.
+func (j *Journal) AnswerComment(ctx context.Context, holds *core.Tickets, ref tickets.Ref, c tickets.Comment) (bool, error) {
+	if c.Own || strings.Contains(c.Body, "<!-- istari:journal") {
+		return false, nil
+	}
+	_, err := j.Answer(ctx, holds, ref, Reply{Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
+	if errors.Is(err, ErrNoOpenQuestion) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // openQuestions returns the ids of the questions without an answer, oldest
 // first.
 func openQuestions(entries []Entry) []string {
