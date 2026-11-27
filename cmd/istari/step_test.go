@@ -118,7 +118,7 @@ func TestAStepOfAnUnknownLoopIsABadRequest(t *testing.T) {
 
 func TestADaemonNotSteppedHasNoStep(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // the test is of a daemon started without --stepped
 	if status, body := d.stepStatus(t, "sync"); status != http.StatusNotFound {
 		t.Fatalf("step on a daemon without --stepped: %d %s, want 404", status, body)
 	}
