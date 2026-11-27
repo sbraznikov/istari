@@ -1390,8 +1390,27 @@ func (s *Syncer) created(ctx context.Context, actor string, ref Ref, parent core
 	return s.admit(ctx, &syncing{repo: repo, t: t, tk: tk, base: base, version: version, report: &report}, "system", admittedAs{rule: ruleAgent, parent: parent.Ref}, conf)
 }
 
+// filed reports whether an agent filed the ticket while working on another
+// whose budget it shares: it has a BudgetOf and is not a child of a split.
+func (s *Syncer) filed(ctx context.Context, tk core.Ticket) (bool, error) {
+	if tk.BudgetOf == "" {
+		return false, nil
+	}
+	parent, err := s.tickets.Get(ctx, tk.BudgetOf)
+	var ce *core.Error
+	if errors.As(err, &ce) && ce.Code == core.CodeNotFound {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !slices.Contains(parent.Children, tk.Ref), nil
+}
+
 // Ready admits a ticket by hand (istari ticket ready): login must be a
-// trusted member and the ticket must meet the standard.
+// trusted member and the ticket must meet the standard. On a ticket an agent
+// filed it gives the ticket a budget of its own, in new or in any later
+// unfinished state (spec section 4.5).
 func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1418,7 +1437,11 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	if err != nil {
 		return err
 	}
-	if tk.State != core.TicketNew {
+	filed, err := s.filed(ctx, tk)
+	if err != nil {
+		return err
+	}
+	if tk.State != core.TicketNew && (!filed || tk.State.Finished()) {
 		return &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("%s is %s, not new", ref, tk.State)}
 	}
 	trusted, err := s.trusted(ctx, repo, login)
@@ -1427,6 +1450,16 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	}
 	if !trusted {
 		return &core.Error{Code: CodeNotTrusted, Message: fmt.Sprintf("%s is not a trusted member of %s", login, repo.Project)}
+	}
+	if filed {
+		// A trusted member judged a ticket an agent filed worth doing: it
+		// stops sharing the budget it was filed from (spec section 4.5).
+		if tk, err = s.tickets.OwnBudget(ctx, "human:"+login, tk.Ref); err != nil {
+			return err
+		}
+		if tk.State != core.TicketNew {
+			return nil
+		}
 	}
 	conf, err := s.conformance(ctx, repo, t)
 	if err != nil {
