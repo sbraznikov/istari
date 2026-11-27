@@ -249,29 +249,10 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 		d.mustCLI(t, &tk, "ticket", "show", ref)
 		return tk.Hold
 	}
-	eventually := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(15 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s\nstderr: %s", what, d.stderr)
-			}
-		}
-	}
-	// The daemon's own planner slot has no harness: it claims the plan task
-	// and gives it back after each failed start, three times, then claims
-	// nothing for a minute. The test claims by hand once the slot is paused.
-	for deadline := time.Now().Add(90 * time.Second); !strings.Contains(d.stderr.String(), "runner planner-1: paused for"); time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the planner slot did not pause\nstderr: %s", d.stderr)
-		}
-	}
-
+	// The daemon has no runner slot: the test is the only planner.
 	var l lease
 	for range core.DefaultMaxAttempts {
-		eventually("the plan task does not become ready", func() bool {
-			out, _, code := d.cli(t, "--json", "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
-			return code == 0 && json.Unmarshal([]byte(out), &l) == nil
-		})
+		d.mustCLI(t, &l, "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
 		if h := hold(); h != "" {
 			t.Fatalf("hold = %q below the attempt limit, want none", h)
 		}
@@ -292,10 +273,7 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 		t.Fatalf("after retry the hold is %q", h)
 	}
 	// The ticket goes on: its planner can claim the plan task again.
-	eventually("the retried plan task cannot be claimed", func() bool {
-		out, _, code := d.cli(t, "--json", "task", "claim", l.Task, "--actor", "agent:planner-1")
-		return code == 0 && json.Unmarshal([]byte(out), &l) == nil
-	})
+	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
 	if h := hold(); h != "" {
 		t.Fatalf("after the retried task was claimed the hold is %q", h)
 	}

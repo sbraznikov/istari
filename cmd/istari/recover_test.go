@@ -45,7 +45,7 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startSteppedDaemon(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d := startSteppedDaemon(t, dataDir, config, "PATH="+withoutHarness(t, fakeGH(t, gh.Token)), "GITHUB_API_URL="+gh.URL)
 
 	var synced struct{ Unknown int }
 	d.mustCLI(t, &synced, "sync") // the sync leaves lost tickets alone, and says so
@@ -80,13 +80,10 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	d.mustCLI(t, &tasks, "task", "list")
 	found := false
 	for _, task := range tasks {
-		// Ready, or already claimed by the daemon's own implementer slot:
-		// the runner hands a ready task out at once.
-		open := task.State == "ready" || task.State == "claimed"
-		found = found || (task.Ticket == ref.String() && task.Role == "implementer" && open)
+		found = found || (task.Ticket == ref.String() && task.Role == "implementer" && task.State == "ready")
 	}
 	if !found {
-		t.Fatalf("the recovered ticket in progress has no open implementer task: %+v\n%s", tasks, d.stderr)
+		t.Fatalf("the recovered ticket in progress has no ready implementer task: %+v\n%s", tasks, d.stderr)
 	}
 	if labels := gh.Issue(held).Labels; len(labels) != 3 {
 		t.Fatalf("recover changed the tracker's labels: %v", labels)

@@ -183,7 +183,7 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
+	env := []string{"PATH=" + withoutHarness(t, fakeGH(t, gh.Token)), "GITHUB_API_URL=" + gh.URL}
 	d := startSteppedDaemon(t, dataDir, config, env...)
 	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 	refinesOf := func(ref string) int {
