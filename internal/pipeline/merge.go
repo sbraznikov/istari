@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // Refusal is one condition of auto mode (spec 4.8) a pull request fails:
@@ -71,13 +73,35 @@ func (e *Engine) mergeStage(ctx context.Context, tk core.Ticket, r round, fire f
 	if m, err = e.tasks.Get(ctx, m.ID); err != nil || m.State != core.TaskReady {
 		return err // the approval is not given yet
 	}
-	if err := e.opts.Merge(ctx, tk.Ref, s.Merge.Method); err != nil {
-		return err
+	if err := e.opts.Merge(ctx, tk.Ref, s.Merge.Method); errors.Is(err, vcs.ErrMergeRefused) {
+		return e.mergeRefused(ctx, tk, err)
+	} else if err != nil {
+		return err // GitHub's passing trouble: the next reconcile merges again
 	}
 	if err := e.complete(ctx, m.ID); err != nil {
 		return err
 	}
 	return fire("merged") // T11
+}
+
+// mergeRefused returns a ticket whose merge GitHub refused (a conflict, a red
+// or missing required check) for rework through T10 merge_failed (spec 4.8):
+// the journal names GitHub's reason, the round's open tasks end and a
+// conflict round starts from implement. The merge is not tried again blindly.
+func (e *Engine) mergeRefused(ctx context.Context, tk core.Ticket, refusal error) error {
+	note := fmt.Sprintf("GitHub refused the merge of the pull request: %v. The ticket returns for rework (T10, merge_failed); a conflict round starts from implement (spec 4.8)", refusal)
+	if err := e.noteOnce(ctx, tk.Ref, note); err != nil {
+		return err
+	}
+	all, err := e.tasks.List(ctx) // the round as the approval left it
+	if err != nil {
+		return err
+	}
+	if err := e.nextRound(ctx, tk.Ref, e.opts.Actor, roundOf(tk.Ref, all), conflictRound); err != nil {
+		return err
+	}
+	_, err = e.tickets.Fire(ctx, e.opts.Actor, tk.Ref, "merge_failed") // T10
+	return err
 }
 
 // approveTask returns the round's approval given as a GitHub review.

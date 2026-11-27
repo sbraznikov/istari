@@ -3,6 +3,8 @@ package pipeline_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +27,7 @@ type github struct {
 	ci         string   // the head's CI state
 	findings   int      // the review's accepted findings
 	changes    vcs.Changes
+	mergeErr   error // what a merge answers; nil merges
 }
 
 func (g *github) merged(context.Context, string) (bool, error) { return g.humanMerge, nil }
@@ -43,6 +46,9 @@ func (g *github) approval(context.Context, string) (string, error) {
 }
 
 func (g *github) merge(_ context.Context, _, method string) error {
+	if g.mergeErr != nil {
+		return g.mergeErr
+	}
 	g.merges = append(g.merges, method)
 	return nil
 }
@@ -215,6 +221,64 @@ func TestInAutoModeEachFailedConditionLeavesThePullRequestToAHumanNamingIt(t *te
 				t.Fatalf("after a human's approval: merges %v, ticket %s; want merged and done", f.gh.merges, f.state(t, ref))
 			}
 		})
+	}
+}
+
+func TestAMergeGitHubRefusesReturnsTheTicketThroughT10Once(t *testing.T) {
+	t.Parallel()
+	f := newMergeEngine(t, merging("after_approval"), nil)
+	f.awaitingApproval(t)
+	f.gh.approvedBy = "kim"
+	f.gh.mergeErr = fmt.Errorf("%w: github: PUT /repos/acme/web/pulls/7/merge: 405 Required status check \"test\" is expected.", vcs.ErrMergeRefused)
+	f.reconcile(t)
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketInProgress {
+		t.Fatalf("after the refused merge the ticket is %s, want in_progress (T10)", st)
+	}
+	impl := f.stage(t, ref, "implement")
+	if !strings.Contains(impl.ID, "_r2c_") || impl.State != core.TaskReady {
+		t.Fatalf("implement = %s (%s), want round 2's conflict round, ready", impl.ID, impl.State)
+	}
+	var notes []string
+	r, _ := tickets.ParseRef(ref)
+	entries, _ := f.journal.Stored(ctx, r)
+	for _, en := range entries {
+		if en.Kind == journal.Note && strings.Contains(en.Text, "refused the merge") {
+			notes = append(notes, en.Text)
+		}
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], `Required status check "test" is expected.`) || !strings.Contains(notes[0], "merge_failed") {
+		t.Fatalf("notes = %q, want one naming GitHub's reason and T10", notes)
+	}
+	transitions, _ := f.store.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: "ticket.transitioned"}, 0)
+	failed := 0
+	for _, ev := range transitions {
+		if strings.Contains(string(ev.Payload), "merge_failed") {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("T10 fired %d times, want once", failed)
+	}
+}
+
+func TestAMergeMetByAnOutageIsTriedAgainOnTheNextReconcile(t *testing.T) {
+	t.Parallel()
+	f := newMergeEngine(t, merging("after_approval"), nil)
+	f.awaitingApproval(t)
+	f.gh.approvedBy = "kim"
+	f.gh.mergeErr = errors.New("github: PUT /repos/acme/web/pulls/7/merge: 502 Bad Gateway")
+	all, _ := f.tickets.List(ctx)
+	if err := f.engine.Reconcile(ctx, all); err == nil {
+		t.Fatal("Reconcile hid the failed merge")
+	}
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("after the outage the ticket is %s, want awaiting_approval", st)
+	}
+	f.gh.mergeErr = nil
+	f.reconcile(t)
+	if len(f.gh.merges) != 1 || f.state(t, ref) != core.TicketDone {
+		t.Fatalf("on the next reconcile: merges %v, ticket %s; want merged and done", f.gh.merges, f.state(t, ref))
 	}
 }
 
