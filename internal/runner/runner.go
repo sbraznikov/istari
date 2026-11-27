@@ -800,6 +800,11 @@ loop:
 		}
 	}
 	<-streamDone
+	if end == nil && res.BudgetSpent {
+		// The harness ended the run at its own cap, the run budget: the same
+		// end as istari's own budget stop (spec sections 7.2 and 7.5).
+		end = &ending{reason: fmt.Sprintf("the harness spent the run budget of $%.2f", run.BudgetUSD), outcome: r.blockForBudget(tk.Ref), save: true}
+	}
 
 	// A stopping run's task stays this run's until its checkpoint and its
 	// end are recorded: a stop checkpoint may outlast the lease (spec

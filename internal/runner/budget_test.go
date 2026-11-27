@@ -541,6 +541,14 @@ func TestTheHarnesssFinalCostCountsAgainstTheBudgetEvenBelowTheEstimate(t *testi
 	}
 }
 
+func TestARunTheHarnessEndsAtItsOwnBudgetCapEndsAsABudgetStop(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 102)
+	// Claude Code ends the run at --max-budget-usd; istari stopped nothing.
+	s.finish <- harness.Result{ExitCode: 1, Failed: true, Reason: "error_max_budget_usd", BudgetSpent: true, Usage: harness.Usage{CostUSD: 2.01}}
+	stoppedForBudget(t, f, tk, task)
+}
+
 // waitHold waits until the ticket's hold is want. It reads the hold rather
 // than waiting on a ticket.hold_set event, since a ticket held a second time
 // already has the first.
