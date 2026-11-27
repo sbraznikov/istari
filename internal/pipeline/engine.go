@@ -564,14 +564,7 @@ func (e *Engine) noteOnce(ctx context.Context, ref, text string) error {
 // noted tells whether the ticket's journal has the note; false without a
 // journal.
 func (e *Engine) noted(ctx context.Context, ref, text string) (bool, error) {
-	if e.opts.Journal == nil {
-		return false, nil
-	}
-	r, err := tickets.ParseRef(ref)
-	if err != nil {
-		return false, err
-	}
-	entries, err := e.opts.Journal.Stored(ctx, r)
+	entries, err := e.entries(ctx, ref)
 	if err != nil {
 		return false, err
 	}

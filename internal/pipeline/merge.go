@@ -73,9 +73,10 @@ func (e *Engine) mergeStage(ctx context.Context, tk core.Ticket, r round, fire f
 	if m, err = e.tasks.Get(ctx, m.ID); err != nil || m.State != core.TaskReady {
 		return err // the approval is not given yet
 	}
-	if err := e.opts.Merge(ctx, tk.Ref, s.Merge.Method); errors.Is(err, vcs.ErrMergeRefused) {
+	switch err := e.opts.Merge(ctx, tk.Ref, s.Merge.Method); {
+	case errors.Is(err, vcs.ErrMergeRefused):
 		return e.mergeRefused(ctx, tk, err)
-	} else if err != nil {
+	case err != nil:
 		return err // GitHub's passing trouble: the next reconcile merges again
 	}
 	if err := e.complete(ctx, m.ID); err != nil {
@@ -277,6 +278,6 @@ func (e *Engine) refuseAuto(ctx context.Context, refText, head string, refused [
 	if err != nil {
 		return err
 	}
-	_, err = e.opts.Log.Append(ctx, store.Event{Type: EventAutoMergeRefused, Actor: e.opts.Actor, Ticket: refText, Payload: payload})
+	_, err = e.opts.Log.Append(ctx, store.Event{Type: EventAutoMergeRefused, At: e.opts.Clock().UTC(), Actor: e.opts.Actor, Ticket: refText, Payload: payload})
 	return err
 }

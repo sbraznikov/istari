@@ -187,8 +187,13 @@ func (p Pipeline) Warnings() []string {
 }
 
 // Validate checks the stages: a name each, once; a known role or kind;
-// needs that name stages; no cycle.
+// needs that name stages; no cycle. It checks the [merge] keys the merge
+// stage reads too: a mistyped irreversible_paths would let auto mode merge
+// what it protects (spec 4.8).
 func (p Pipeline) Validate() error {
+	if err := p.validateMerge(); err != nil {
+		return err
+	}
 	index := map[string]Stage{}
 	for _, s := range p.Stages {
 		switch {
@@ -312,6 +317,30 @@ func (p Pipeline) mergeSettings(global config.Merge) MergeSettings {
 		m.Method = "squash"
 	}
 	return m
+}
+
+// validateMerge checks the [merge] keys mergeSettings reads.
+func (p Pipeline) validateMerge() error {
+	for _, k := range []struct {
+		key     string
+		allowed []string
+	}{
+		{"mode", []string{MergeManual, MergeAfterApproval, MergeAuto}},
+		{"method", []string{"squash", "merge", "rebase"}},
+		{"auto_max_size", []string{"XS", "S", "M", "L"}}, // XL never goes into work
+	} {
+		v, ok := p.Merge[k.key]
+		if !ok {
+			continue
+		}
+		if s, isString := v.(string); !isString || !slices.Contains(k.allowed, s) {
+			return fmt.Errorf("%s: merge.%s = %v is not one of %s", Path, k.key, v, strings.Join(k.allowed, ", "))
+		}
+	}
+	if _, ok := stringList(p.Merge["irreversible_paths"]); !ok {
+		return fmt.Errorf("%s: merge.irreversible_paths is not a list of path patterns such as [\"migrations/**\"]", Path)
+	}
+	return nil
 }
 
 // stringList reads a TOML array of strings; ok is false for anything else

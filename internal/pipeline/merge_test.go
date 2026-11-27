@@ -282,6 +282,29 @@ func TestAMergeMetByAnOutageIsTriedAgainOnTheNextReconcile(t *testing.T) {
 	}
 }
 
+func TestAPipelineWhoseMergeTableIsMistypedDoesNotStartTheTicket(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, table, key string }{
+		{"irreversible_paths not a list", "irreversible_paths = \"migrations/**\"\n", "irreversible_paths"},
+		{"an unknown mode", "mode = \"yolo\"\n", "mode"},
+		{"an unknown method", "method = \"octopus\"\n", "method"},
+		{"an unknown size", "auto_max_size = \"XL\"\n", "auto_max_size"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newMergeEngine(t, merging("auto"), files{"acme/web": "[merge]\n" + tc.table})
+			f.readyTicket(t, ref)
+			all, _ := f.tickets.List(ctx)
+			if err := f.engine.Reconcile(ctx, all); err == nil || !strings.Contains(err.Error(), "merge."+tc.key) {
+				t.Fatalf("Reconcile = %v, want an error naming merge.%s", err, tc.key)
+			}
+			if st := f.state(t, ref); st != core.TicketReady {
+				t.Fatalf("the ticket is %s, want ready: its pipeline is invalid", st)
+			}
+		})
+	}
+}
+
 func TestAfterApprovalWithoutAnApprovalNothingIsMerged(t *testing.T) {
 	t.Parallel()
 	f := newMergeEngine(t, merging("after_approval"), nil)

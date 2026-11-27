@@ -365,7 +365,7 @@ func (s *Server) mergeHooks() (
 	changes func(ctx context.Context, ref string) (vcs.Changes, error),
 	merge func(ctx context.Context, ref, method string) error,
 ) {
-	var mu sync.Mutex
+	var mu sync.Mutex                // serializes read: reconciles and requests may ask at once
 	read := map[string]vcs.Changes{} // "<ticket> <head>" → its changes
 	approval = func(ctx context.Context, ref string) (string, error) {
 		pr, err := s.watch.PullRequestOf(ctx, ref)
@@ -400,6 +400,11 @@ func (s *Server) mergeHooks() (
 	merge = func(ctx context.Context, ref, method string) error {
 		pr, err := s.watch.PullRequestOf(ctx, ref)
 		if err != nil {
+			return err
+		}
+		// A merge istari made before its task completed is not merged again:
+		// GitHub would refuse it, and the refusal would read as T10.
+		if merged, err := s.watch.Merged(ctx, ref); err != nil || merged {
 			return err
 		}
 		return s.vcs.Merge(ctx, pr.Repo, pr.Number, method)
