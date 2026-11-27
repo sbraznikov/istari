@@ -572,6 +572,11 @@ func New(t Tracker, s store.Store, clock func() time.Time) *Journal {
 func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.append(ctx, ref, e)
+}
+
+// append is Append with the journal locked.
+func (j *Journal) append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	if e.At.IsZero() {
 		e.At = j.clock().UTC()
 	}
