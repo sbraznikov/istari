@@ -137,7 +137,9 @@ func TestTicketReadyGivesAFiledTicketItsOwnBudgetInItsJournal(t *testing.T) {
 	d, gh, _, log := pipelineDaemon(t, planOnlyPipeline, func(log string) string { return fmt.Sprintf(filingPlanner, binary, log) })
 	endedRuns(t, d, log, "planner", 1)
 	filed := "gh:" + githubtest.Repo + "#2" // the planner filed it while planning #1
-	var tk struct{ BudgetOf string `json:"budget_of"` }
+	var tk struct {
+		BudgetOf string `json:"budget_of"`
+	}
 	d.mustCLI(t, &tk, "ticket", "show", filed)
 	if tk.BudgetOf != "gh:"+githubtest.Repo+"#1" {
 		t.Fatalf("the filed ticket shares the budget of %q, want #1's", tk.BudgetOf)
