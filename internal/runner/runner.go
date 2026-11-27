@@ -447,6 +447,7 @@ func (r *Runner) Run(ctx context.Context) {
 
 func (r *Runner) slot(ctx context.Context, slot Slot) {
 	failures := 0 // start failures in a row
+	busy := ""    // the last ticket_busy refusal the log says
 	for ctx.Err() == nil {
 		// While its harness's account is at its usage limit, the slot claims
 		// nothing (spec section 7.3).
@@ -456,6 +457,7 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 		}
 		lease, err := r.tasks.ClaimReadyIn(ctx, "agent:"+slot.Profile, slot.Role, r.opts.Projects)
 		if err == nil {
+			busy = ""
 			startErr := r.execute(ctx, slot, lease)
 			if startErr == nil {
 				failures = 0
@@ -468,8 +470,18 @@ func (r *Runner) slot(ctx context.Context, slot Slot) {
 			continue
 		}
 		var e *core.Error
-		if !errors.As(err, &e) && ctx.Err() == nil {
-			log.Printf("istari: runner %s: %v", slot.Profile, err)
+		switch {
+		case !errors.As(err, &e):
+			if ctx.Err() == nil {
+				log.Printf("istari: runner %s: %v", slot.Profile, err)
+			}
+		case e.Code == core.CodeTicketBusy:
+			// The task waits for the run on its ticket (spec section 7.2);
+			// the log says so once, not on every poll.
+			if busy != e.Message {
+				busy = e.Message
+				log.Printf("istari: runner %s: %v", slot.Profile, err)
+			}
 		}
 		sleep(ctx, r.opts.Poll)
 	}

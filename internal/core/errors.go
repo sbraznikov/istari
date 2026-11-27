@@ -20,6 +20,7 @@ const (
 
 	CodePaused       = "paused"
 	CodeLimitReached = "limit_reached"
+	CodeTicketBusy   = "ticket_busy"
 )
 
 // Error is a refusal by the core: the request was understood and is not allowed.

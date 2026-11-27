@@ -346,6 +346,9 @@ func TestClaimReadyTakesTheOldestReadyTaskOfTheRole(t *testing.T) {
 	if err != nil || lease.Task != "t_b" {
 		t.Fatalf("first ClaimReady = %s, %v; want t_b", lease.Task, err)
 	}
+	if err := f.tasks.Complete(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
 	if lease, err = f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer"); err != nil || lease.Task != "t_a" {
 		t.Fatalf("second ClaimReady = %s, %v; want t_a", lease.Task, err)
 	}
@@ -443,7 +446,7 @@ func TestATaskWhoseLastNeedsCompleteTogetherBecomesReady(t *testing.T) {
 	tasks := slowTasks(t)
 	for _, nt := range []core.NewTask{
 		{ID: "a", Ticket: "gh:acme/web#1", Role: "implementer"},
-		{ID: "b", Ticket: "gh:acme/web#1", Role: "verifier"},
+		{ID: "b", Ticket: "gh:acme/web#2", Role: "verifier"},
 		{ID: "d", Ticket: "gh:acme/web#1", Role: "reviewer", Needs: []string{"a", "b"}},
 	} {
 		if _, err := tasks.Create(ctx, "system", nt); err != nil {
@@ -610,5 +613,114 @@ func TestCancelOfFinishedCancelsTheOpenTasksOfFinishedTicketsOnce(t *testing.T) 
 				t.Fatalf("the second call appended %d events", after-before)
 			}
 		})
+	}
+}
+
+func TestTwoConcurrentClaimsOfTasksOfOneTicketGiveOneRun(t *testing.T) {
+	t.Parallel()
+	for round := range 20 {
+		f := newFixture(t)
+		f.create(t, "t_1", "implementer")
+		f.create(t, "t_2", "implementer")
+		ids := []string{"t_1", "t_2"}
+		leases := make([]core.Lease, 2)
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Go(func() {
+				leases[i], errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), ids[i])
+			})
+		}
+		wg.Wait()
+		winner, loser := -1, -1
+		for i, err := range errs {
+			var e *core.Error
+			switch {
+			case err == nil:
+				winner = i
+			case errors.As(err, &e) && e.Code == core.CodeTicketBusy:
+				loser = i
+			default:
+				t.Fatalf("round %d: unexpected error %v", round, err)
+			}
+		}
+		if winner < 0 || loser < 0 {
+			t.Fatalf("round %d: errors %v, want one claim to win and one to get ticket_busy", round, errs)
+		}
+		waiting, err := f.tasks.Get(ctx, ids[loser])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting.State != core.TaskReady || waiting.Attempts != 0 {
+			t.Fatalf("round %d: refused task is %s with %d attempts, want ready with 0", round, waiting.State, waiting.Attempts)
+		}
+		if err := f.tasks.Complete(ctx, leases[winner]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.tasks.Claim(ctx, "agent:implementer-3", ids[loser]); err != nil {
+			t.Fatalf("round %d: claim after the run ended: %v", round, err)
+		}
+	}
+}
+
+func TestConcurrentClaimsOfTasksOfDifferentTicketsAllWin(t *testing.T) {
+	t.Parallel()
+	for round := range 20 {
+		f := newFixture(t)
+		ids := map[string]string{"t_1": "gh:acme/web#1", "t_2": "gh:acme/web#2"}
+		for id, ref := range ids {
+			if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: ref, Project: "web", Role: "implementer"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i, id := range []string{"t_1", "t_2"} {
+			wg.Go(func() {
+				_, errs[i] = f.tasks.Claim(ctx, "agent:implementer-"+string(rune('1'+i)), id)
+			})
+		}
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("round %d: claims of two tickets = %v, want both to win", round, errs)
+		}
+	}
+}
+
+func TestClaimReadyPassesOverATicketWithARunForTheNextTicket(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.create(t, "t_running", "implementer")
+	f.claim(t, "t_running")
+	f.create(t, "t_waiting", "implementer")
+	f.clock.Advance(time.Second)
+	if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: "t_other", Ticket: "gh:acme/web#2", Project: "web", Role: "implementer"}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := f.tasks.ClaimReady(ctx, "agent:implementer-1", "implementer")
+	if err != nil || lease.Task != "t_other" {
+		t.Fatalf("ClaimReady = %s, %v; want t_other", lease.Task, err)
+	}
+	_, err = f.tasks.ClaimReady(ctx, "agent:implementer-2", "implementer")
+	assertCode(t, err, core.CodeTicketBusy)
+	if got := f.state(t, "t_waiting"); got != core.TaskReady {
+		t.Fatalf("t_waiting is %s, want ready", got)
+	}
+}
+
+func TestAClaimByCodeNeitherWaitsForNorHoldsBackAnAgentsRun(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.create(t, "t_impl", "implementer")
+	f.create(t, "t_verify", "verifier")
+	f.create(t, "t_review", "reviewer")
+	if _, err := f.tasks.Claim(ctx, "system", "t_verify"); err != nil {
+		t.Fatalf("claim by code: %v", err)
+	}
+	if _, err := f.tasks.Claim(ctx, "agent:implementer-1", "t_impl"); err != nil {
+		t.Fatalf("agent claim while code holds a task of the ticket: %v", err)
+	}
+	if _, err := f.tasks.Claim(ctx, "human:alex", "t_review"); err != nil {
+		t.Fatalf("human claim while an agent's run holds the ticket: %v", err)
 	}
 }

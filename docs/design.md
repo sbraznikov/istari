@@ -719,7 +719,7 @@ For each task the Runner:
 | Event | What happens to the worktree |
 |---|---|
 | the ticket moves to `planning` (T3) | created in `<data_dir>/workspaces/<project>/<repo>/<ticket>` on a new branch off the main branch |
-| plan, implement, review stages | all runs of the ticket work in the same worktree, one after another |
+| plan, implement, review stages | all runs of the ticket work in the same worktree, one after another: the ticket has at most one run at a time (rules below) |
 | hold, pause, waiting for review | the worktree is kept |
 | return for rework (T7, T9, T10) | the same worktree is used |
 | PR merged, by istari or by a human, ticket in `done` (T11) | the worktree and the local branch are deleted |
@@ -729,12 +729,13 @@ For each task the Runner:
 Rules:
 
 - One worktree, one ticket. Two tickets never share a working copy, so they can proceed in parallel in one repository.
+- One ticket, one run at a time. A ticket has at most one task claimed by an agent (`agent:<profile>`, the owner a Runner slot claims with), whose run works in its worktree. A claim by an agent of another task of that ticket is refused with `ticket_busy`, whatever the tasks' `needs` say: a task created by hand or by an API client waits as a round's task does. The check is part of the claim itself, so two claims at the same moment cannot both pass. The refused task stays `ready` without using an attempt, the slot takes the next ready task of another ticket, and the daemon log says once which ticket and which running task keep it waiting. The task is handed out after the run ends. Claims by code or by a human (verify, a gate) start no run in the worktree: they are neither refused nor do they hold a ticket back.
 - The refiner works before the worktree is created and reads code from the main branch without write access.
 - A parent ticket without tasks of its own has no worktree: only the child tickets have one.
 - Before deleting, istari checks that the worktree has no uncommitted or unpushed changes. If there are any, the worktree is not deleted and a message goes to the `#agents-ops` channel: losing work is worse than leaving a directory behind.
 - `istari doctor` finds worktrees without a ticket and tickets in `done` whose worktree was not removed; `istari workspace prune` removes them.
 
-**Who starts agents.** Only the Runner, a part of the daemon. The human starts the daemon itself once (`istari daemon`, or as a system service via `istari daemon install`); after that agents start without their involvement. A run starts when three conditions are met: the ticket has a task in the `ready` state, there is no hold on the ticket, and there is a free slot within the parallel run limit.
+**Who starts agents.** Only the Runner, a part of the daemon. The human starts the daemon itself once (`istari daemon`, or as a system service via `istari daemon install`); after that agents start without their involvement. A run starts when four conditions are met: the ticket has a task in the `ready` state, there is no hold on the ticket, no other run of the ticket is running, and there is a free slot within the parallel run limit.
 
 This is the same "claim, not get assigned" model as in Board: nobody decides that a task will go to `implementer-2`; the first free slot takes it. The task is claimed by the Runner slot itself in ordinary code, not by the model inside the harness: it takes the ready task of its role with the highest priority (the oldest one on a tie), obtains a lease on it and only then starts the harness. The model starts working with a task already in hand and cannot take someone else's.
 

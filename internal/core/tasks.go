@@ -261,12 +261,13 @@ func (t *Tasks) ClaimReadyIn(ctx context.Context, actor, role string, projects [
 			}
 			return a.CreatedAt.Compare(b.CreatedAt)
 		})
-		// A task that a pause or a full limit keeps back is skipped for the
-		// next one. A conflict re-reads the list: another worker was faster.
+		// A task that a pause, a full limit or another run on its ticket
+		// keeps back is skipped for the next one. A conflict re-reads the
+		// list: another worker was faster.
 		var held error
 		for _, task := range ready {
 			lease, err = t.claim(ctx, actor, task)
-			if isCode(err, CodePaused) || isCode(err, CodeLimitReached) {
+			if isCode(err, CodePaused) || isCode(err, CodeLimitReached) || isCode(err, CodeTicketBusy) {
 				if held == nil {
 					held = err
 				}
@@ -391,7 +392,7 @@ func (t *Tasks) claim(ctx context.Context, actor string, task Task) (Lease, erro
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return Lease{}, err
 	}
-	admitted, err := t.admit(ctx, task)
+	admitted, err := t.admit(ctx, actor, task)
 	if err != nil {
 		return Lease{}, err
 	}
