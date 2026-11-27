@@ -48,7 +48,10 @@ type Entry struct {
 	ID         string           `json:"id,omitempty"`   // a question's id; its answer names it
 	Text       string           `json:"text,omitempty"` // the question, the answer verbatim, the assumption
 	Link       string           `json:"link,omitempty"` // where the answer was given
-	Decision   *DecisionEntry   `json:"decision,omitempty"`
+	// Comment is the tracker comment the entry was posted as; 0 without a
+	// tracker. It is not in the comment's own marker.
+	Comment    int64            `json:"comment,omitempty"`
+	Decision  *DecisionEntry   `json:"decision,omitempty"`
 	Plan       *PlanEntry       `json:"plan,omitempty"`
 	Checkpoint *CheckpointEntry `json:"checkpoint,omitempty"`
 	Review     *ReviewEntry     `json:"review,omitempty"`
@@ -589,9 +592,11 @@ func (j *Journal) append(ctx context.Context, ref tickets.Ref, e Entry) error {
 		return err
 	}
 	if j.tracker != nil {
-		if _, err := j.tracker.Comment(ctx, ref, body); err != nil {
+		posted, err := j.tracker.Comment(ctx, ref, body)
+		if err != nil {
 			return err
 		}
+		e.Comment = posted.ID
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -683,6 +688,7 @@ func (j *Journal) Read(ctx context.Context, ref tickets.Ref) ([]Entry, error) {
 			continue
 		}
 		if ok {
+			e.Comment = c.ID
 			out = append(out, e)
 		}
 	}

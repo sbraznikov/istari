@@ -495,6 +495,39 @@ func TestATrustedMembersCommentAnswersAnOpenQuestionOfATicketInNew(t *testing.T)
 	}
 }
 
+func TestACommentPostedBeforeTheQuestionIsNotItsAnswer(t *testing.T) {
+	t.Parallel()
+	f := newSync(t)
+	n := f.gh.Seed("Add a cache", "", "bob") // does not meet the standard: stays new
+	f.run(t)
+	ref, _ := tickets.ParseRef(ghRef(n))
+	f.gh.HumanComment(n, "alex", "Remember the TTL.") // during the refiner run, not yet synced
+	if err := f.journal.Append(ctx, ref, journal.Entry{Kind: journal.Question, Actor: "agent:refiner-1", ID: "r_1-q1", Text: "Is the type chore?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.SetHold(ctx, "agent:refiner-1", ghRef(n), "needs_input"); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+	entries, err := f.journal.Stored(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind == journal.Answer {
+			t.Fatalf("a comment older than the question was taken as its answer: %q", e.Text)
+		}
+	}
+	if h := f.ticket(t, n).Hold; h != "needs_input" {
+		t.Fatalf("hold = %q, want needs_input", h)
+	}
+	f.gh.HumanComment(n, "alex", "Yes, chore.")
+	f.run(t)
+	if h := f.ticket(t, n).Hold; h != "" {
+		t.Fatalf("after a later answer the hold = %q, want none", h)
+	}
+}
+
 func TestClosingAndReopeningAnIssueRequestCancelAndReopen(t *testing.T) {
 	t.Parallel()
 	f := newSync(t)

@@ -72,7 +72,7 @@ func (a asked) answers(t *testing.T) []journal.Entry {
 	var out []journal.Entry
 	for _, e := range stored {
 		if e.Kind == journal.Answer {
-			e.At = time.Time{}
+			e.At, e.Comment = time.Time{}, 0 // set by the clock and the tracker
 			out = append(out, e)
 		}
 	}

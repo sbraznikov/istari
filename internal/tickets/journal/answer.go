@@ -19,6 +19,9 @@ type Reply struct {
 	Actor    string // who answered
 	Text     string // the answer verbatim
 	Link     string // where it was given
+	// Comment is the tracker comment it was given in: it answers only a
+	// question posted before it. 0: not a comment, any open question.
+	Comment int64
 }
 
 // ErrNoOpenQuestion is the answer to a ticket that has no open question.
@@ -34,7 +37,8 @@ func (j *Journal) Answer(ctx context.Context, holds *core.Tickets, ref tickets.R
 	if err != nil {
 		return Entry{}, err
 	}
-	open := openQuestions(entries)
+	all := openQuestions(entries, 0)
+	open := openQuestions(entries, r.Comment)
 	if len(open) == 0 {
 		return Entry{}, ErrNoOpenQuestion
 	}
@@ -57,7 +61,7 @@ func (j *Journal) Answer(ctx context.Context, holds *core.Tickets, ref tickets.R
 	if err := j.append(ctx, ref, e); err != nil {
 		return Entry{}, err
 	}
-	if len(open) > 1 {
+	if len(all) > 1 {
 		return e, nil
 	}
 	return e, liftNeedsInput(ctx, holds, r.Actor, ref.String())
@@ -89,7 +93,7 @@ func (j *Journal) AnswerComment(ctx context.Context, holds *core.Tickets, ref ti
 	if c.Own || strings.Contains(c.Body, markerStart) {
 		return false, nil
 	}
-	_, err := j.Answer(ctx, holds, ref, Reply{Actor: "human:" + c.Author, Text: c.Body, Link: c.URL})
+	_, err := j.Answer(ctx, holds, ref, Reply{Actor: "human:" + c.Author, Text: c.Body, Link: c.URL, Comment: c.ID})
 	if errors.Is(err, ErrNoOpenQuestion) {
 		return false, nil
 	}
@@ -97,8 +101,8 @@ func (j *Journal) AnswerComment(ctx context.Context, holds *core.Tickets, ref ti
 }
 
 // openQuestions returns the ids of the questions without an answer, oldest
-// first.
-func openQuestions(entries []Entry) []string {
+// first; with before set, only those posted as a comment older than it.
+func openQuestions(entries []Entry, before int64) []string {
 	answered := map[string]bool{}
 	for _, e := range entries {
 		if e.Kind == Answer {
@@ -107,7 +111,7 @@ func openQuestions(entries []Entry) []string {
 	}
 	var open []string
 	for _, e := range entries {
-		if e.Kind == Question && !answered[e.ID] && !slices.Contains(open, e.ID) {
+		if e.Kind == Question && !answered[e.ID] && !slices.Contains(open, e.ID) && (before == 0 || e.Comment < before) {
 			open = append(open, e.ID)
 		}
 	}
