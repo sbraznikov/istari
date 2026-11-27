@@ -31,6 +31,9 @@ type fakeHarness struct {
 	started chan fakeSession
 	events  []harness.Event
 	fail    error // Start returns it while set
+	// live sessions take their events from the test on out, which Stop
+	// closes, instead of yielding events at once.
+	live bool
 }
 
 // failStart makes Start return err until it is called with nil.
@@ -42,6 +45,7 @@ type fakeSession struct {
 	out    chan harness.Event
 	stop   chan struct{}
 	once   *sync.Once
+	live   bool
 }
 
 func newFakeHarness(name string, events ...harness.Event) *fakeHarness {
@@ -59,11 +63,13 @@ func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Se
 	if fail != nil {
 		return nil, fail
 	}
-	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}}
-	for _, e := range h.events {
-		s.out <- e
+	s := fakeSession{spec: spec, finish: make(chan harness.Result, 1), out: make(chan harness.Event, len(h.events)), stop: make(chan struct{}), once: &sync.Once{}, live: h.live}
+	if !h.live {
+		for _, e := range h.events {
+			s.out <- e
+		}
+		close(s.out)
 	}
-	close(s.out)
 	h.started <- s
 	return s, nil
 }
@@ -71,10 +77,21 @@ func (h *fakeHarness) Start(_ context.Context, spec harness.RunSpec) (harness.Se
 func (s fakeSession) ID() string                   { return "fake" }
 func (s fakeSession) Events() <-chan harness.Event { return s.out }
 func (s fakeSession) Send(string) error            { return harness.ErrSendNotSupported }
-func (s fakeSession) Stop(time.Duration) error     { s.once.Do(func() { close(s.stop) }); return nil }
+func (s fakeSession) Stop(time.Duration) error {
+	s.once.Do(func() {
+		close(s.stop)
+		if s.live {
+			close(s.out)
+		}
+	})
+	return nil
+}
 func (s fakeSession) Wait() (harness.Result, error) {
 	select {
 	case r := <-s.finish:
+		if s.live {
+			s.Stop(0) //nolint:errcheck // always nil; ends the live events as the process's exit does
+		}
 		return r, nil
 	case <-s.stop:
 		return harness.Result{ExitCode: -1}, nil
