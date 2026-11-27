@@ -210,7 +210,7 @@ func Default() Config {
 				AutoMaxLines: map[string]int{"XS": 50, "S": 200, "M": 500, "L": 1000},
 				AutoMaxFiles: map[string]int{"XS": 3, "S": 10, "M": 20, "L": 40},
 			},
-			BudgetUSD:       map[string]float64{"XS": 2, "S": 5, "M": 15, "L": 30},
+			BudgetUSD: map[string]float64{"XS": 2, "S": 5, "M": 15, "L": 30},
 		},
 		TUI:    TUI{Theme: "terminal"},
 		Report: Report{At: "08:00"},
