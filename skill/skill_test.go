@@ -19,13 +19,15 @@ var roleRules = map[string]map[string][]string{
 		"ask and needs_input":                    {"istari ask", "needs_input"},
 		"size set, author's checked":             {"Set the T-shirt size", "When the author gave a size, check it", "correct it and explain why"},
 		"duplicates become a decision card":      {"candidates code selected", "Do not resolve a duplicate or a contradiction silently", "decision card"},
+		"checked against its documents":          {"check the ticket against them", "links the documents its behaviour is defined in", "changes documented behaviour", "deviation"},
 	},
 	"planner": {
-		"structured plan":           {"istari plan submit", "slices", "seams", "change zone"},
-		"seams agreed in advance":   {"Seams agreed in advance", "what it catches and what it misses"},
-		"zone paths exist or new":   {"exists in the repository or is marked as new"},
-		"may revise the size":       {"You may revise the ticket's size"},
-		"split above max_size (T5)": {"larger than `max_size`", "must be split into child tickets (T5)"},
+		"structured plan":            {"istari plan submit", "slices", "seams", "change zone"},
+		"seams agreed in advance":    {"Seams agreed in advance", "what it catches and what it misses"},
+		"zone paths exist or new":    {"exists in the repository or is marked as new"},
+		"may revise the size":        {"You may revise the ticket's size"},
+		"split above max_size (T5)":  {"larger than `max_size`", "must be split into child tickets (T5)"},
+		"slices name their sections": {"check the ticket against them", "names the sections of the documents it follows"},
 	},
 	"implementer": {
 		"order of work":           {"Read the ticket, the plan and the journal", "red → green", "full test suite once, at the end", "istari checkpoint", "istari pr open"},
@@ -40,6 +42,7 @@ var roleRules = map[string]map[string][]string{
 		"answering a smell":       {"either fix the code or reply in the pull request why it is not a flaw here"},
 		"a larger size":           {"the size turned out larger"},
 		"brief PR prose":          {"keep the prose brief", "domain language from `GLOSSARY.md`"},
+		"ADRs are replaced":       {"replaced by a new ADR"},
 	},
 	"reviewer": {
 		"two axes":                   {"**Standards**", "**Spec**", "Quote the line of the ticket"},
@@ -54,16 +57,51 @@ var roleRules = map[string]map[string][]string{
 		"smells defined":             {"a method that reaches into another object's data more than its own", "the same few fields or parameters keep travelling together"},
 		"next round":                 {"In the next round", "accept the explanation or insist"},
 		"conflict resolution only":   {"check only the conflict resolution"},
+		"spec against documents":     {"against the documents the ticket links to", "changes documented behaviour the ticket does not ask for", "contradicts an ADR", "any file of the repository"},
 	},
+}
+
+// instruction is a role's built-in instruction with runs of white space as
+// one space, as Markdown wraps a sentence across lines.
+func instruction(t *testing.T, role string) string {
+	t.Helper()
+	text, err := skill.Instruction(role, nil)
+	if err != nil {
+		t.Fatalf("%s: %v", role, err)
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// The rules every role carries (spec section 7.7): it works by the sources of
+// truth its repository's instructions file names, and stops on a document
+// that is wrong or in conflict.
+var everyRoleRules = map[string][]string{
+	"sources of truth":      {"sources of truth", "instructions file", "the documents the ticket links to"},
+	"a document is wrong":   {"wrong or in conflict", "istari ask", "needs_input", "Do not implement either side silently"},
+	"a document-fix ticket": {"a ticket of its own", "section 4.5", "this ticket needs it"},
+}
+
+func TestEveryRoleWorksByTheRepositorysSourcesOfTruth(t *testing.T) {
+	t.Parallel()
+	for role := range roleRules {
+		text := instruction(t, role)
+		for rule, phrases := range everyRoleRules {
+			for _, phrase := range phrases {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("%s: rule %q: the instruction lacks %q", role, rule, phrase)
+				}
+			}
+		}
+		if strings.Contains(text, "docs/design.md") {
+			t.Errorf("%s: the instruction names docs/design.md, a document of this repository", role)
+		}
+	}
 }
 
 func TestTheBuiltInInstructionsCarryTheRulesOfTheSpec(t *testing.T) {
 	t.Parallel()
 	for role, rules := range roleRules {
-		text, err := skill.Instruction(role, nil)
-		if err != nil {
-			t.Fatalf("%s: %v", role, err)
-		}
+		text := instruction(t, role)
 		for rule, phrases := range rules {
 			for _, phrase := range phrases {
 				if !strings.Contains(text, phrase) {
