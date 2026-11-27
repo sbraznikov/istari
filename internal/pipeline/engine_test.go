@@ -1109,6 +1109,53 @@ func TestARecoveredTicketWithoutTasksGetsTheStagesOfItsState(t *testing.T) {
 	}
 }
 
+// A later round is never refilled the way a recovered first round is, so
+// only the T11 guard keeps a round cut short before its merge task from
+// merging.
+func TestARoundWithoutItsMergeTaskDoesNotMerge(t *testing.T) {
+	t.Parallel()
+	twin := newEngine(t, config.Defaults{}, nil)
+	twin.readyTicket(t, ref)
+	twin.reconcile(t)
+	f := newEngine(t, config.Defaults{}, nil)
+	if _, err := f.tickets.Create(ctx, "human:alex", ref, "web"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := twin.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The round is the ticket's second: its first round's tasks under round
+	// 2 IDs, the merge task left out.
+	for _, task := range all {
+		if pipeline.StageOf(task) == pipeline.StageMerge {
+			continue
+		}
+		id := strings.Replace(task.ID, "_r1_", "_r2_", 1)
+		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: ref, Project: "web", Role: task.Role}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tr := range []string{"accept", "start", "plan_accepted", "pr_ready", "review_passed"} {
+		if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.reconcile(t)
+	if st := f.state(t, ref); st != core.TicketAwaitingApproval {
+		t.Fatalf("after the reconcile the ticket is %s, want awaiting_approval: it has no merge task (T11)", st)
+	}
+	after, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range after {
+		if pipeline.StageOf(task) == pipeline.StageMerge {
+			t.Fatalf("the reconcile made merge task %s: the test no longer reaches the guard alone", task.ID)
+		}
+	}
+}
+
 func TestARecoveredTicketWhoseStagesADaemonStoppedMakingGetsTheRest(t *testing.T) {
 	t.Parallel()
 	awaitingApproval := func() *engineFixture {
