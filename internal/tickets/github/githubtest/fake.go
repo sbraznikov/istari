@@ -66,6 +66,7 @@ type Server struct {
 	statuses        map[string]string    // commit → combined status
 	reruns          int                  // jobs rerun through the API
 	deletedBranches []string
+	teams           map[string][]string // "org/slug" → active members
 	counted         []string  // "METHOD path" of the requests that count against the quota
 	remaining       int       // the quota the answers report, with reset
 	reset           time.Time // zero: no X-RateLimit-* headers
@@ -128,7 +129,8 @@ func New(t testing.TB, opts ...Option) *Server {
 		labels: map[string]Label{"bug": {Name: "bug", Color: "d73a4a"}}, issues: map[int]*Issue{}, nextID: 1000,
 		subIssues: map[int][]int64{}, perms: map[string]string{"alex": "admin"}, pageSize: 100,
 		moved: map[int]bool{}, deleted: map[int]bool{}, files: map[string]string{},
-		issued: map[string]time.Time{}, checks: map[string][]Check{}, statuses: map[string]string{}}
+		issued: map[string]time.Time{}, checks: map[string][]Check{}, statuses: map[string]string{},
+		teams: map[string][]string{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -166,6 +168,7 @@ func New(t testing.TB, opts ...Option) *Server {
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
 	mux.HandleFunc("GET "+repo+"/pulls/{n}/commits", s.listPullCommits)
 	mux.HandleFunc("POST /graphql", s.graphql)
+	mux.HandleFunc("GET /orgs/{org}/teams/{team}/memberships/{user}", s.teamMembership)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()

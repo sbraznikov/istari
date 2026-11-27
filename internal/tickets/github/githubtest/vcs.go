@@ -31,6 +31,7 @@ type Check struct {
 type Review struct {
 	User, State string // APPROVED, CHANGES_REQUESTED, COMMENTED
 	Body        string
+	CommitID    string // the pull request's head when the review was given
 }
 
 // EnableApp makes the fake a GitHub App host: requests signed with the App's
@@ -146,11 +147,28 @@ func (s *Server) Reruns() int {
 	return s.reruns
 }
 
-// AddReview adds a review to a pull request.
+// AddReview adds a review of the pull request's current head.
 func (s *Server) AddReview(n int, user, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.issues[n].Reviews = append(s.issues[n].Reviews, Review{User: user, State: state})
+	i := s.issues[n]
+	i.Reviews = append(i.Reviews, Review{User: user, State: state, CommitID: i.HeadSHA})
+}
+
+// AddTeamMember makes login an active member of the team org/slug.
+func (s *Server) AddTeamMember(org, slug, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.teams[org+"/"+slug] = append(s.teams[org+"/"+slug], login)
+}
+
+// teamMembership answers a user's membership of a team: active, or 404.
+func (s *Server) teamMembership(w http.ResponseWriter, r *http.Request) {
+	if !slices.Contains(s.teams[r.PathValue("org")+"/"+r.PathValue("team")], r.PathValue("user")) {
+		s.write(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		return
+	}
+	s.write(w, http.StatusOK, map[string]string{"state": "active", "role": "member"})
 }
 
 // DeletedBranches returns the branches deleted through the API.
@@ -329,7 +347,7 @@ func (s *Server) reviews(w http.ResponseWriter, r *http.Request) {
 	}
 	var all []map[string]any
 	for k, rv := range i.Reviews {
-		all = append(all, map[string]any{"id": k + 1, "user": map[string]any{"login": rv.User}, "state": rv.State})
+		all = append(all, map[string]any{"id": k + 1, "user": map[string]any{"login": rv.User}, "state": rv.State, "commit_id": rv.CommitID})
 	}
 	s.page(w, r, all)
 }
@@ -360,7 +378,7 @@ func (s *Server) createReview(w http.ResponseWriter, r *http.Request) {
 		s.write(w, http.StatusUnprocessableEntity, map[string]string{"message": "Unprocessable event " + req.Event})
 		return
 	}
-	i.Reviews = append(i.Reviews, Review{User: s.TokenUser, State: state, Body: req.Body})
+	i.Reviews = append(i.Reviews, Review{User: s.TokenUser, State: state, Body: req.Body, CommitID: i.HeadSHA})
 	s.write(w, http.StatusOK, map[string]any{"id": len(i.Reviews), "state": state})
 }
 

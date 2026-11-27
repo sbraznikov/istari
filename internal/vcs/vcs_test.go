@@ -156,6 +156,81 @@ func TestMergingUsesTheMethodAndDeletesTheBranch(t *testing.T) {
 	}
 }
 
+// approvalFixture is a pull request at head "h1" in a repository whose
+// CODEOWNERS on the default branch is codeowners.
+func approvalFixture(t *testing.T, codeowners string) (*githubtest.Server, *vcs.Client, int) {
+	t.Helper()
+	gh := githubtest.New(t)
+	gh.SetFile(".github/CODEOWNERS", codeowners)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.SetHeadSHA(pr.Number, "h1")
+	return gh, c, pr.Number
+}
+
+func TestAnApprovalOfTheHeadByACodeOwnerApproves(t *testing.T) {
+	t.Parallel()
+	gh, c, n := approvalFixture(t, "# owners\n*       @sam\n/docs/ @kim\n")
+	gh.AddReview(n, "kim", "APPROVED")
+	by, err := c.Approval(ctx, githubtest.Repo, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by != "kim" {
+		t.Fatalf("Approval = %q, want kim", by)
+	}
+}
+
+func TestAnApprovalOfAnOlderHeadOrByANonOwnerDoesNotApprove(t *testing.T) {
+	t.Parallel()
+	gh, c, n := approvalFixture(t, "* @sam\n")
+	gh.AddReview(n, "sam", "APPROVED") // of h1
+	gh.SetHeadSHA(n, "h2")
+	gh.AddReview(n, "lee", "APPROVED") // of h2, but lee owns nothing
+	by, err := c.Approval(ctx, githubtest.Repo, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by != "" {
+		t.Fatalf("Approval = %q, want none", by)
+	}
+}
+
+func TestAMemberOfAnOwningTeamApproves(t *testing.T) {
+	t.Parallel()
+	gh, c, n := approvalFixture(t, "*.go @acme/core @sam\n")
+	gh.AddTeamMember("acme", "core", "kim")
+	gh.AddReview(n, "kim", "APPROVED")
+	by, err := c.Approval(ctx, githubtest.Repo, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by != "kim" {
+		t.Fatalf("Approval = %q, want kim", by)
+	}
+}
+
+func TestWithoutCodeOwnersNoReviewApproves(t *testing.T) {
+	t.Parallel()
+	gh := githubtest.New(t)
+	c := vcs.NewClient(gh.URL, vcs.StaticToken(gh.Token))
+	pr, err := c.OpenPullRequest(ctx, vcs.NewPullRequest{Repo: githubtest.Repo, Ticket: "gh:" + githubtest.Repo + "#3", Head: "istari/3/x", Base: "main", Title: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh.AddReview(pr.Number, "alex", "APPROVED")
+	by, err := c.Approval(ctx, githubtest.Repo, pr.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by != "" {
+		t.Fatalf("Approval = %q, want none without CODEOWNERS", by)
+	}
+}
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

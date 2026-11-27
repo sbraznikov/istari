@@ -414,9 +414,31 @@ type transientError struct{ error }
 func (e transientError) Is(target error) bool { return target == errTransient }
 func (e transientError) Unwrap() error        { return e.error }
 
+// statusError is an answer other than 2xx; it keeps the status for callers
+// that tell one refusal from another.
+type statusError struct {
+	status int
+	error
+}
+
+func (e statusError) Unwrap() error { return e.error }
+
+// status returns the HTTP status of a GitHub answer err carries; 0 for none.
+func status(err error) int {
+	if se, ok := errors.AsType[statusError](err); ok {
+		return se.status
+	}
+	return 0
+}
+
 // send makes a request and returns the body of its answer; an answer other
 // than 2xx is an error that names GitHub's message.
 func (c *Client) send(ctx context.Context, repo, method, url string, payload []byte) ([]byte, error) {
+	return c.sendAs(ctx, repo, method, url, "application/vnd.github+json", payload)
+}
+
+// sendAs is send with the media type accept.
+func (c *Client) sendAs(ctx context.Context, repo, method, url, accept string, payload []byte) ([]byte, error) {
 	token, err := c.tokens.Token(ctx, repo)
 	if err != nil {
 		return nil, err
@@ -430,7 +452,7 @@ func (c *Client) send(ctx context.Context, repo, method, url string, payload []b
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	res, err := c.http.Do(req)
 	if err != nil {
@@ -449,6 +471,7 @@ func (c *Client) send(ctx context.Context, repo, method, url string, payload []b
 		if limited {
 			err = fmt.Errorf("%w: %w", err, ratelimit.ErrRateLimited)
 		}
+		err = statusError{res.StatusCode, err}
 		if limited || tickets.TransientStatus(res.StatusCode, res.Header) {
 			return nil, transientError{err}
 		}
