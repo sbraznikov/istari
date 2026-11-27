@@ -1454,8 +1454,15 @@ func (s *Syncer) Ready(ctx context.Context, login, refText string) error {
 	if filed {
 		// A trusted member judged a ticket an agent filed worth doing: it
 		// stops sharing the budget it was filed from (spec section 4.5).
+		shared := tk.OwnBudgetSince.IsZero()
 		if tk, err = s.tickets.OwnBudget(ctx, "human:"+login, tk.Ref); err != nil {
 			return err
+		}
+		if shared && s.opts.Note != nil {
+			text := fmt.Sprintf("human:%s admitted this ticket with `istari ticket ready`: from now on it spends a budget of its own, of its size, not the budget of %s. Its earlier runs stay counted there.", login, tk.BudgetOf)
+			if err := s.opts.Note(ctx, ref, text); err != nil {
+				return err
+			}
 		}
 		if tk.State != core.TicketNew {
 			return nil
