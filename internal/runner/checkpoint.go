@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -189,14 +190,16 @@ func (c *Checkpoints) MakeWithin(ctx context.Context, limit time.Duration, reach
 		return journal.Entry{}, err
 	}
 	limited, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil) // also ends the wait for the limit
-	go func() {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel(nil) // ends the wait for the limit
+	wg.Go(func() {
 		select {
 		case <-reached:
 			cancel(errLimitReached)
 		case <-limited.Done():
 		}
-	}()
+	})
 	e, err := c.check(limited, run, ref, ws, message)
 	pushing := err == nil
 	if pushing {

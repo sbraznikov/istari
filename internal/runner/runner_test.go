@@ -678,10 +678,11 @@ func blocks(started string) string {
 func reachedOnce(t *testing.T, started string) func(time.Duration) <-chan time.Time {
 	t.Helper()
 	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
+	var wg sync.WaitGroup
+	t.Cleanup(func() { close(done); wg.Wait() })
 	return func(time.Duration) <-chan time.Time {
 		at := make(chan time.Time, 1)
-		go func() {
+		wg.Go(func() {
 			for !exists(started) {
 				select {
 				case <-done:
@@ -690,7 +691,7 @@ func reachedOnce(t *testing.T, started string) func(time.Duration) <-chan time.T
 				}
 			}
 			at <- time.Now()
-		}()
+		})
 		return at
 	}
 }
