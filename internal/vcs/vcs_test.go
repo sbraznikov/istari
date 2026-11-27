@@ -199,6 +199,18 @@ func TestAnApprovalOfAnOlderHeadOrByANonOwnerDoesNotApprove(t *testing.T) {
 	}
 }
 
+func TestAPullRequestsAuthorIsTheUserItWasOpenedAs(t *testing.T) {
+	t.Parallel()
+	gh, c, n := approvalFixture(t, "* @sam\n")
+	author, err := c.Author(ctx, githubtest.Repo, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if author != gh.TokenUser {
+		t.Fatalf("Author = %q, want %q, the token's user", author, gh.TokenUser)
+	}
+}
+
 func TestAMemberOfAnOwningTeamApproves(t *testing.T) {
 	t.Parallel()
 	gh, c, n := approvalFixture(t, "*.go @acme/core @sam\n")

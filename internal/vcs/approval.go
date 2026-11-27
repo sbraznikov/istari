@@ -60,6 +60,20 @@ func (c *Client) Approval(ctx context.Context, repo string, n int) (string, erro
 	return "", nil
 }
 
+// Author returns the login that opened the pull request: without a GitHub
+// App the gh CLI's user, with one the App (spec section 11).
+func (c *Client) Author(ctx context.Context, repo string, n int) (string, error) {
+	var pr struct {
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
+		return "", err
+	}
+	return pr.User.Login, nil
+}
+
 // review is a pull request review as Approval reads it.
 type review struct {
 	State    string `json:"state"`
