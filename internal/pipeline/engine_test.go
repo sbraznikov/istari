@@ -1531,25 +1531,17 @@ func TestTheEngineLogsAPipelineWarningOncePerRepository(t *testing.T) {
 	}
 }
 
-// cutShort gives f the tasks of twin that keep names, under the ID keep
-// returns, completed when done: a round a daemon stopped making between two
-// creates.
-func (f *engineFixture) cutShort(t *testing.T, twin *engineFixture, keep func(core.Task) (id string, ok, done bool)) {
+// cutShort gives f the tasks of twin that keep names, completed, under the
+// ID keep returns: a round a daemon stopped making between two creates.
+func (f *engineFixture) cutShort(t *testing.T, twin *engineFixture, keep func(core.Task) (id string, ok bool)) {
 	t.Helper()
-	all, err := twin.tasks.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range all {
-		id, ok, done := keep(task)
+	for _, task := range twin.allTasks(t) {
+		id, ok := keep(task)
 		if !ok {
 			continue
 		}
 		if _, err := f.tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: task.Ticket, Project: task.Project, Role: task.Role, MaxAttempts: task.MaxAttempts}); err != nil {
 			t.Fatal(err)
-		}
-		if !done {
-			continue
 		}
 		lease, err := f.tasks.Claim(ctx, "human:alex", id)
 		if err != nil {
@@ -1559,6 +1551,16 @@ func (f *engineFixture) cutShort(t *testing.T, twin *engineFixture, keep func(co
 			t.Fatal(err)
 		}
 	}
+}
+
+// allTasks lists every task of f.
+func (f *engineFixture) allTasks(t *testing.T) []core.Task {
+	t.Helper()
+	all, err := f.tasks.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
 }
 
 func TestAPlanningRoundWithoutItsPlanApprovalTaskGetsItAndDoesNotReachT4(t *testing.T) {
@@ -1573,8 +1575,8 @@ func TestAPlanningRoundWithoutItsPlanApprovalTaskGetsItAndDoesNotReachT4(t *test
 	if _, err := f.tickets.Fire(ctx, "system", ref, "start"); err != nil {
 		t.Fatal(err)
 	}
-	f.cutShort(t, twin, func(task core.Task) (string, bool, bool) {
-		return task.ID, pipeline.StageOf(task) == "plan", true
+	f.cutShort(t, twin, func(task core.Task) (string, bool) {
+		return task.ID, pipeline.StageOf(task) == "plan"
 	})
 	plan := f.stage(t, ref, "plan")
 	f.reconcile(t)
@@ -1587,9 +1589,9 @@ func TestAPlanningRoundWithoutItsPlanApprovalTaskGetsItAndDoesNotReachT4(t *test
 	if impl := f.stage(t, ref, "implement"); impl.State != core.TaskWaiting {
 		t.Fatalf("implement is %s, want waiting for the approval", impl.State)
 	}
-	tasks, _ := f.tasks.List(ctx)
+	tasks := f.allTasks(t)
 	f.reconcile(t) // idempotent
-	if again, _ := f.tasks.List(ctx); len(again) != len(tasks) || f.state(t, ref) != core.TicketPlanning {
+	if again := f.allTasks(t); len(again) != len(tasks) || f.state(t, ref) != core.TicketPlanning {
 		t.Fatalf("a second reconcile: %d tasks (was %d), %s", len(again), len(tasks), f.state(t, ref))
 	}
 }
@@ -1613,9 +1615,9 @@ func TestAReworkOrConflictRoundCutShortAfterVerifyGetsItsReviewAndIsNotPassed(t 
 			}
 		}
 		// The daemon stopped after it made the round's verify task; both are done.
-		f.cutShort(t, twin, func(task core.Task) (string, bool, bool) {
+		f.cutShort(t, twin, func(task core.Task) (string, bool) {
 			s := pipeline.StageOf(task)
-			return strings.Replace(task.ID, "_r1_", round, 1), s == "implement" || s == pipeline.StageVerify, true
+			return strings.Replace(task.ID, "_r1_", round, 1), s == "implement" || s == pipeline.StageVerify
 		})
 		impl, verify := f.stage(t, ref, "implement"), f.stage(t, ref, pipeline.StageVerify)
 		f.reconcile(t)
@@ -1629,9 +1631,9 @@ func TestAReworkOrConflictRoundCutShortAfterVerifyGetsItsReviewAndIsNotPassed(t 
 		if merge := f.stage(t, ref, pipeline.StageMerge); !strings.Contains(merge.ID, round) {
 			t.Fatalf("%s: merge is %s, want the round's", round, merge.ID)
 		}
-		tasks, _ := f.tasks.List(ctx)
+		tasks := f.allTasks(t)
 		f.reconcile(t) // idempotent: no new round, no transition
-		if again, _ := f.tasks.List(ctx); len(again) != len(tasks) || f.state(t, ref) != core.TicketInReview {
+		if again := f.allTasks(t); len(again) != len(tasks) || f.state(t, ref) != core.TicketInReview {
 			t.Fatalf("%s: a second reconcile: %d tasks (was %d), %s", round, len(again), len(tasks), f.state(t, ref))
 		}
 	}
