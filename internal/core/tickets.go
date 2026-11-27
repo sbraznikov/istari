@@ -165,7 +165,7 @@ func findTransition(from TicketState, trigger string) (transition, bool) {
 // transition, or an error that explains the refusal.
 type Guard func(ctx context.Context, t Ticket) error
 
-// Guards maps a transition id ("T2" … "T15") to its condition. A transition
+// Guards maps a transition id ("T2" … "T16") to its condition. A transition
 // without a guard is allowed whenever the table allows it. The conditions
 // themselves (admission, free slots, plan, CI…) belong to later components.
 type Guards map[string]Guard

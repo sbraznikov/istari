@@ -222,13 +222,16 @@ func (s *Syncer) syncRepo(ctx context.Context, repo SyncRepo, report *SyncReport
 		if err != nil || ref.Repo != repo.Repo || seen[tk.Ref] {
 			continue
 		}
-		base, _, err := s.base(ctx, tk.Ref)
+		base, version, err := s.base(ctx, tk.Ref)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if base.Closed && finished(tk.State) {
 			repaired, err := s.repairMerged(ctx, tk)
+			if err == nil && !repaired {
+				repaired, err = s.repairCompleted(ctx, ref, tk, base, version)
+			}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", tk.Ref, err))
 			}
@@ -541,6 +544,9 @@ type baseRecord struct {
 	// PriorityNoted is the pair "stored/table" of priorities whose
 	// difference the journal last noted, so it says so once.
 	PriorityNoted string `json:"priority_noted,omitempty"`
+	// CloseRead is set once the close reason of a canceled ticket's issue
+	// was read for the repair to done (repairCompleted).
+	CloseRead bool `json:"close_read,omitempty"`
 }
 
 // base returns the ticket's base record; version 0 means istari has never
@@ -960,6 +966,53 @@ func (s *Syncer) repairMerged(ctx context.Context, tk core.Ticket) (bool, error)
 	}
 	_, err = s.tickets.Fire(ctx, "system", tk.Ref, "merged")
 	return err == nil, err
+}
+
+// repairCompleted moves a canceled ticket whose issue is closed as completed
+// to done (T16 from canceled, spec 4.1): an earlier version read a human's
+// close as completed as a cancel. A ticket a human labelled istari:canceled
+// stays canceled. The issue of a canceled ticket is read for this once: the
+// base remembers it, so canceled tickets cost no request on every sync. It
+// reports whether it repaired; the tracker then gets done on the reconcile
+// that follows.
+func (s *Syncer) repairCompleted(ctx context.Context, ref Ref, tk core.Ticket, base baseRecord, version int64) (bool, error) {
+	if tk.State != core.TicketCanceled || base.CloseRead {
+		return false, nil
+	}
+	t, err := s.provider.Get(ctx, ref)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil // deleted or moved: nothing to read
+	}
+	if err != nil {
+		return false, err
+	}
+	if t.Closed && t.ClosedAs == "completed" {
+		human, err := s.humanCanceled(ctx, ref)
+		if err != nil {
+			return false, err
+		}
+		if !human {
+			_, err = s.tickets.Fire(ctx, "system", tk.Ref, "complete")
+			return err == nil, err
+		}
+	}
+	x := &syncing{tk: tk, base: base, version: version}
+	x.base.CloseRead = true
+	return false, s.record(ctx, x, EventSyncObserved, "system", tk, map[string]any{"closed_as": t.ClosedAs})
+}
+
+// humanCanceled tells whether someone other than istari set the issue's
+// label istari:canceled last.
+func (s *Syncer) humanCanceled(ctx context.Context, ref Ref) (bool, error) {
+	by, err := s.provider.LastActor(ctx, ref, "labeled", "istari:"+string(core.TicketCanceled))
+	if err != nil || by == "" {
+		return false, err
+	}
+	self, err := s.provider.Self(ctx)
+	if err != nil {
+		return false, err
+	}
+	return !strings.EqualFold(by, self), nil
 }
 
 // finishMerged moves a ticket whose pull request a human merged to done

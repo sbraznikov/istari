@@ -408,6 +408,87 @@ func (n *neededTicket) show(t *testing.T, ref string) (state, hold string) {
 	return tk.State, tk.Hold
 }
 
+// transitions are the ticket's transitions as "trigger by actor".
+func (n *neededTicket) transitions(t *testing.T, ref string) []string {
+	t.Helper()
+	var events []struct {
+		Actor   string
+		Payload struct{ Trigger string }
+	}
+	n.d.mustCLI(t, &events, "tail", "--ticket", ref, "--type", "ticket.transitioned")
+	var out []string
+	for _, e := range events {
+		out = append(out, e.Payload.Trigger+" by "+e.Actor)
+	}
+	return out
+}
+
+func TestAHumanClosingAnIssueAsNotPlannedOrDuplicateCancelsItsTicket(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"not_planned", "duplicate"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			n := newNeededTicket(t)
+			n.gh.HumanClose(n.need, "alex", reason)
+			n.d.mustCLI(t, nil, "sync")
+			if st, _ := n.show(t, n.needRef); st != "canceled" {
+				t.Fatalf("the ticket of an issue a human closed as %s is %s, want canceled (T13)", reason, st)
+			}
+			if tr := n.transitions(t, n.needRef); len(tr) == 0 || tr[len(tr)-1] != "cancel by human:alex" {
+				t.Fatalf("transitions = %v, want the last cancel by human:alex", tr)
+			}
+		})
+	}
+}
+
+func TestATicketCanceledWhileItsIssueIsClosedAsCompletedIsRepairedToDoneOnTheNextSync(t *testing.T) {
+	t.Parallel()
+	n := newNeededTicket(t)
+	// As an earlier version left it: canceled by sync, the issue closed as
+	// completed by a human.
+	n.gh.HumanClose(n.need, "alex", "not_planned")
+	n.d.mustCLI(t, nil, "sync")
+	if st, _ := n.show(t, n.needRef); st != "canceled" {
+		t.Fatalf("the ticket is %s, want canceled before the repair", st)
+	}
+	n.gh.HumanClose(n.need, "alex", "completed") // the issue is closed already: only its reason changes
+	before := len(n.transitions(t, n.needRef))
+	n.d.mustCLI(t, nil, "sync")
+	if st, _ := n.show(t, n.needRef); st != "done" {
+		t.Fatalf("the ticket is %s after the sync, want done\n%s", st, n.d.stderr)
+	}
+	if i := n.gh.Issue(n.need); i.StateReason != "completed" || !slices.Contains(i.Labels, "istari:done") {
+		t.Fatalf("the issue is %s with %v, want completed with istari:done", i.StateReason, i.Labels)
+	}
+	if tr := n.transitions(t, n.needRef); len(tr) != before+1 {
+		t.Fatalf("the repair logged transitions %v, want one more than %d", tr, before)
+	}
+	n.d.mustCLI(t, nil, "sync")
+	if tr := n.transitions(t, n.needRef); len(tr) != before+1 {
+		t.Fatalf("a second sync logged transitions %v, want none more", tr)
+	}
+	n.d.step(t, "pipeline")
+	if st, hold := n.show(t, n.depRef); st != "ready" && st != "planning" || hold != "" {
+		t.Fatalf("the ticket that needs it is %s, hold %q; want ready or planning without a hold", st, hold)
+	}
+}
+
+func TestATicketAHumanLabelledCanceledStaysCanceledWhenItsIssueIsClosedAsCompleted(t *testing.T) {
+	t.Parallel()
+	n := newNeededTicket(t)
+	n.gh.SetPermission("bob", "write")
+	n.gh.HumanSetLabels(n.need, "bob", "istari:canceled") // alex is istari here
+	n.d.mustCLI(t, nil, "sync")
+	if st, _ := n.show(t, n.needRef); st != "canceled" {
+		t.Fatalf("the ticket is %s, want canceled by the label", st)
+	}
+	n.gh.HumanClose(n.need, "alex", "completed")
+	n.d.mustCLI(t, nil, "sync")
+	if st, _ := n.show(t, n.needRef); st != "canceled" {
+		t.Fatalf("the ticket a human labelled canceled is %s, want canceled", st)
+	}
+}
+
 func TestAHumanClosingAnIssueAsCompletedFinishesItsTicket(t *testing.T) {
 	t.Parallel()
 	n := newNeededTicket(t)
@@ -420,6 +501,9 @@ func TestAHumanClosingAnIssueAsCompletedFinishesItsTicket(t *testing.T) {
 		t.Fatalf("the issue is %s with %v, want completed with istari:done", i.StateReason, i.Labels)
 	}
 	n.d.step(t, "pipeline")
+	if tr := n.transitions(t, n.needRef); len(tr) == 0 || tr[len(tr)-1] != "complete by human:alex" {
+		t.Fatalf("transitions = %v, want the last complete by human:alex (T16)", tr)
+	}
 	// Its need done, the pipeline may start it at once (T3).
 	if st, hold := n.show(t, n.depRef); st != "ready" && st != "planning" || hold != "" {
 		t.Fatalf("the ticket that needs it is %s, hold %q; want ready or planning without a hold", st, hold)
