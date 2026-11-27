@@ -66,6 +66,15 @@ type EngineOptions struct {
 	// review or awaiting approval then returns for rework through T10 (spec
 	// 4.8). nil: conflicts are not watched.
 	Conflict func(ctx context.Context, ref string) (pr PRConflict, dirty bool, err error)
+	// Approval tells who approved the ticket's pull request at its current
+	// head with a GitHub review, a member listed in CODEOWNERS (spec 4.3);
+	// "": nobody yet. nil: the approve stage is completed by hand.
+	Approval func(ctx context.Context, ref string) (by string, err error)
+	// Merge merges the ticket's pull request with the method (spec 4.8,
+	// stage merge); an error that is vcs.ErrMergeRefused returns the ticket
+	// through T10, any other is tried again on the next reconcile. nil: the
+	// merge stage is completed by hand.
+	Merge func(ctx context.Context, ref, method string) error
 	// Journal is where the engine notes what it does not act on: a ticket
 	// that got open needs after its pull request was opened (spec 4.1).
 	// nil: nothing is noted.
@@ -461,11 +470,7 @@ func (e *Engine) reconcile(ctx context.Context, tk core.Ticket, all []core.Task)
 		}
 		return e.verdict(ctx, tk, r, fire)
 	case core.TicketAwaitingApproval:
-		// Only istari's own merge task fires T11 here: a round cut short
-		// before it made the merge task has merged nothing.
-		if m, ok := r.tasks[StageMerge]; ok && m.State == core.TaskCompleted {
-			return fire("merged") // T11
-		}
+		return e.mergeStage(ctx, tk, r, fire)
 	}
 	return nil
 }

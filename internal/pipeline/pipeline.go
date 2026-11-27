@@ -249,7 +249,29 @@ type Settings struct {
 	PlanGate        bool
 	MaxReviewRounds int
 	MaxAttempts     int
+	Merge           MergeSettings
 }
+
+// MergeSettings say how the merge stage merges (spec section 4.8): the
+// installation's [defaults.merge], overridden by the pipeline's [merge].
+type MergeSettings struct {
+	Mode   string // manual, after_approval (the default) or auto
+	Method string // squash (the default), merge or rebase
+	// AutoMaxSize, AutoMaxLines, AutoMaxFiles and IrreversiblePaths bound
+	// what auto mode merges without a human; a size without a line or file
+	// limit has none.
+	AutoMaxSize       string
+	AutoMaxLines      map[string]int
+	AutoMaxFiles      map[string]int
+	IrreversiblePaths []string
+}
+
+// Merge modes (spec section 4.8).
+const (
+	MergeManual        = "manual"
+	MergeAfterApproval = "after_approval"
+	MergeAuto          = "auto"
+)
 
 // Settings resolves the pipeline's values over the installation's defaults.
 func (p Pipeline) Settings(global config.Defaults) Settings {
@@ -268,7 +290,45 @@ func (p Pipeline) Settings(global config.Defaults) Settings {
 			s.PlanGate = *st.Gate
 		}
 	}
+	s.Merge = p.mergeSettings(global.Merge)
 	return s
+}
+
+// mergeSettings resolves the pipeline's [merge] over the installation's
+// [defaults.merge]; Validate has checked the types of its keys.
+func (p Pipeline) mergeSettings(global config.Merge) MergeSettings {
+	m := MergeSettings{Mode: global.Mode, Method: global.Method, AutoMaxSize: global.AutoMaxSize,
+		AutoMaxLines: global.AutoMaxLines, AutoMaxFiles: global.AutoMaxFiles}
+	for key, into := range map[string]*string{"mode": &m.Mode, "method": &m.Method, "auto_max_size": &m.AutoMaxSize} {
+		if v, ok := p.Merge[key].(string); ok {
+			*into = v
+		}
+	}
+	m.IrreversiblePaths, _ = stringList(p.Merge["irreversible_paths"])
+	if m.Mode == "" {
+		m.Mode = MergeAfterApproval
+	}
+	if m.Method == "" {
+		m.Method = "squash"
+	}
+	return m
+}
+
+// stringList reads a TOML array of strings; ok is false for anything else
+// but an absent value.
+func stringList(v any) (out []string, ok bool) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, v == nil
+	}
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 // TaskSpec is one task a ticket gets when its work starts.
