@@ -45,9 +45,10 @@ type Entry struct {
 	Kind       Kind             `json:"kind"`
 	At         time.Time        `json:"at"`
 	Actor      string           `json:"actor"`
-	ID         string           `json:"id,omitempty"`   // a question's id; its answer names it
-	Text       string           `json:"text,omitempty"` // the question, the answer verbatim, the assumption
-	Link       string           `json:"link,omitempty"` // where the answer was given
+	ID         string           `json:"id,omitempty"`      // a question's id; its answer names it
+	Text       string           `json:"text,omitempty"`    // the question, the answer verbatim, the assumption
+	Link       string           `json:"link,omitempty"`    // where the answer was given
+	Comment    int64            `json:"comment,omitempty"` // the tracker comment the entry was posted as, not in its marker; 0 without a tracker
 	Decision   *DecisionEntry   `json:"decision,omitempty"`
 	Plan       *PlanEntry       `json:"plan,omitempty"`
 	Checkpoint *CheckpointEntry `json:"checkpoint,omitempty"`
@@ -232,7 +233,11 @@ const maxComment = 60000
 
 // marker carries the entry, machine-readable, in its comment. JSON escapes
 // '<' and '>', so the entry cannot end the HTML comment early.
-var marker = regexp.MustCompile(`<!-- istari:journal (\{.*\}) -->`)
+var marker = regexp.MustCompile(regexp.QuoteMeta(markerStart) + ` (\{.*\}) -->`)
+
+// markerStart begins the marker: a comment that has it is istari's, or a
+// copy of one of istari's.
+const markerStart = "<!-- istari:journal"
 
 // Render returns the comment of an entry: a short text for people and the
 // entry itself in a marker.
@@ -244,7 +249,7 @@ func Render(e Entry) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := Text(e) + "\n\n<!-- istari:journal " + string(data) + " -->"
+	out := Text(e) + "\n\n" + markerStart + " " + string(data) + " -->"
 	if len(out) > maxComment {
 		return "", fmt.Errorf("journal: the %s entry is %d characters as a comment, more than %d", e.Kind, len(out), maxComment)
 	}
@@ -572,6 +577,11 @@ func New(t Tracker, s store.Store, clock func() time.Time) *Journal {
 func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.append(ctx, ref, e)
+}
+
+// append is Append with the journal locked.
+func (j *Journal) append(ctx context.Context, ref tickets.Ref, e Entry) error {
 	if e.At.IsZero() {
 		e.At = j.clock().UTC()
 	}
@@ -580,9 +590,11 @@ func (j *Journal) Append(ctx context.Context, ref tickets.Ref, e Entry) error {
 		return err
 	}
 	if j.tracker != nil {
-		if _, err := j.tracker.Comment(ctx, ref, body); err != nil {
+		posted, err := j.tracker.Comment(ctx, ref, body)
+		if err != nil {
 			return err
 		}
+		e.Comment = posted.ID
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -674,6 +686,7 @@ func (j *Journal) Read(ctx context.Context, ref tickets.Ref) ([]Entry, error) {
 			continue
 		}
 		if ok {
+			e.Comment = c.ID
 			out = append(out, e)
 		}
 	}

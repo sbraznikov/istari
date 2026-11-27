@@ -87,6 +87,22 @@ func TestALongJournalKeepsEveryDecisionAndAssumptionAndTheLatestPlanUnderTheLimi
 	}
 }
 
+func TestEveryQuestionAndItsAnswerStayInALongJournalsBrief(t *testing.T) {
+	t.Parallel()
+	in := briefInput()
+	old := []journal.Entry{
+		{Kind: journal.Question, Actor: "agent:refiner-1", ID: "r_1-q1", Text: "OLD QUESTION: is the type chore? " + strings.Repeat("q", 3000)},
+		{Kind: journal.Answer, Actor: "human:alex", ID: "r_1-q1", Text: "OLD ANSWER: yes, chore. " + strings.Repeat("a", 3000), Link: "https://github.com/acme/web/issues/7#issuecomment-1"},
+	}
+	in.Journal = append(old, in.Journal...)
+	b := runner.Brief(in)
+	for _, want := range []string{"OLD QUESTION: is the type chore?", "OLD ANSWER: yes, chore."} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the brief lacks %q", want)
+		}
+	}
+}
+
 func TestTheSameInputsGiveAByteIdenticalBrief(t *testing.T) {
 	t.Parallel()
 	if a, b := runner.Brief(briefInput()), runner.Brief(briefInput()); a != b {
