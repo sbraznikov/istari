@@ -447,7 +447,7 @@ Every open issue of a registered repository becomes a ticket at the first sync. 
    - `ready` → `planning`: istari makes the ticket's worktree on a branch `istari/<n>/<slug>` and a planner run publishes the plan in the ticket. With `plan_gate = true`, a human approves it: `istari gate list`, `istari gate approve <gate>`.
    - `in_progress`: the implementer works in slices. Each `istari checkpoint` commits, runs `typecheck` and `test`, pushes the branch and records the result in the ticket. `istari pr open` runs `full` and opens a **draft** pull request.
    - After that, istari follows CI on the pull request: red starts another implementation round, green moves the ticket to `in_review`.
-   - `in_review`: a reviewer run reads the diff along two axes, Standards and Spec, and submits its findings with `istari review submit`. istari drops a finding whose file and line are not in the diff or whose quote is not in the source its axis allows (the ticket for Spec, a standards file such as `CODING_STANDARDS.md` or `AGENTS.md`, or the baseline of code smells), notes it in the ticket, and publishes the rest on the pull request as a comment review, the two axes apart. Any accepted finding starts another implementation round, up to `max_review_rounds`, then the ticket is held `attempts_exhausted`; none, with CI green, moves it to `awaiting_approval`. A reviewer cannot complete without a report: its run fails, and the attempt counts.
+   - `in_review`: a reviewer run reads the diff along two axes, Standards and Spec, and submits its findings with `istari review submit`. istari drops a finding whose file and line are not in the diff or whose quote is not in the source its axis allows (the ticket for Spec, a standards file such as `CODING_STANDARDS.md` or `AGENTS.md`, or the baseline of code smells), notes it in the ticket, and publishes the rest on the pull request as a comment review, the two axes apart. Any accepted finding starts another implementation round, up to `max_review_rounds` and the rounds a human granted with `istari ticket retry`, then the ticket is held `attempts_exhausted`; none, with CI green, moves it to `awaiting_approval`. A reviewer cannot complete without a report: its run fails, and the attempt counts.
    - The approval and merge stages are not built yet. Merge the pull request yourself; `istari ticket pause gh:owner/repo#<n>` stops further runs on the ticket.
 
 4. Watch it:
@@ -483,7 +483,7 @@ Holds stop a ticket's tasks from being handed out; the ticket keeps its state. T
 | Hold | Lifted by |
 |---|---|
 | `paused` | `istari ticket resume <ref>` |
-| `attempts_exhausted` (a task failed `max_attempts` times, a ticket was refined three times and still falls short, or it used up `max_review_rounds`) | `istari ticket retry <ref>`: restarts the failed tasks and lifts the hold |
+| `attempts_exhausted` (a task failed `max_attempts` times, a ticket was refined three times and still falls short, or it used up `max_review_rounds`) | `istari ticket retry <ref> [--reason "<text>"]`: restarts the failed tasks and lifts the hold; on used-up review rounds it grants one more round and names it |
 | `waiting_dependency` | istari, when the needed ticket is done |
 | `needs_input` (the refiner asked the author a question, or planning ended without a plan, or the ticket is larger than `max_size`) | an answer, which arrives through Slack (M4). There is no CLI command for it yet. |
 

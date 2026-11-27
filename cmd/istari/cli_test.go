@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -288,6 +289,85 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	})
 	if h := hold(); h != "" {
 		t.Fatalf("after the retried task was claimed the hold is %q", h)
+	}
+}
+
+func TestRetryGrantsOneMoreReviewRoundAfterMaxReviewRounds(t *testing.T) {
+	t.Parallel()
+	r := recoverWith(t, startSteppedDaemon, reviewAgent, "in_review", "[defaults]\nmax_review_rounds = 1\n", nil)
+	d, ref := r.d, r.ref.String()
+	ticket := func() (state, hold string) {
+		var tk struct{ State, Hold string }
+		d.mustCLI(t, &tk, "ticket", "show", ref)
+		return tk.State, tk.Hold
+	}
+	type taskRow struct{ ID, Ticket, State string }
+	tasksOf := func(suffix string) []taskRow {
+		var all, of []taskRow
+		d.mustCLI(t, &all, "task", "list")
+		for _, task := range all {
+			if task.Ticket == ref && strings.HasSuffix(task.ID, suffix) {
+				of = append(of, task)
+			}
+		}
+		return of
+	}
+	d.step(t, "pipeline") // the review of round 1 opens; its reviewer finds one thing
+	endedRuns(t, d, r.log, "reviewer", 1)
+	// The run ends before its task does: the pipeline steps on the task's end.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if review := tasksOf("_r1_review"); len(review) == 1 && review[0].State == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			out, _ := os.ReadFile(r.log)
+			t.Fatalf("the review did not complete: %+v\nagent log:\n%s\ndaemon:\n%s", tasksOf("_review"), out, d.stderr)
+		}
+	}
+	d.step(t, "pipeline") // the finding in the last round holds the ticket
+	if state, hold := ticket(); state != "in_review" || hold != "attempts_exhausted" {
+		t.Fatalf("after the last round's finding the ticket is %s, hold %q; want in_review on attempts_exhausted", state, hold)
+	}
+
+	out, stderr, code := d.cli(t, "ticket", "retry", ref, "--reason", "the decision is in the ticket")
+	if code != 0 || !strings.Contains(out, "granted review round 2") {
+		t.Fatalf("retry: exit %d\n%s%s\nwant it to name the granted round 2", code, out, stderr)
+	}
+	d.step(t, "pipeline") // the verdict opens the granted round instead of holding again
+	d.step(t, "pipeline") // and a further pass does not set the hold again
+	if state, hold := ticket(); state != "in_progress" || hold != "" {
+		t.Fatalf("after retry and reconcile the ticket is %s, hold %q; want in_progress without a hold", state, hold)
+	}
+	// The daemon's own implementer may have claimed it already.
+	if implement := tasksOf("_r2_implement"); len(implement) != 1 || (implement[0].State != "ready" && implement[0].State != "claimed") {
+		t.Fatalf("round-2 implement tasks = %+v, want one ready (or claimed by the daemon's implementer)", implement)
+	}
+	resp, err := d.client.Get("http://istari/v1/events?ticket=" + url.QueryEscape(ref) + "&type=ticket.round_granted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var granted []struct {
+		Actor   string
+		Payload struct {
+			Reason string
+			Round  int
+		}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&granted); err != nil {
+		t.Fatal(err)
+	}
+	if len(granted) != 1 || !strings.HasPrefix(granted[0].Actor, "human:") || granted[0].Payload.Round != 2 || granted[0].Payload.Reason != "the decision is in the ticket" {
+		t.Fatalf("ticket.round_granted events = %+v, want one by a human for round 2 with the reason", granted)
+	}
+	var notes []string
+	for _, c := range r.gh.Issue(r.ref.Number).Comments {
+		if strings.Contains(c.Body, "**Note** — "+granted[0].Actor) && strings.Contains(c.Body, "granted review round 2: the decision is in the ticket") {
+			notes = append(notes, c.Body)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("journal notes of the grant = %q in %+v, want one by the human with the round and the reason", notes, r.gh.Issue(r.ref.Number).Comments)
 	}
 }
 
