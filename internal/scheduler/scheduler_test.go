@@ -256,8 +256,12 @@ func TestAClaimOfATicketWithARunIsTriedAgainAfterTheRunEnds(t *testing.T) {
 	if err := d.sched.Step(ctx); err != nil { // the ticket has a run: not yet
 		t.Fatal(err)
 	}
-	if timers, _ := d.sched.List(ctx); timers[0].State != scheduler.TimerPending {
-		t.Fatalf("a claim refused with ticket_busy marked the timer %s (%s)", timers[0].State, timers[0].Result)
+	timers, err := d.sched.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timers) != 1 || timers[0].State != scheduler.TimerPending {
+		t.Fatalf("a claim refused with ticket_busy left the timers %+v", timers)
 	}
 	if err := tasks.Complete(ctx, running); err != nil {
 		t.Fatal(err)
@@ -265,7 +269,11 @@ func TestAClaimOfATicketWithARunIsTriedAgainAfterTheRunEnds(t *testing.T) {
 	if err := d.sched.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if task, _ := tasks.Get(ctx, "t_2"); task.State != core.TaskClaimed {
+	task, err := tasks.Get(ctx, "t_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != core.TaskClaimed {
 		t.Fatalf("after the run ended the scheduled claim left t_2 %s", task.State)
 	}
 }
