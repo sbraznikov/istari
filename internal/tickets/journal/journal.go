@@ -370,7 +370,7 @@ func Text(e Entry) string {
 	case Review:
 		s := "**Review**" + by + ": " + e.Review.Verdict + "\n\n" + e.Review.Summary
 		if len(e.Review.Findings) > 0 {
-			s += "\n\nFindings:" + bullets(e.Review.Findings)
+			s += "\n\nFindings:" + numbered(e.Review.Findings)
 		}
 		if len(e.Review.Dropped) > 0 {
 			s += "\n\nDropped by istari:" + bullets(e.Review.Dropped)
@@ -412,6 +412,15 @@ func bullets(items []string) string {
 	var b strings.Builder
 	for _, it := range items {
 		b.WriteString("\n- " + it)
+	}
+	return b.String()
+}
+
+// numbered lists the items from 1, the number a reply names a finding by.
+func numbered(items []string) string {
+	var b strings.Builder
+	for i, it := range items {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, it)
 	}
 	return b.String()
 }

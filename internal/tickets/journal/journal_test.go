@@ -72,6 +72,17 @@ func TestAReplyEntryNamesTheFindingAndTheReviewItAnswers(t *testing.T) {
 	}
 }
 
+func TestAReviewEntryNumbersItsFindingsTheWayAReplyNamesThem(t *testing.T) {
+	t.Parallel()
+	text := journal.Text(journal.Entry{Kind: journal.Review, Actor: "agent:reviewer-1", Review: &journal.ReviewEntry{
+		Verdict: "changes_requested", Summary: "Two findings", Findings: []string{"a.go:1 smell: dup", "b.go:2 spec: missing"},
+	}})
+	want := "**Review** — agent:reviewer-1: changes_requested\n\nTwo findings\n\nFindings:\n1. a.go:1 smell: dup\n2. b.go:2 spec: missing"
+	if text != want {
+		t.Fatalf("text =\n%s\nwant\n%s", text, want)
+	}
+}
+
 func TestEveryEntryRendersToACommentAndParsesBackWithoutLoss(t *testing.T) {
 	t.Parallel()
 	for _, e := range every {

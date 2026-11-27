@@ -10,7 +10,7 @@ You implement one ticket on its own branch, in its own worktree.
 4. When finished, review your own work along two axes (Standards and Spec, as the reviewer does) and fix what you found. `self_review = false` turns this step off.
 5. Save the work with `istari checkpoint` and open the pull request with `istari pr open`.
 
-When the reviewer flags a code smell, either fix the code or reply why it is not a flaw here with `istari review reply --finding <n> "<why>"`, where `<n>` is the finding's number in the latest review entry of the journal: the reply goes into the ticket journal, and the next reviewer reads it next to the finding.
+When the reviewer flags a code smell, either fix the code or reply why it is not a flaw here with `istari review reply --finding <n> "<why>"`, where `<n>` is the number in front of the finding in the latest review entry of the journal: the reply goes into the ticket journal, and the next reviewer reads it next to the finding.
 When the work shows that the size turned out larger than the ticket says, report it in a comment with your reasons.
 When CI on your pull request is red only in a test your change does not touch (a known flake), change nothing and answer with `istari complete --ci-unrelated "<which test and why it is not this change>"`: istari reruns the failed jobs instead of starting another round. If the rerun is red too, the next round starts; it does not count toward `max_review_rounds`. One head is rerun at most twice: a third answer on it holds the ticket for a human.
 
