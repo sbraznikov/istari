@@ -39,7 +39,7 @@ type approvalWait struct {
 func newApprovalWait(t *testing.T) *approvalWait {
 	t.Helper()
 	w := &approvalWait{}
-	w.reviewed = recoverWith(t, startSteppedDaemon, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n", func(gh *githubtest.Server, pr int) {
+	w.reviewed = recoverWith(t, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n", func(gh *githubtest.Server, pr int) {
 		gh.SetFile(".github/CODEOWNERS", "* @kim\n")
 		gh.SetHeadSHA(pr, "h1")
 		w.branch = gh.Issue(pr).Branch
@@ -148,7 +148,7 @@ func TestAMergeGitHubRefusesReturnsTheTicketToInProgress(t *testing.T) {
 
 func TestInAutoModeAPullRequestThatMeetsEveryConditionMergesWithoutAHumanReview(t *testing.T) {
 	t.Parallel()
-	r := recoverWith(t, startSteppedDaemon, cleanReviewer, "in_review", "[defaults.merge]\nmode = \"auto\"\n", func(gh *githubtest.Server, pr int) {
+	r := recoverWith(t, cleanReviewer, "in_review", "[defaults.merge]\nmode = \"auto\"\n", func(gh *githubtest.Server, pr int) {
 		gh.SetHeadSHA(pr, "h1")
 		gh.SetChecks("h1", githubtest.Check{Name: "test", Status: "completed", Conclusion: "success"})
 		gh.SetPullFiles(pr, githubtest.File{Path: "feature.txt", Additions: 1})
