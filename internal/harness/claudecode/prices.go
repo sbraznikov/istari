@@ -20,7 +20,8 @@ var prices = map[string]price{
 var highest = func() price {
 	var h price
 	for _, p := range prices {
-		h = price{max(h.input, p.input), max(h.output, p.output), max(h.cacheRead, p.cacheRead), max(h.cacheWrite, p.cacheWrite)}
+		h = price{input: max(h.input, p.input), output: max(h.output, p.output),
+			cacheRead: max(h.cacheRead, p.cacheRead), cacheWrite: max(h.cacheWrite, p.cacheWrite)}
 	}
 	return h
 }()
