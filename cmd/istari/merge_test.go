@@ -177,9 +177,9 @@ func (w *approvalWait) approveGate(t *testing.T) string {
 	return ""
 }
 
-// The fake seeds the pull request as bob, the gh user istari opened it as
-// without a GitHub App; bob has write access and no trusted list is set, so
-// bob is trusted (spec 4.5).
+// The fake seeds the pull request as bob, standing in for the gh user istari
+// opens pull requests as without a GitHub App; with write access and no
+// trusted list set, bob is trusted (spec 4.5).
 func TestWithoutAGitHubAppThePullRequestsTrustedAuthorApprovesWithGateApprove(t *testing.T) {
 	t.Parallel()
 	w := newApprovalWait(t)

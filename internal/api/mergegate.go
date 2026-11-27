@@ -97,7 +97,7 @@ func (s *Server) approveMerge(ctx context.Context, actor string, task core.Task)
 		return core.Task{}, err
 	}
 	if !open {
-		return core.Task{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("%s is no open gate: its ticket does not await an approval istari gate approve may give, or the pull request's head is approved already", task.ID)}
+		return core.Task{}, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("%s is no open gate: its ticket does not await an approval istari gate approve may give, or the pull request's head is approved already; istari gate list shows the open gates", task.ID)}
 	}
 	login := strings.TrimPrefix(actor, "human:")
 	if s.syncer == nil {
