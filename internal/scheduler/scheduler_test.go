@@ -235,6 +235,41 @@ func TestAnActionRefusedForNowIsTriedAgainOnTheNextTick(t *testing.T) {
 	}
 }
 
+func TestAClaimOfATicketWithARunIsTriedAgainAfterTheRunEnds(t *testing.T) {
+	t.Parallel()
+	c := newClock()
+	d := start(t, filepath.Join(t.TempDir(), "istari.db"), c, nil)
+	tasks := d.srv.Tasks()
+	for _, id := range []string{"t_1", "t_2"} {
+		if _, err := tasks.Create(ctx, "system", core.NewTask{ID: id, Ticket: "gh:acme/web#1", Role: "implementer"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running, err := tasks.Claim(ctx, "agent:a", "t_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := json.RawMessage(`{"actor":"agent:b","id":"t_2"}`)
+	if _, err := d.sched.Schedule(ctx, "human:alex", c.Now(), "task.claim", claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.sched.Step(ctx); err != nil { // the ticket has a run: not yet
+		t.Fatal(err)
+	}
+	if timers, _ := d.sched.List(ctx); timers[0].State != scheduler.TimerPending {
+		t.Fatalf("a claim refused with ticket_busy marked the timer %s (%s)", timers[0].State, timers[0].Result)
+	}
+	if err := tasks.Complete(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.sched.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if task, _ := tasks.Get(ctx, "t_2"); task.State != core.TaskClaimed {
+		t.Fatalf("after the run ended the scheduled claim left t_2 %s", task.State)
+	}
+}
+
 func TestScheduleChecksTheRequestAndFillsTheActor(t *testing.T) {
 	t.Parallel()
 	c := newClock()
