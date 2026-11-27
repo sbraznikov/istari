@@ -59,7 +59,7 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 	if got := f.waitTask(t, task.ID, core.TaskClaimed); got.Owner != "agent:implementer-1" {
 		t.Fatalf("owner = %s, want the child's implementer-1", got.Owner)
 	}
-	time.Sleep(time.Second) // the child renews: still its own
+	f.waitRenewedPastTheClaim(t, 600*time.Millisecond) // the child renews: still its own
 	if got, _ := f.tasks.Get(ctx, task.ID); got.State != core.TaskClaimed || got.Owner != "agent:implementer-1" {
 		t.Fatalf("while the child lives the task is %s by %s", got.State, got.Owner)
 	}
@@ -68,9 +68,19 @@ func TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt(t *testing.T)
 	}
 	child.Wait() //nolint:errcheck // it reports the kill
 
-	time.Sleep(700 * time.Millisecond) // past the last lease
-	if expired, err := f.tasks.ExpireLeases(ctx); err != nil || len(expired) != 1 {
-		t.Fatalf("ExpireLeases = %v, %v; want the killed runner's task", expired, err)
+	// The scheduler expires leases on its ticks; here the test does, until
+	// the killed runner's last lease ran out.
+	for deadline := time.Now().Add(waitFor); ; time.Sleep(20 * time.Millisecond) {
+		expired, err := f.tasks.ExpireLeases(ctx)
+		if err != nil || len(expired) > 1 {
+			t.Fatalf("ExpireLeases = %v, %v; want the killed runner's task", expired, err)
+		}
+		if len(expired) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the killed runner's lease did not expire")
+		}
 	}
 	f.runner = runner.New(f.store, f.tasks, f.tickets, runner.NewWorkspaces(f.store, runner.WorkspaceOptions{DataDir: f.data, Server: "file://" + filepath.Join(f.root, "remotes")}),
 		// The lease of f.tasks, so the runner renews it while the run is

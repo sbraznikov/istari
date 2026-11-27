@@ -61,9 +61,11 @@ jobs:
           go-version-file: go.mod
       - run: go test -race -count=3 -short ./...
       # The tests that failed now and then in CI (#203, #214), twenty times in a row.
-      - run: go test -race -count=20 -run '^(TestTheRunnerKnowsWhichTaskItIsWorkingOn|TestAStopCheckpointWhosePushOutlastsItsLimitIsKept)$' ./internal/runner/
       - run: go test -race -count=20 -run '^(TestAReviewRefusedForTheTicketsStateCostsNoAttempt)$' ./cmd/istari/
       # The end-to-end tests that step the daemon's loops (#250, #263), fifty times in a row.
       - run: go test -race -count=50 -run '^(TestAPullRequestClosedWithoutAMergeLeavesItsTicketAlone|TestAPullRequestWhoseMergeableIsUnknownLeavesItsTicket|TestAPullRequestInConflictReturnsItsAwaitingApprovalTicketForRework|TestAPullRequestInConflictReturnsItsInReviewTicketAndCancelsTheReview|TestAPullRequestAHumanMergesFinishesItsTicketWhenTheWatchSeesItFirst|TestATicketAHumansMergeCanceledIsRepairedToDoneOnTheNextSync|TestARefusedSplitIsFixedAndResubmittedInTheSameRun|TestASteppedDaemonSyncsOnlyWhenAStepAsks|TestASteppedDaemonFiresADueTimerOnlyOnASchedulerStep|TestDoctorShowsTheLastHoursGitHubRequestsByKindAndTheQuotaLeft|TestAnImplementersCIUnrelatedAnswerRerunsTheRedHeadOnce|TestAScheduledActionRunsInTheDaemon)$' ./cmd/istari/
-      # The runner test whose preparation outlasts its lease (#263), fifty times in a row.
-      - run: go test -race -count=50 -run '^TestARunWhosePreparationOutlastsTheLeaseStillStarts$' ./internal/runner/
+      # The runner tests that set a lease, a stop checkpoint limit or a
+      # deadline (#203, #214, #263, #278), fifty times in a row. The three
+      # that reach the 30s stop checkpoint limit run in parallel: about 35s
+      # a round.
+      - run: go test -race -count=50 -timeout 60m -run '^(TestARunWhosePreparationOutlastsTheLeaseStillStarts|TestTheRunnerKnowsWhichTaskItIsWorkingOn|TestTheLeaseIsRenewedWhileTheRunLivesAndTheTokenDiesWithIt|TestTheRefinerReadsTheMainBranchWithoutATicketWorktree|TestAStoppingRunKeepsItsLeaseWhileItsCheckpointOutlastsIt|TestAStopCheckpointPastItsLimitIsAbandonedAndTheWorkStaysInTheWorktree|TestAStopCheckpointWhosePushHangsPastItsLimitIsAbandoned|TestAStopCheckpointWhosePushOutlastsItsLimitIsKept|TestAfterTheRunnerIsKilledTheTaskExpiresAndAnotherSlotTakesIt)$' ./internal/runner/

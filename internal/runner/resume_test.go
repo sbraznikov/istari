@@ -125,7 +125,7 @@ func TestTheRunnerKnowsWhichTaskItIsWorkingOn(t *testing.T) {
 	}
 	s.finish <- harness.Result{ExitCode: 0}
 	f.waitTask(t, task.ID, core.TaskCompleted)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitFor)
 	for {
 		if _, ok := f.runner.Working(ctx, task.ID); !ok {
 			break
