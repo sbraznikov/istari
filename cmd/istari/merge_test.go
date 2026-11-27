@@ -1,6 +1,10 @@
 package main_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,8 +42,18 @@ type approvalWait struct {
 
 func newApprovalWait(t *testing.T) *approvalWait {
 	t.Helper()
+	return newApprovalWaitWith(t, "", nil)
+}
+
+// newApprovalWaitWith is newApprovalWait with extra appended to the config
+// and setup run on the fake GitHub before the daemon starts.
+func newApprovalWaitWith(t *testing.T, extra string, setup func(gh *githubtest.Server)) *approvalWait {
+	t.Helper()
 	w := &approvalWait{}
-	w.reviewed = recoverWith(t, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n", func(gh *githubtest.Server, pr int) {
+	w.reviewed = recoverWith(t, silentReviewer, "awaiting_approval", "[defaults.merge]\nmethod = \"merge\"\n"+extra, func(gh *githubtest.Server, pr int) {
+		if setup != nil {
+			setup(gh)
+		}
 		gh.SetFile(".github/CODEOWNERS", "* @kim\n")
 		gh.SetHeadSHA(pr, "h1")
 		w.branch = gh.Issue(pr).Branch
@@ -196,6 +210,90 @@ func TestWithoutAGitHubAppThePullRequestsTrustedAuthorApprovesWithGateApprove(t 
 		return strings.Contains(n.Payload.Text, "human:bob approved") && strings.Contains(n.Payload.Text, "h1")
 	}) {
 		t.Fatalf("journal notes = %+v, want one naming bob and h1", notes)
+	}
+}
+
+func TestAPushAfterTheAuthorsGateApprovalVoidsItAndTheGateShowsAgain(t *testing.T) {
+	t.Parallel()
+	w := newApprovalWait(t)
+	w.gh.SetPermission("bob", "write")
+	id := w.approveGate(t)
+	w.d.mustCLI(t, nil, "gate", "approve", id, "--actor", "human:bob") // at h1
+	w.gh.SetHeadSHA(w.pr, "h2")
+	w.d.step(t, "watch")
+	w.d.step(t, "pipeline")
+	if pr := w.gh.Issue(w.pr); pr.Merged {
+		t.Fatal("an approval of h1 merged the pull request at h2")
+	}
+	if st := w.state(t, w.ref.String()); st != "awaiting_approval" {
+		t.Fatalf("the ticket is %s, want awaiting_approval", st)
+	}
+	if again := w.approveGate(t); again != id {
+		t.Fatalf("gate list shows %q after the push, want the approve gate %s again", again, id)
+	}
+}
+
+// A refused gate approve: the exit is not 0 and stderr names code and what.
+func (w *approvalWait) refusedApprove(t *testing.T, actor string, want ...string) {
+	t.Helper()
+	id := w.approveGate(t)
+	if id == "" {
+		t.Fatalf("gate list shows no approve gate of %s", w.ref)
+	}
+	_, stderr, code := w.d.cli(t, "gate", "approve", id, "--actor", actor)
+	if code == 0 {
+		t.Fatalf("gate approve by %s passed, want refused", actor)
+	}
+	for _, s := range want {
+		if !strings.Contains(stderr, s) {
+			t.Fatalf("gate approve by %s: %q, want it to contain %q", actor, stderr, s)
+		}
+	}
+	if w.d.step(t, "pipeline"); w.gh.Issue(w.pr).Merged {
+		t.Fatalf("a refused gate approve by %s merged the pull request", actor)
+	}
+}
+
+func TestAGateApproveByAMemberNotTrustedIsRefusedNamingWhoMayApprove(t *testing.T) {
+	t.Parallel()
+	w := newApprovalWait(t) // bob reads only: not trusted without a trusted list
+	w.refusedApprove(t, "human:bob", "not_trusted", "trusted are the members with write access to "+githubtest.Repo)
+}
+
+func TestAGateApproveByATrustedMemberWhoIsNotTheAuthorPointsToAGitHubReview(t *testing.T) {
+	t.Parallel()
+	w := newApprovalWait(t)
+	w.gh.SetPermission("alex", "write")
+	w.refusedApprove(t, "human:alex", "bob opened the pull request, not alex", "approve it there")
+}
+
+func TestWithAGitHubAppGateApproveOnTheApproveTaskIsRefusedPointingToTheGitHubReview(t *testing.T) {
+	t.Parallel()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemPath := filepath.Join(t.TempDir(), "app.pem")
+	if err := os.WriteFile(pemPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := fmt.Sprintf("\n[github_app]\napp_id = 4242\nprivate_key = %q\n", pemPath)
+	w := newApprovalWaitWith(t, app, func(gh *githubtest.Server) { gh.EnableApp(4242, &key.PublicKey, 77) })
+	w.gh.SetPermission("bob", "write")
+	if id := w.approveGate(t); id != "" {
+		t.Fatalf("with a GitHub App gate list shows the approve gate %s, want none", id)
+	}
+	var tasks []gate
+	w.d.mustCLI(t, &tasks, "task", "list")
+	id := ""
+	for _, task := range tasks {
+		if task.Ticket == w.ref.String() && task.Role == "github_review" {
+			id = task.ID
+		}
+	}
+	_, stderr, code := w.d.cli(t, "gate", "approve", id, "--actor", "human:bob")
+	if code == 0 || !strings.Contains(stderr, "GitHub review from a member listed in CODEOWNERS") {
+		t.Fatalf("gate approve with a GitHub App: exit %d, %q; want refused, pointing to the GitHub review", code, stderr)
 	}
 }
 
