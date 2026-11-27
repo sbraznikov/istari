@@ -195,9 +195,9 @@ func (s *Server) replyToFinding(ctx context.Context, r ReviewReplyRequest) (any,
 	latest, ok := journal.LatestReview(entries)
 	switch {
 	case !ok:
-		return nil, &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no review to reply to"}
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: run.Ticket + " has no review to reply to; a reply answers a finding of the latest review entry in the journal"}
 	case r.Finding > len(latest.Findings):
-		return nil, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("finding %d is not in the latest review of %s: it has %d", r.Finding, run.Ticket, len(latest.Findings))}
+		return nil, &core.Error{Code: core.CodeInvalidState, Message: fmt.Sprintf("finding %d is not in the latest review of %s: it has %d; name one of them by its number in the review entry, from 1", r.Finding, run.Ticket, len(latest.Findings))}
 	}
 	e := journal.Entry{Kind: journal.FindingReply, Actor: run.Agent(), Text: r.Text, Reply: &journal.ReplyEntry{Review: latest.Task, Finding: r.Finding}}
 	if err := j.Append(ctx, ref, e); err != nil {
