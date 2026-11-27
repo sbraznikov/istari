@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
+	"github.com/sbraznikov/istari/internal/tickets/journal"
 	"github.com/sbraznikov/istari/internal/vcs"
 )
 
@@ -289,13 +291,22 @@ func (s *Server) operations() map[string]operation {
 			return s.resume(ctx, r.Actor, r.Ref)
 		}),
 		// ticket.grant_round grants a ticket whose review rounds ran out one
-		// more (spec 7.6): humans only. A repeat answers the last grant.
+		// more (spec 4.3, 7.6): humans only. The journal notes who granted
+		// it and why. A repeat answers the last grant.
 		"ticket.grant_round": write(s.lastGrant, func(ctx context.Context, r TicketGrantRoundRequest) (any, error) {
 			round, granted, err := s.engine.GrantRound(ctx, r.Ref, r.Actor, r.Reason)
+			if err != nil || !granted {
+				return TicketGrantRoundResponse{}, err
+			}
+			ref, err := tickets.ParseRef(r.Ref)
 			if err != nil {
 				return nil, err
 			}
-			return TicketGrantRoundResponse{Granted: granted, Round: round}, nil
+			note := journal.Entry{Kind: journal.Note, Actor: r.Actor, Text: fmt.Sprintf("granted review round %d: %s", round, r.Reason)}
+			if err := s.journal.Append(ctx, ref, note); err != nil {
+				return nil, err
+			}
+			return TicketGrantRoundResponse{Granted: true, Round: round}, nil
 		}),
 		"ticket.unhold_budget": write(ticketAgain, func(ctx context.Context, r TicketUnholdBudgetRequest) (any, error) {
 			return s.unholdBudget(ctx, r.Actor, r.Ref, r.Anyway)

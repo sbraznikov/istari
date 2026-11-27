@@ -334,7 +334,7 @@ func TestRetryGrantsOneMoreReviewRoundAfterMaxReviewRounds(t *testing.T) {
 		t.Fatalf("retry: exit %d\n%s%s\nwant it to name the granted round 2", code, out, stderr)
 	}
 	d.step(t, "pipeline") // the verdict opens the granted round instead of holding again
-	d.step(t, "pipeline")
+	d.step(t, "pipeline") // and a further pass does not set the hold again
 	if state, hold := ticket(); state != "in_progress" || hold != "" {
 		t.Fatalf("after retry and reconcile the ticket is %s, hold %q; want in_progress without a hold", state, hold)
 	}
@@ -359,6 +359,15 @@ func TestRetryGrantsOneMoreReviewRoundAfterMaxReviewRounds(t *testing.T) {
 	}
 	if len(granted) != 1 || !strings.HasPrefix(granted[0].Actor, "human:") || granted[0].Payload.Round != 2 || granted[0].Payload.Reason != "the decision is in the ticket" {
 		t.Fatalf("ticket.round_granted events = %+v, want one by a human for round 2 with the reason", granted)
+	}
+	var notes []string
+	for _, c := range r.gh.Issue(r.ref.Number).Comments {
+		if strings.Contains(c.Body, "**Note** — "+granted[0].Actor) && strings.Contains(c.Body, "granted review round 2: the decision is in the ticket") {
+			notes = append(notes, c.Body)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("journal notes of the grant = %q in %+v, want one by the human with the round and the reason", notes, r.gh.Issue(r.ref.Number).Comments)
 	}
 }
 
