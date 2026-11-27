@@ -380,7 +380,10 @@ func TestPruneReturnsAnOrphanItKeepsWithTheReason(t *testing.T) {
 			tc.make(t, f.dir(164))
 			f.fire(t, tk.Ref, "plan_accepted", "pr_ready", "review_passed", "merged")
 			f.reconcile(t)
-			all, _ := f.tickets.List(ctx)
+			all, err := f.tickets.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
 			pruned, err := f.ws.Prune(ctx, all)
 			if err != nil || len(pruned) != 1 {
 				t.Fatalf("Prune = %+v, %v; want the kept #164", pruned, err)
