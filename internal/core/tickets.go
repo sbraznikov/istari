@@ -50,6 +50,7 @@ const (
 	EventTicketSized        = "ticket.sized"
 	EventTicketNeedsSet     = "ticket.needs_set"
 	EventTicketChildrenSet  = "ticket.children_set"
+	EventTicketRoundGranted = "ticket.round_granted"
 )
 
 // Sizes are the T-shirt sizes of a ticket, smallest first (spec section 4.7).
@@ -84,8 +85,11 @@ type Ticket struct {
 	BudgetOf string `json:"budget_of,omitempty"`
 	// Children are the tickets a split made of this one (T5); it is done
 	// when they all are (T12).
-	Children []string  `json:"children,omitempty"`
-	Updated  time.Time `json:"updated"`
+	Children []string `json:"children,omitempty"`
+	// GrantedRounds are the review rounds humans granted on top of
+	// max_review_rounds (spec section 7.6).
+	GrantedRounds int       `json:"granted_rounds,omitempty"`
+	Updated       time.Time `json:"updated"`
 
 	version int64
 }
@@ -443,6 +447,30 @@ func (m *Tickets) SetPriority(ctx context.Context, actor, ref, priority string) 
 	return ticket, nil
 }
 
+// GrantRound grants the ticket one more review round on top of
+// max_review_rounds; round is the round it opens. Only a human grants one
+// (spec section 7.6): an actor other than human:<login> is refused with
+// human_only.
+func (m *Tickets) GrantRound(ctx context.Context, actor, ref, reason string, round int) (Ticket, error) {
+	if !strings.HasPrefix(actor, "human:") {
+		return Ticket{}, errorf(CodeHumanOnly, "only a human grants %s a review round, not %s", ref, actor)
+	}
+	var ticket Ticket
+	err := retry(func() error {
+		var err error
+		if ticket, err = m.Get(ctx, ref); err != nil {
+			return err
+		}
+		ticket.GrantedRounds++
+		ticket.Updated = m.opts.Clock()
+		return m.commit(ctx, actor, EventTicketRoundGranted, ticket, map[string]any{"actor": actor, "reason": reason, "round": round})
+	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return ticket, nil
+}
+
 // SetSize sets the ticket's size. The refiner, the planner and humans may
 // change it (spec 4.7); every change is an event.
 func (m *Tickets) SetSize(ctx context.Context, actor, ref, size string) (Ticket, error) {
@@ -551,7 +579,7 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet, EventTicketChildrenSet:
+		case EventTicketTransitioned, EventTicketHoldSet, EventTicketHoldCleared, EventTicketPrioritized, EventTicketSized, EventTicketNeedsSet, EventTicketChildrenSet, EventTicketRoundGranted:
 		default:
 			continue
 		}
@@ -605,6 +633,8 @@ func ReplayTicket(events []store.Event) (Ticket, error) {
 			ticket.Needs = p.Needs
 		case EventTicketChildrenSet:
 			ticket.Children = p.Children
+		case EventTicketRoundGranted:
+			ticket.GrantedRounds++
 		}
 		ticket.Updated = e.At
 	}

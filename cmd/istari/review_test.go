@@ -62,6 +62,13 @@ func newReviewed(t *testing.T, agent string) reviewed {
 // pass per step.
 func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *githubtest.Server, pr int)) reviewed {
 	t.Helper()
+	return recoverWith(t, agent, state, "", before)
+}
+
+// recoverWith is newSteppedRecovered with extra appended to the daemon's
+// config, e.g. a [defaults] table.
+func recoverWith(t *testing.T, agent, state, extra string, before func(gh *githubtest.Server, pr int)) reviewed {
+	t.Helper()
 	server := gitServer(t)
 	gh := githubtest.New(t)
 	gh.SetFile("go.mod", "module x\n")
@@ -95,7 +102,7 @@ func newSteppedRecovered(t *testing.T, agent, state string, before func(gh *gith
 	bin := t.TempDir()
 	exectest.Write(t, filepath.Join(bin, "claude"), fmt.Sprintf(agent, binary, log))
 	config := filepath.Join(t.TempDir(), "config.toml")
-	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n", dataDir, githubtest.Repo)
+	cfg := fmt.Sprintf("[daemon]\ndata_dir = %q\n\n[[project]]\nname = \"web\"\nrepo = %q\n\n%s", dataDir, githubtest.Repo, extra)
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

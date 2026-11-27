@@ -830,14 +830,59 @@ func (e *Engine) RequestChanges(ctx context.Context, refText, actor string) erro
 	if err != nil {
 		return err
 	}
+	tk, err := e.tickets.Get(ctx, refText)
+	if err != nil {
+		return err
+	}
 	r := roundOf(refText, all)
-	if reviews := r.n - r.uncounted; s.MaxReviewRounds > 0 && reviews >= s.MaxReviewRounds {
+	if reviews, limit := r.n-r.uncounted, reviewLimit(s, tk); limit > 0 && reviews >= limit {
 		if _, err := e.tickets.SetHold(ctx, actor, refText, "attempts_exhausted"); err != nil {
 			return err
 		}
-		return &core.Error{Code: core.CodeLimitReached, Message: fmt.Sprintf("%s has had %d review rounds, the max_review_rounds of its pipeline", refText, reviews)}
+		return &core.Error{Code: core.CodeLimitReached, Message: fmt.Sprintf("%s has had %d review rounds, the max_review_rounds of its pipeline and the rounds humans granted", refText, reviews)}
 	}
 	return e.nextRound(ctx, refText, actor, r, reviewRound)
+}
+
+// reviewLimit is how many review rounds a ticket may have: max_review_rounds
+// and the rounds humans granted it (spec 7.6). Zero means no limit.
+func reviewLimit(s Settings, tk core.Ticket) int {
+	if s.MaxReviewRounds <= 0 {
+		return 0
+	}
+	return s.MaxReviewRounds + tk.GrantedRounds
+}
+
+// GrantRound grants a ticket held attempts_exhausted, whose review rounds
+// reached its limit, one more review round (spec 7.6) and returns that
+// round's number. A ticket with rounds left, not held so, or held because a
+// task used up its attempts gets nothing: granted is false. So retry grants
+// before it restarts the failed tasks.
+func (e *Engine) GrantRound(ctx context.Context, refText, actor, reason string) (next int, granted bool, err error) {
+	ref, err := tickets.ParseRef(refText)
+	if err != nil {
+		return 0, false, err
+	}
+	s, err := e.SettingsOf(ctx, ref.Repo)
+	if err != nil {
+		return 0, false, err
+	}
+	tk, err := e.tickets.Get(ctx, refText)
+	if err != nil {
+		return 0, false, err
+	}
+	all, err := e.tasks.List(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	r := roundOf(refText, all)
+	if limit := reviewLimit(s, tk); tk.Hold != "attempts_exhausted" || limit == 0 || r.n-r.uncounted < limit || exhausted(refText, all) {
+		return 0, false, nil
+	}
+	if _, err := e.tickets.GrantRound(ctx, actor, refText, reason, r.n+1); err != nil {
+		return 0, false, err
+	}
+	return r.n + 1, true, nil
 }
 
 // nextRound ends the open tasks of round r and starts the next one, of the
