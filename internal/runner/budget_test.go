@@ -524,6 +524,23 @@ func TestARunWhoseUsagePassesItsBudgetIsStoppedWithACheckpoint(t *testing.T) {
 	stoppedForBudget(t, f, tk, task)
 }
 
+func TestTheHarnesssFinalCostCountsAgainstTheBudgetEvenBelowTheEstimate(t *testing.T) {
+	t.Parallel()
+	f, tk, task, s := budgetedImplementer(t, 101)
+	s.out <- harness.Event{Kind: harness.EventUsage, Usage: harness.Usage{CostUSD: 1.5}} // the estimate
+	if _, err := f.runner.Runs().Complete(ctx, s.spec.Env["ISTARI_RUN"], "done"); err != nil {
+		t.Fatal(err)
+	}
+	s.finish <- harness.Result{ExitCode: 0, Usage: harness.Usage{CostUSD: 0.5}} // the harness's own figure
+	f.waitTask(t, task.ID, core.TaskCompleted)
+	implement(t, f, tk.Ref)
+	next := f.session(t)
+	defer next.Stop(0) //nolint:errcheck // the fake session's Stop always returns nil
+	if next.spec.MaxBudgetUSD != 1.5 {
+		t.Fatalf("the next run is capped at $%v, want the XS budget of $2 less the harness's $0.50", next.spec.MaxBudgetUSD)
+	}
+}
+
 // waitHold waits until the ticket's hold is want. It reads the hold rather
 // than waiting on a ticket.hold_set event, since a ticket held a second time
 // already has the first.

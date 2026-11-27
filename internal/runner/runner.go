@@ -947,10 +947,12 @@ func (r *Runner) event(ctx context.Context, run Run, typ string, payload map[str
 	}
 }
 
-// end records how the run ended.
+// end records how the run ended. The harness's own total, when it reports
+// one, is the run's cost, even below the sum of its usage events, which may
+// be an estimate (spec section 7.5).
 func (r *Runner) end(ctx context.Context, run Run, res harness.Result, usage harness.Usage, reason string) {
-	if res.Usage.CostUSD > usage.CostUSD {
-		usage = res.Usage // the harness's own total, when it reports one
+	if res.Usage.CostUSD > 0 {
+		usage = res.Usage
 	}
 	if _, err := r.runs.end(ctx, run.ID, reason, &runExit{code: res.ExitCode, usage: usage}); err != nil {
 		log.Printf("istari: run %s: %v", run.ID, err)
