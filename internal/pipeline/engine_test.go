@@ -1602,7 +1602,9 @@ func TestAReworkOrConflictRoundCutShortAfterVerifyGetsItsReviewAndIsNotPassed(t 
 		twin.reconcile(t)
 		f := newEngine(t, config.Defaults{}, nil)
 		// The PR watch reads the pull request clean: conflict() starts no round.
-		clean := func(context.Context, string) (pipeline.PRConflict, bool, error) { return pipeline.PRConflict{}, false, nil }
+		clean := func(context.Context, string) (pipeline.PRConflict, bool, error) {
+			return pipeline.PRConflict{}, false, nil
+		}
 		f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Conflict: clean})
 		f.readyTicket(t, ref)
 		for _, tr := range []string{"start", "plan_accepted", "pr_ready"} {
