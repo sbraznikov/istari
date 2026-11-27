@@ -18,13 +18,38 @@ import (
 // pipeline, ticket sync and PR watch run one pass per d.step (spec 3.1).
 func startSteppedDaemon(t *testing.T, dataDir, config string, env ...string) *daemon {
 	t.Helper()
-	return startDaemonWithArgs(t, dataDir, config, []string{"--stepped"}, env...)
+	return startDaemonWithArgs(t, dataDir, config, []string{"--stepped"}, env...) //nolint:forbidigo // the stepped start itself
 }
 
 // step runs one pass of loop and returns once it has finished.
 func (d *daemon) step(t *testing.T, loop string) {
 	t.Helper()
 	d.call(t, "step", map[string]string{"loop": loop}, nil)
+}
+
+// waitForEvents waits until ticket has n events whose type starts with
+// prefix. A run ends before its task does: a test waits for the task's
+// event before it steps the pass that reacts to it.
+func (d *daemon) waitForEvents(t *testing.T, ticket, prefix string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(60 * time.Second); len(d.eventTypes(t, ticket, prefix)) < n; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s has %d %s events after a minute, want %d\ndaemon:\n%s", ticket, len(d.eventTypes(t, ticket, prefix)), prefix, n, d.stderr)
+		}
+	}
+}
+
+// releaseImplementer runs ticket from its open plan task to in_progress and
+// then lets its gated implementer run: the plan task ends, the next pipeline
+// pass takes the accepted plan, and the file log+".go" opens the gate the
+// agent script waits on.
+func (d *daemon) releaseImplementer(t *testing.T, ticket, log string) {
+	t.Helper()
+	d.waitForEvents(t, ticket, "task.completed", 1)
+	d.step(t, "pipeline") // the accepted plan moves the ticket to in_progress
+	if err := os.WriteFile(log+".go", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // stepStatus posts a step and returns the status and body of the answer.

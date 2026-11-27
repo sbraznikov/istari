@@ -33,7 +33,8 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s1","num_turns":1,"result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
 `
 
-// refineDuringOutage starts a daemon whose refiner's "Refined" comment is
+// refineDuringOutage starts a stepped daemon, stepped until the raw ticket's
+// refine task is open, whose refiner's "Refined" comment is
 // answered status n times, and returns the daemon, the issue and the agent log.
 func refineDuringOutage(t *testing.T, n, status int) (*daemon, *githubtest.Server, int, string) {
 	t.Helper()
@@ -51,8 +52,9 @@ func refineDuringOutage(t *testing.T, n, status int) (*daemon, *githubtest.Serve
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
-	d.mustCLI(t, nil, "sync")
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+gitServer(t), "PATH="+bin+string(os.PathListSeparator)+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d.step(t, "sync")     // the raw ticket
+	d.step(t, "pipeline") // its refine task
 	return d, gh, issue, log
 }
 
@@ -94,6 +96,7 @@ func TestARefineResultIsAcceptedThroughAShortServerOutage(t *testing.T) {
 	if runs[0].Reason != "completed: refined" {
 		t.Fatalf("the refiner run ended %q, want completed on its first submit\nagent log:\n%s", runs[0].Reason, out)
 	}
+	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, issue), "task.completed", 1) // the run ends before its task does
 	if task := showTask(t, d, runs[0].Task); task.State != "completed" || task.Attempts != 0 {
 		t.Fatalf("the refine task is %+v, want completed with no failed attempt", task)
 	}

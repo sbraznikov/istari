@@ -15,7 +15,10 @@ linters:
       # loops steps them (CODING_STANDARDS S7.10); exclusions keep the rule
       # to those tests.
       forbid:
-        - pattern: ^startDaemon$
+        # Every helper that starts a daemon free. The helpers that start one
+        # with a project (startPipelineDaemon, startAgentDaemon,
+        # pipelineDaemon, newSteppedRecovered) start it stepped.
+        - pattern: ^(startDaemon|startDaemonWithConfig|startDaemonWithArgs)$
           msg: "start the daemon stepped (CODING_STANDARDS S7.10), or say why it may run free with //nolint:forbidigo // <why>"
     nolintlint:
       # Every //nolint names its linter and says why: //nolint:errcheck // <why>.
@@ -43,7 +46,7 @@ linters:
         - (*database/sql.Rows).Close
   exclusions:
     rules:
-      # forbidigo's startDaemon rule is for the tests of cmd/istari only.
+      # forbidigo's rule on the daemon-starting helpers is for the tests of cmd/istari only.
       - path-except: ^cmd/istari/.*_test\.go$
         linters:
           - forbidigo

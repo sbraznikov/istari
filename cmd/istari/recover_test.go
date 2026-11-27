@@ -45,7 +45,7 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	d := startSteppedDaemon(t, dataDir, config, "PATH="+withoutHarness(t, fakeGH(t, gh.Token)), "GITHUB_API_URL="+gh.URL)
 
 	var synced struct{ Unknown int }
 	d.mustCLI(t, &synced, "sync") // the sync leaves lost tickets alone, and says so
@@ -75,19 +75,15 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	if tracked := d.eventTypes(t, ref.String(), "vcs.tracked"); len(tracked) != 1 {
 		t.Fatalf("the pull request of the journal is not watched again: %v", tracked)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		var tasks []struct{ Ticket, Role, State string }
-		d.mustCLI(t, &tasks, "task", "list")
-		found := false
-		for _, task := range tasks {
-			found = found || (task.Ticket == ref.String() && task.Role == "implementer" && task.State == "ready")
-		}
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the recovered ticket in progress has no ready implementer task: %+v\n%s", tasks, d.stderr)
-		}
+	d.step(t, "pipeline") // the tasks of the recovered states
+	var tasks []struct{ Ticket, Role, State string }
+	d.mustCLI(t, &tasks, "task", "list")
+	found := false
+	for _, task := range tasks {
+		found = found || (task.Ticket == ref.String() && task.Role == "implementer" && task.State == "ready")
+	}
+	if !found {
+		t.Fatalf("the recovered ticket in progress has no ready implementer task: %+v\n%s", tasks, d.stderr)
 	}
 	if labels := gh.Issue(held).Labels; len(labels) != 3 {
 		t.Fatalf("recover changed the tracker's labels: %v", labels)

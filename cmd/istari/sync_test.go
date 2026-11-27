@@ -44,7 +44,9 @@ func TestIstariSyncMirrorsTheTrackersIssues(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	// Stepped, with no pass: istari sync is the only sync, and no pipeline
+	// pass moves the new ticket on.
+	d := startSteppedDaemon(t, dataDir, config, env...)
 
 	var report struct{ Created int }
 	d.mustCLI(t, &report, "sync")
@@ -96,7 +98,9 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	// Stepped, with no pass: istari sync is the only sync, and no pipeline
+	// pass starts the admitted ticket.
+	d := startSteppedDaemon(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "sync")
 	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 	var tk struct{ State string }
@@ -113,7 +117,7 @@ func TestTicketReadyAdmitsForATrustedMemberOnly(t *testing.T) {
 	if out, stderr, code := istariEnv(t, t.TempDir(), config, asAlex, "ticket", "ready", ref); code != 0 {
 		t.Fatalf("ticket ready as alex: exit %d %s %s", code, out, stderr)
 	}
-	// Admitted by alex; the pipeline may start it at once (T3).
+	// Admitted by alex; a pipeline pass would start it (T3).
 	var events []struct {
 		Actor   string
 		Payload struct{ Trigger, To string }
@@ -177,7 +181,9 @@ func TestTicketPrioritySetsTheLabelForAHumanOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	// Stepped, with no pass: istari sync is the only sync and the only
+	// writer of labels besides ticket priority.
+	d := startSteppedDaemon(t, dataDir, config, env...)
 	d.mustCLI(t, nil, "sync")
 	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 
@@ -211,8 +217,8 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"PATH=" + fakeGH(t, gh.Token), "GITHUB_API_URL=" + gh.URL}
-	d := startDaemonWithConfig(t, dataDir, config, env...)
+	env := []string{"PATH=" + withoutHarness(t, fakeGH(t, gh.Token)), "GITHUB_API_URL=" + gh.URL}
+	d := startSteppedDaemon(t, dataDir, config, env...)
 	ref := fmt.Sprintf("gh:%s#%d", githubtest.Repo, n)
 	refinesOf := func(ref string) int {
 		var tasks []struct{ Ticket, Role string }
@@ -226,12 +232,10 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 		return c
 	}
 	refines := func() int { return refinesOf(ref) }
-	d.mustCLI(t, nil, "sync")
-	// The trusted author's raw ticket is refined: then the pipeline has run.
-	for deadline := time.Now().Add(10 * time.Second); refinesOf(fmt.Sprintf("gh:%s#%d", githubtest.Repo, ours)) == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("a trusted author's raw ticket got no refine task")
-		}
+	d.step(t, "sync")     // both raw tickets
+	d.step(t, "pipeline") // the refine task of the trusted author's
+	if refinesOf(fmt.Sprintf("gh:%s#%d", githubtest.Repo, ours)) == 0 {
+		t.Fatal("a trusted author's raw ticket got no refine task")
 	}
 	if c := refines(); c != 0 {
 		t.Fatalf("an outsider's raw ticket got %d refine tasks", c)
@@ -240,10 +244,9 @@ func TestARawTicketOfAnOutsiderIsRefinedOnlyAfterATrustedReady(t *testing.T) {
 	if code != 0 || !strings.Contains(stderr, "refined first") {
 		t.Fatalf("ticket ready as alex on a raw ticket: exit %d %q", code, stderr)
 	}
-	for deadline := time.Now().Add(10 * time.Second); refines() == 0; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("no refine task after a trusted ready")
-		}
+	d.step(t, "pipeline") // the refine task of the outsider's, readied
+	if refines() == 0 {
+		t.Fatal("no refine task after a trusted ready")
 	}
 }
 

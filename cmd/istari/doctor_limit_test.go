@@ -64,7 +64,8 @@ func TestDoctorShowsTheUsageLimitPauseAndItsResetAndTheRunCostsNoAttempt(t *test
 	exectest.Write(t, filepath.Join(bin, "claude"), limitedClaude)
 	ghDir, _, _ := strings.Cut(fakeGH(t, gh.Token), string(os.PathListSeparator))
 	path := "PATH=" + bin + string(os.PathListSeparator) + ghDir + string(os.PathListSeparator) + "/usr/bin:/bin"
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, path, "GITHUB_API_URL="+gh.URL)
+	// Stepped, with no pass: only the runner acts on the task made by hand.
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, path, "GITHUB_API_URL="+gh.URL)
 	var task struct{ ID string }
 	d.call(t, "task.create", map[string]any{"actor": "system", "ticket": "gh:acme/web#5", "project": "web", "role": "implementer"}, &task)
 

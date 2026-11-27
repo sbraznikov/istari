@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sbraznikov/istari/internal/api"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/exectest"
 	"github.com/sbraznikov/istari/internal/runner"
 	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets/github/githubtest"
@@ -42,9 +42,21 @@ func gitServer(t *testing.T) string {
 	return root
 }
 
-// startPipelineDaemon starts a daemon whose project web runs acme/web
-// through its pipeline, with ticket ref already in planning. before runs on
-// the store before the daemon starts; server is the git server of gitServer.
+// withoutHarness returns path with a claude in front that fails its check:
+// a daemon on it has no runner slot, so only the test claims tasks, on a
+// machine with Claude Code installed as on one without.
+func withoutHarness(t *testing.T, path string) string {
+	t.Helper()
+	bin := t.TempDir()
+	exectest.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\nexit 1\n")
+	return bin + string(os.PathListSeparator) + path
+}
+
+// startPipelineDaemon starts a stepped daemon whose project web runs
+// acme/web through its pipeline, with ticket ref already in planning: the
+// first pipeline step gives the ticket its plan task. It has no runner slot
+// (withoutHarness). before runs on the store before the daemon starts;
+// server is the git server of gitServer.
 func startPipelineDaemon(t *testing.T, ref string, before func(s store.Store, server, dataDir string)) *daemon {
 	t.Helper()
 	server := gitServer(t)
@@ -76,7 +88,7 @@ func startPipelineDaemon(t *testing.T, ref string, before func(s store.Store, se
 	if err := os.WriteFile(config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, "PATH="+fakeGH(t, gh.Token), "GITHUB_API_URL="+gh.URL)
+	return startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, "PATH="+withoutHarness(t, fakeGH(t, gh.Token)), "GITHUB_API_URL="+gh.URL)
 }
 
 func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
@@ -92,17 +104,13 @@ func TestTheDaemonKeepsTicketWorktreesAndPrunesOrphans(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	d.step(t, "pipeline") // the plan task of #5, and its worktree
 	dataDir := d.dataDir
 	want := filepath.Join(dataDir, "workspaces", "web", "web", "5")
 	var list []struct{ Ticket, State, Branch, Dir string }
-	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		d.mustCLI(t, &list, "workspace", "list")
-		if len(list) == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("workspace list = %+v, want #5 and the orphan\nstderr: %s", list, d.stderr)
-		}
+	d.mustCLI(t, &list, "workspace", "list")
+	if len(list) != 2 {
+		t.Fatalf("workspace list = %+v, want #5 and the orphan\nstderr: %s", list, d.stderr)
 	}
 	if !exists(want) {
 		t.Fatalf("the daemon did not create %s", want)

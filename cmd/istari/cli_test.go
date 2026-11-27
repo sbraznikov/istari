@@ -251,33 +251,26 @@ func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	t.Parallel()
 	ref := "gh:acme/web#5"
-	d := startPipelineDaemon(t, ref, nil) // the pipeline gives the ticket its tasks
+	d := startPipelineDaemon(t, ref, nil)
+	d.step(t, "pipeline") // the plan task of the ticket in planning
 	hold := func() string {
 		var tk struct{ Hold string }
 		d.mustCLI(t, &tk, "ticket", "show", ref)
 		return tk.Hold
 	}
-	eventually := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(15 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s\nstderr: %s", what, d.stderr)
-			}
-		}
-	}
-
+	// The daemon has no runner slot: the test is the only planner.
 	var l lease
 	for range core.DefaultMaxAttempts {
-		eventually("the plan task does not become ready", func() bool {
-			out, _, code := d.cli(t, "--json", "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
-			return code == 0 && json.Unmarshal([]byte(out), &l) == nil
-		})
+		d.mustCLI(t, &l, "task", "claim", "--ready", "--role", "planner", "--actor", "agent:planner-1")
 		if h := hold(); h != "" {
 			t.Fatalf("hold = %q below the attempt limit, want none", h)
 		}
 		d.mustCLI(t, nil, "task", "fail", l.Task, "--actor", l.Owner, "--token", l.Token, "--reason", "red")
 	}
-	eventually("the ticket is not held attempts_exhausted after the last failed attempt", func() bool { return hold() == "attempts_exhausted" })
+	d.step(t, "pipeline") // the task out of attempts holds its ticket
+	if h := hold(); h != "attempts_exhausted" {
+		t.Fatalf("hold = %q after the last failed attempt, want attempts_exhausted", h)
+	}
 
 	d.mustCLI(t, nil, "ticket", "retry", ref)
 	var task struct{ State string }
@@ -288,13 +281,8 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 	if h := hold(); h != "" {
 		t.Fatalf("after retry the hold is %q", h)
 	}
-	// The ticket goes on: its planner can claim the plan task again. The
-	// daemon's own planner slot may hold it a moment, until its harness fails
-	// to start.
-	eventually("the retried plan task cannot be claimed", func() bool {
-		out, _, code := d.cli(t, "--json", "task", "claim", l.Task, "--actor", "agent:planner-1")
-		return code == 0 && json.Unmarshal([]byte(out), &l) == nil
-	})
+	// The ticket goes on: its planner can claim the plan task again.
+	d.mustCLI(t, &l, "task", "claim", l.Task, "--actor", "agent:planner-1")
 	if h := hold(); h != "" {
 		t.Fatalf("after the retried task was claimed the hold is %q", h)
 	}
@@ -302,7 +290,7 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 
 func TestRetryGrantsOneMoreReviewRoundAfterMaxReviewRounds(t *testing.T) {
 	t.Parallel()
-	r := recoverWith(t, startSteppedDaemon, reviewAgent, "in_review", "[defaults]\nmax_review_rounds = 1\n", nil)
+	r := recoverWith(t, reviewAgent, "in_review", "[defaults]\nmax_review_rounds = 1\n", nil)
 	d, ref := r.d, r.ref.String()
 	ticket := func() (state, hold string) {
 		var tk struct{ State, Hold string }
@@ -646,7 +634,7 @@ name = "api"
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := startDaemonWithConfig(t, dataDir, config)
+	d := startDaemonWithConfig(t, dataDir, config) //nolint:forbidigo // projects without a repo and tasks made by hand: the claims meet the limits, no loop pass
 	for _, task := range []struct{ id, project, role string }{
 		{"web_1", "web", "implementer"}, {"web_2", "web", "implementer"},
 		{"rev_1", "api", "reviewer"}, {"rev_2", "api", "reviewer"}, {"api_1", "api", "implementer"},

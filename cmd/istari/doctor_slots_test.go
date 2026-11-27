@@ -64,7 +64,8 @@ func TestDoctorNamesTheSlotPausedBecauseItsHarnessDidNotStart(t *testing.T) {
 	exectest.Write(t, claude, "#!/bin/sh\necho 1.0.0\n")
 	ghDir, _, _ := strings.Cut(fakeGH(t, gh.Token), string(os.PathListSeparator))
 	path := "PATH=" + bin + string(os.PathListSeparator) + ghDir + string(os.PathListSeparator) + "/usr/bin:/bin"
-	d := startDaemonWithConfig(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, path, "GITHUB_API_URL="+gh.URL)
+	// Stepped, with no pass: only the runner acts on the task made by hand.
+	d := startSteppedDaemon(t, dataDir, config, "GITHUB_SERVER_URL=file://"+server, path, "GITHUB_API_URL="+gh.URL)
 	if err := os.Remove(claude); err != nil {
 		t.Fatal(err)
 	}
