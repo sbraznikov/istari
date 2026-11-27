@@ -615,3 +615,42 @@ func TestGivingATicketItsOwnBudgetIsAnEventWithTheActorAndReplays(t *testing.T) 
 	_, err = tickets.OwnBudget(ctx, "human:alex", "gh:acme/web#124")
 	assertCode(t, err, core.CodeInvalidTicket)
 }
+
+func TestOnlyAHumanGrantsAReviewRoundAndTheJournalRecordsIt(t *testing.T) {
+	t.Parallel()
+	tickets, s := newTickets(t, nil)
+	bringTo(t, tickets, core.TicketInReview)
+	for _, actor := range []string{"agent:implementer-1", "system"} {
+		_, err := tickets.GrantRound(ctx, actor, ref, "go on", 6)
+		assertCode(t, err, core.CodeHumanOnly)
+	}
+	tk, err := tickets.GrantRound(ctx, "human:alex", ref, "the decision is in the ticket", 6)
+	if err != nil || tk.GrantedRounds != 1 {
+		t.Fatalf("GrantRound by a human = %d granted, %v; want 1", tk.GrantedRounds, err)
+	}
+	if got, _ := tickets.Get(ctx, ref); got.GrantedRounds != 1 {
+		t.Fatalf("stored granted rounds = %d, want 1", got.GrantedRounds)
+	}
+	events, _ := s.Read(ctx, "", store.Filter{Ticket: ref, TypePrefix: core.EventTicketRoundGranted}, 0)
+	if len(events) != 1 || events[0].Actor != "human:alex" {
+		t.Fatalf("ticket.round_granted events = %+v, want one by human:alex", events)
+	}
+	var p struct {
+		Actor  string `json:"actor"`
+		Reason string `json:"reason"`
+		Round  int    `json:"round"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Actor != "human:alex" || p.Reason != "the decision is in the ticket" || p.Round != 6 {
+		t.Fatalf("payload = %s, want actor human:alex, the reason and round 6", events[0].Payload)
+	}
+	if _, err := tickets.GrantRound(ctx, "human:alex", ref, "once more", 7); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := s.Read(ctx, "", store.Filter{Ticket: ref}, 0)
+	if replayed, err := core.ReplayTicket(all); err != nil || replayed.GrantedRounds != 2 {
+		t.Fatalf("replay = %d granted, %v; want 2", replayed.GrantedRounds, err)
+	}
+}

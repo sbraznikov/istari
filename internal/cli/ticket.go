@@ -106,11 +106,13 @@ func newTicketCommand(opts *Options) *cobra.Command {
 			return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 		}))
 	}
-	cmd.AddCommand(writeCommand(opts, &cobra.Command{
+	retry := &cobra.Command{
 		Use:   "retry <ref>",
-		Short: "Restart the ticket's failed tasks and lift its attempts_exhausted hold",
+		Short: "Restart the ticket's failed tasks, grant one more review round when its rounds ran out, and lift its attempts_exhausted hold",
 		Args:  Args(cobra.ExactArgs(1)),
-	}, func(cmd *cobra.Command, args []string, key string) error {
+	}
+	reason := retry.Flags().String("reason", "retry by a human", "why a review round is granted, for the journal")
+	cmd.AddCommand(writeCommand(opts, retry, func(cmd *cobra.Command, args []string, key string) error {
 		ref := args[0]
 		var ticket core.Ticket
 		if err := opts.call(cmd, "ticket.show", "", api.TicketShowRequest{Ref: ref}, &ticket); err != nil {
@@ -123,9 +125,15 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		if err := opts.call(cmd, "task.list", "", api.Empty{}, &tasks); err != nil {
 			return err
 		}
-		// Restart the tasks first and lift the hold last, so an interrupted
-		// retry leaves the ticket held; a repeat finishes it. Each step has
-		// its own key derived from the command's.
+		// Grant a review round first, while the failed tasks still tell a
+		// hold for attempts from one for rounds; restart the tasks next and
+		// lift the hold last, so an interrupted retry leaves the ticket held;
+		// a repeat finishes it. Each step has its own key derived from the
+		// command's.
+		var grant api.TicketGrantRoundResponse
+		if err := opts.call(cmd, "ticket.grant_round", subKey(key, "round"), api.TicketGrantRoundRequest{Actor: opts.Actor, Ref: ref, Reason: *reason}, &grant); err != nil {
+			return err
+		}
 		for _, task := range tasks {
 			if task.Ticket != ref || task.State != core.TaskFailed {
 				continue
@@ -137,6 +145,9 @@ func newTicketCommand(opts *Options) *cobra.Command {
 		req := api.TicketHoldRequest{Actor: opts.Actor, Ref: ref, Reason: "attempts_exhausted"}
 		if err := opts.call(cmd, "ticket.unhold", subKey(key, "hold"), req, &ticket); err != nil {
 			return err
+		}
+		if grant.Granted && !opts.JSON {
+			fmt.Fprintf(cmd.OutOrStdout(), "granted review round %d: it is the next round\n", grant.Round)
 		}
 		return render(cmd.OutOrStdout(), opts, ticket, ticketHeader, ticketRows(ticket))
 	}))
