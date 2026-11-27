@@ -249,9 +249,12 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 		d.mustCLI(t, &tk, "ticket", "show", ref)
 		return tk.Hold
 	}
+	// The daemon's own planner slot has no harness: it holds a ready task
+	// for runner.DefaultStartRetry per failed start, three times, before it
+	// pauses. The deadline outlasts that under -race and load.
 	eventually := func(what string, ok func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(15 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
+		for deadline := time.Now().Add(45 * time.Second); !ok(); time.Sleep(50 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				t.Fatalf("%s\nstderr: %s", what, d.stderr)
 			}

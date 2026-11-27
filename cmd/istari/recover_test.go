@@ -80,10 +80,13 @@ func TestRecoverRebuildsTheLostDatabaseFromTheTracker(t *testing.T) {
 	d.mustCLI(t, &tasks, "task", "list")
 	found := false
 	for _, task := range tasks {
-		found = found || (task.Ticket == ref.String() && task.Role == "implementer" && task.State == "ready")
+		// Ready, or already claimed by the daemon's own implementer slot:
+		// the runner hands a ready task out at once.
+		open := task.State == "ready" || task.State == "claimed"
+		found = found || (task.Ticket == ref.String() && task.Role == "implementer" && open)
 	}
 	if !found {
-		t.Fatalf("the recovered ticket in progress has no ready implementer task: %+v\n%s", tasks, d.stderr)
+		t.Fatalf("the recovered ticket in progress has no open implementer task: %+v\n%s", tasks, d.stderr)
 	}
 	if labels := gh.Issue(held).Labels; len(labels) != 3 {
 		t.Fatalf("recover changed the tracker's labels: %v", labels)
