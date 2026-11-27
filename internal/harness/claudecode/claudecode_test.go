@@ -596,6 +596,17 @@ func TestAResultLineThatReportsAnErrorIsSurfaced(t *testing.T) {
 	if !res.Failed || res.Reason != "error_max_budget_usd" || res.Usage.CostUSD != 5.01 {
 		t.Fatalf("result = %+v, want a failed run with its reason and cost", res)
 	}
+	if !res.BudgetSpent {
+		t.Errorf("result = %+v, want the budget reported spent", res)
+	}
+}
+
+func TestARunThatFailsForAnotherReasonHasNotSpentItsBudget(t *testing.T) {
+	t.Parallel()
+	_, res := usageCosts(t, `{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s","total_cost_usd":1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if !res.Failed || res.BudgetSpent {
+		t.Fatalf("result = %+v, want a failed run whose budget is not spent", res)
+	}
 }
 
 func TestTheRolesDefaultsUseModesTheHarnessAccepts(t *testing.T) {

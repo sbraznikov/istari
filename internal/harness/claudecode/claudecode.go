@@ -36,6 +36,10 @@ type Options struct {
 	Clock func() time.Time
 }
 
+// budgetSpent is the result subtype of a run Claude Code ended at its
+// --max-budget-usd.
+const budgetSpent = "error_max_budget_usd"
+
 // readGrace is how long the output may stay open after the harness exited:
 // a background process the agent started can hold it; then it is closed.
 const readGrace = 2 * time.Second
@@ -375,6 +379,7 @@ func (s *session) finish() {
 		s.result.Usage = *s.final
 	}
 	s.result.Failed, s.result.Reason = s.failed, s.reason
+	s.result.BudgetSpent = s.reason == budgetSpent
 	var exit *exec.ExitError
 	switch {
 	case s.waitErr == nil:
