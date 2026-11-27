@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -218,6 +219,37 @@ at  = ["checkpoint"]
 	}
 	if p.Checks.VerifyRed {
 		t.Error("verify_red = false was not read")
+	}
+}
+
+func TestThisRepositoryChecksFormatAtEveryCheckpointAndTidyBeforeThePullRequest(t *testing.T) {
+	t.Parallel()
+	file, err := os.ReadFile("../../.istari/pipeline.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, run          string
+		atCheckpoint, atPR bool
+	}{
+		{"format", `test -z "$(gofmt -l .)"`, true, true},
+		{"tidy", "go mod tidy -diff", false, true},
+	} {
+		c, ok := p.Checks.Get(tc.name)
+		if !ok {
+			t.Errorf("no check %q", tc.name)
+			continue
+		}
+		if c.Run != tc.run {
+			t.Errorf("%s runs %q, want %q", tc.name, c.Run, tc.run)
+		}
+		if c.RunsAt(pipeline.AtCheckpoint) != tc.atCheckpoint || c.RunsAt(pipeline.AtPR) != tc.atPR {
+			t.Errorf("%s runs at %v, want checkpoint %v and pr %v", tc.name, c.At, tc.atCheckpoint, tc.atPR)
+		}
 	}
 }
 

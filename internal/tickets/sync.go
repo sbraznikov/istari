@@ -89,6 +89,10 @@ type SyncOptions struct {
 	// Comment records a trusted member's comment on a ticket in work as a
 	// journal entry (spec 4.5 and 4.6), once; nil: comments are only events.
 	Comment func(ctx context.Context, ref Ref, c Comment) error
+	// Answer takes a trusted member's comment on an unfinished ticket as the
+	// answer to an open question (spec 4.6) and tells whether it did; a
+	// comment it does not take goes on to Comment. nil: no comment answers.
+	Answer func(ctx context.Context, ref Ref, c Comment) (bool, error)
 	// Merged tells whether a ticket's pull request is merged (spec 4.8): an
 	// issue its merge closed is not a cancel. fresh asks the code host when
 	// the PR watch has not seen the pull request closed yet; otherwise only
@@ -1023,17 +1027,27 @@ func (s *Syncer) comments(ctx context.Context, x *syncing) error {
 	return nil
 }
 
-// journalComment records the comment in the journal when the ticket is in
-// work, planning up to awaiting approval, and its author is trusted: the
-// worker receives it in its next brief (spec 4.5).
+// journalComment records a trusted member's comment in the journal: on an
+// unfinished ticket with an open question as its answer (spec 4.6), else
+// when the ticket is in work, planning up to awaiting approval, as a comment
+// the worker receives in its next brief (spec 4.5).
 func (s *Syncer) journalComment(ctx context.Context, x *syncing, c Comment) error {
 	inWork := x.tk.State != core.TicketNew && x.tk.State != core.TicketReady && !x.tk.State.Finished()
-	if s.opts.Comment == nil || !inWork {
+	answers := s.opts.Answer != nil && !x.tk.State.Finished()
+	if !answers && (s.opts.Comment == nil || !inWork) {
 		return nil
 	}
 	trusted, err := s.trusted(ctx, x.repo, c.Author)
 	if err != nil || !trusted {
 		return err
+	}
+	if answers {
+		if taken, err := s.opts.Answer(ctx, x.t.Ref, c); err != nil || taken {
+			return err
+		}
+	}
+	if s.opts.Comment == nil || !inWork {
+		return nil
 	}
 	return s.opts.Comment(ctx, x.t.Ref, c)
 }
