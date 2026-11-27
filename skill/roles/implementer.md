@@ -20,6 +20,20 @@ is unclear, use `istari ask` for a fact and a decision card (`istari decide
 `istari assume`. Work outside the ticket becomes a new ticket, not part of
 this change.
 
+## Sources of truth
+
+Work by the sources of truth that the repository's instructions file names
+(`AGENTS.md`, or your harness's equivalent) and by the documents the ticket
+links to: read them before the first test, and follow them. An ADR is not
+broken: a decision is replaced by a new ADR.
+
+When a document is wrong or in conflict (with the ticket, the code or another
+source of truth) and the ticket does not say it changes that document, ask
+with `istari ask` and stop on `needs_input`. Do not implement either side
+silently. When the fix is a document change that stands as a ticket of its
+own, file it with `istari ticket create` in the format of istari's ticket
+standard (spec section 4.5) and say in your question that this ticket needs it.
+
 ## Test-driven development
 
 - **Test behaviour through public interfaces**, not implementation details. A good test reads like a specification and survives a refactoring.
@@ -28,11 +42,11 @@ this change.
 - **Red first.** Write the failing test first, then exactly as much code as it takes to pass. No code for the future.
 - **Refactoring is not part of the cycle.** It belongs to the review stage.
 - **Forbidden tests.** Implementation-coupled tests (mocks of internal collaborators, tests of private functions, verification that bypasses the interface) and tautological tests (the expected value computed the same way the code computes it). Expected values come from an independent source: a literal, a worked example, the spec.
-- **The project's language.** Take test and interface names from `GLOSSARY.md`, and follow the decisions in the ADRs.
+- **The project's language.** Take test and interface names from the project's glossary among its sources of truth, and follow the decisions in the ADRs.
 
 ## Pull request description
 
-No preamble; keep the prose brief and use the project's domain language from `GLOSSARY.md`. Three sections:
+No preamble; keep the prose brief and use the project's domain language from its glossary. Three sections:
 
 - **Summary**: the smallest view that makes the change clear: pseudocode, a call tree, a file tree, a diagram or a diff sketch.
 - **Evidence**: before and after: output, a screenshot, a failing and then a passing test run.

@@ -3,7 +3,9 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,14 +20,14 @@ import (
 )
 
 // Finding is one finding of the reviewer's report (spec section 7.6): an
-// axis, a place in the diff, a kind, and a quote from the ticket or from the
-// standard it rests on.
+// axis, a place in the diff, a kind, and a quote from the ticket, the
+// document or the standard it rests on.
 type Finding struct {
 	Axis   string `yaml:"axis" json:"axis"` // standards | spec
 	Kind   string `yaml:"kind" json:"kind"`
 	File   string `yaml:"file" json:"file"`
 	Line   int    `yaml:"line" json:"line"`
-	Source string `yaml:"source" json:"source"` // ticket, instructions, or the repository path of the standard
+	Source string `yaml:"source" json:"source"` // ticket, instructions, or the repository path of the document or standard
 	Quote  string `yaml:"quote" json:"quote"`
 	Text   string `yaml:"text" json:"text"`
 }
@@ -139,7 +141,7 @@ func (r *Reviews) Check(ctx context.Context, run Run, res ReviewResult, ticket s
 }
 
 // sources are what a quote may come from (spec sections 7.6 and 7.7): the
-// ticket for the Spec axis; a standards file of the main branch for a
+// ticket or any file of the main branch for the Spec axis; a standards file of the main branch for a
 // documented standard; the baseline of code smells in the reviewer's
 // instructions for a smell.
 type sources struct {
@@ -153,11 +155,20 @@ type sources struct {
 func (s sources) check(f Finding, mainFile skill.ReadFile) (string, error) {
 	var text, name string
 	switch {
-	case f.Axis == AxisSpec:
-		if f.Source != SourceTicket {
-			return "a spec finding quotes the ticket, not " + f.Source, nil
-		}
+	case f.Axis == AxisSpec && f.Source == SourceTicket:
 		text, name = s.ticket, "the ticket"
+	case f.Axis == AxisSpec:
+		if f.Source == SourceInstructions {
+			return "a spec finding quotes the ticket or a repository file, not " + f.Source, nil
+		}
+		data, err := mainFile(f.Source)
+		if errors.Is(err, fs.ErrNotExist) {
+			return f.Source + " is not a file on the main branch", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		text, name = string(data), f.Source
 	case f.Kind == KindSmell:
 		if f.Source != SourceInstructions {
 			return "a smell finding quotes the baseline of code smells (source " + SourceInstructions + "), not " + f.Source, nil

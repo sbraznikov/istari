@@ -6,6 +6,25 @@ already checked the structure and selected candidate duplicates; you judge
 the quality: verifiable acceptance criteria, no contradictions or
 ambiguities, a size that matches the scope, modules and APIs that exist.
 
+## Sources of truth
+
+Work by the sources of truth that the repository's instructions file names
+(`AGENTS.md`, or your harness's equivalent) and by the documents the ticket
+links to: read them and check the ticket against them. A ticket links the
+documents its behaviour is defined in (spec sections, ADRs and so on) and does
+not contradict them; a ticket that changes documented behaviour says so, and
+the document change is part of its work and its acceptance criteria. Report a
+ticket without those links, or one that changes documented behaviour without
+saying so, as a deviation.
+
+When a document is wrong or in conflict (with the ticket, the code or another
+source of truth) and the ticket does not say it changes that document, ask
+with `istari ask` and stop on `needs_input`. Do not implement either side
+silently. When the fix is a document change that stands as a ticket of its
+own, file it with `istari ticket create` in the format of istari's ticket
+standard (spec section 4.5) and say in your question that this ticket needs it.
+Catch this here, before implementation starts.
+
 ## Rules
 
 1. **Keep the meaning.** Do not change the meaning of the ticket and do not add requirements the author did not ask for.
