@@ -12,6 +12,8 @@ import (
 // Changes is what a pull request changes, as auto mode weighs it (spec
 // section 4.8).
 type Changes struct {
+	// Head is the pull request's head commit the changes are of.
+	Head string
 	// Paths are the changed files; a renamed file names its old path too.
 	Paths []string
 	// Files are the changed files counted once, a rename as one.
@@ -28,11 +30,14 @@ type Changes struct {
 func (c *Client) Changes(ctx context.Context, repo string, n int) (Changes, error) {
 	var pr struct {
 		Body string `json:"body"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	}
 	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
 		return Changes{}, err
 	}
-	out := Changes{MergeDanger: section(pr.Body, "Merge Danger")}
+	out := Changes{Head: pr.Head.SHA, MergeDanger: section(pr.Body, "Merge Danger")}
 	next := fmt.Sprintf("%s/repos/%s/pulls/%d/files?per_page=100", c.base, repo, n)
 	for next != "" {
 		data, header, err := c.sendAs(ctx, repo, http.MethodGet, next, "application/vnd.github+json", nil)

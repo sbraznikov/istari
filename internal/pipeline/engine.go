@@ -15,8 +15,10 @@ import (
 
 	"github.com/sbraznikov/istari/internal/config"
 	"github.com/sbraznikov/istari/internal/core"
+	"github.com/sbraznikov/istari/internal/store"
 	"github.com/sbraznikov/istari/internal/tickets"
 	"github.com/sbraznikov/istari/internal/tickets/journal"
+	"github.com/sbraznikov/istari/internal/vcs"
 )
 
 // Files reads a repository's files on its default branch.
@@ -75,6 +77,13 @@ type EngineOptions struct {
 	// through T10, any other is tried again on the next reconcile. nil: the
 	// merge stage is completed by hand.
 	Merge func(ctx context.Context, ref, method string) error
+	// Changes tells what the ticket's pull request changes at its head, for
+	// the conditions of auto mode (spec 4.8). nil: auto mode merges nothing
+	// without a human.
+	Changes func(ctx context.Context, ref string) (vcs.Changes, error)
+	// Log is where the engine records the events of its decisions that are
+	// no transition: a pull request auto mode leaves to a human. nil: none.
+	Log store.Store
 	// Journal is where the engine notes what it does not act on: a ticket
 	// that got open needs after its pull request was opened (spec 4.1).
 	// nil: nothing is noted.

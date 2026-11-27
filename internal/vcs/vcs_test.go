@@ -223,6 +223,7 @@ func TestChangesCountTheFilesAndLinesOfEveryPageAndReadTheMergeDanger(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	gh.SetHeadSHA(pr.Number, "h7")
 	gh.SetPullFiles(pr.Number,
 		githubtest.File{Path: "a.go", Additions: 10, Deletions: 2},
 		githubtest.File{Path: "b.go", Additions: 1},
@@ -234,7 +235,7 @@ func TestChangesCountTheFilesAndLinesOfEveryPageAndReadTheMergeDanger(t *testing
 	if strings.Join(got.Paths, " ") != "a.go b.go db/old/001.sql db/migrations/001.sql" || got.Files != 3 || got.Lines != 48 {
 		t.Fatalf("Changes = %+v, want three files, four paths (a rename names its old one) and 48 lines", got)
 	}
-	if got.MergeDanger != "One-way door; blast radius: data." {
+	if got.MergeDanger != "One-way door; blast radius: data." || got.Head != "h7" {
 		t.Fatalf("MergeDanger = %q", got.MergeDanger)
 	}
 }
