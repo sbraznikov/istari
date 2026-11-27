@@ -354,7 +354,7 @@ func TestAPlannerSubmitsAPlanOf20000CharactersThroughItsResultFile(t *testing.T)
 
 func TestPlanSubmitWithoutAFileOrAResultFileSaysWhatIsMissing(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	_, stderr, code := d.cli(t, "plan", "submit")
 	if code == 0 || !strings.Contains(stderr, "ISTARI_RESULT") {
 		t.Fatalf("plan submit without --file: exit %d %q, want an error naming ISTARI_RESULT", code, stderr)
@@ -363,7 +363,7 @@ func TestPlanSubmitWithoutAFileOrAResultFileSaysWhatIsMissing(t *testing.T) {
 
 func TestRefineAndReviewSubmitReadTheResultFileWithoutAFile(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	for _, role := range []string{"refine", "review"} {
 		t.Run(role, func(t *testing.T) {
 			t.Parallel()
@@ -390,7 +390,7 @@ func TestRefineAndReviewSubmitReadTheResultFileWithoutAFile(t *testing.T) {
 
 func TestPlanSubmitReadsItsPlanFromStandardInput(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	cmd := exec.Command(binary, "--config", d.config, "plan", "submit", "--file", "-")
 	cmd.Stdin = strings.NewReader("summary: s\n")
 	out, err := cmd.CombinedOutput()

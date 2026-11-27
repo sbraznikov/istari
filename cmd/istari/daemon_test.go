@@ -147,7 +147,7 @@ func (d *daemon) call(t *testing.T, op string, req, resp any) {
 
 func TestDaemonSocketIsPrivate(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // the test is of the daemon process: the mode of its socket
 	info, err := os.Stat(d.socket)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestDaemonSocketIsPrivate(t *testing.T) {
 
 func TestASecondDaemonOnTheSameDataDirRefusesToStart(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // the test is of the daemon process: the lock on its data dir
 	_, stderr, code := run(t, "daemon", "--config", d.config)
 	if code != 1 {
 		t.Fatalf("second daemon exit code = %d, want 1", code)
@@ -309,7 +309,7 @@ func createTicket(t *testing.T, d *daemon, ref string) {
 
 func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	createTicket(t, d, "gh:acme/web#1")
 	first := readSSE(t, d.client, "http://istari/v1/events/stream", "", 1)
 	cursor := first[0].ID
@@ -356,7 +356,7 @@ func TestSSEDeliversEveryLaterEventInOrderAcrossAReconnect(t *testing.T) {
 
 func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // the test is of the daemon process: its shutdown on SIGTERM
 	// One connection: a first request proves the daemon accepted it, then a
 	// second request is still sending its body when SIGTERM arrives.
 	conn, err := net.Dial("unix", d.socket)
@@ -395,7 +395,7 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	}
 
 	// The request's effect is durable.
-	again := startDaemon(t, d.dataDir)
+	again := startDaemon(t, d.dataDir) //nolint:forbidigo // the test is of the daemon process: what survives its restart
 	var tickets []struct{ Ref string }
 	again.call(t, "ticket.list", map[string]any{}, &tickets)
 	if len(tickets) != 1 || tickets[0].Ref != "gh:acme/web#1" {
@@ -467,7 +467,7 @@ func TestDaemonInstallWritesTheUnitAndOnlyPrintsHowToEnableIt(t *testing.T) {
 
 func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	post := func(op, body string) (int, string) {
 		resp, err := d.client.Post("http://istari/v1/"+op, "application/json", strings.NewReader(body))
 		if err != nil {
@@ -504,7 +504,7 @@ func TestTheAPIAnswersCoreRefusalsWithTheirCodes(t *testing.T) {
 
 func TestABadCursorIsABadRequest(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	for _, url := range []string{"http://istari/v1/events?after=garbage", "http://istari/v1/events/stream?after=garbage"} {
 		resp, err := d.client.Get(url)
 		if err != nil {
@@ -555,7 +555,7 @@ func TestTheSystemdUnitEscapesSpecifiersAndVariables(t *testing.T) {
 
 func TestTicketFireDoesNotAdmitATicket(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
 	resp, err := d.client.Post("http://istari/v1/ticket.fire", "application/json",

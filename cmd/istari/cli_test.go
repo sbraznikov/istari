@@ -46,7 +46,7 @@ type lease struct {
 
 func TestCommandsPrintATableByDefaultAndJSONWithTheFlag(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	createTicket(t, d, "gh:acme/web#1")
 	for _, tc := range []struct {
@@ -82,7 +82,7 @@ func TestCommandsPrintATableByDefaultAndJSONWithTheFlag(t *testing.T) {
 
 func TestExitCodes(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	for _, tc := range []struct {
 		args []string
@@ -110,7 +110,7 @@ func TestExitCodes(t *testing.T) {
 
 func TestATaskLifecycleThroughTheCLI(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	var l lease
 	d.mustCLI(t, &l, "task", "claim", "t_1", "--actor", "agent:implementer-1")
@@ -146,7 +146,7 @@ func TestATaskLifecycleThroughTheCLI(t *testing.T) {
 
 func TestTicketCommands(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	ref := "gh:acme/web#7"
 	createTicket(t, d, ref)
 	state := func() (string, string) {
@@ -174,8 +174,9 @@ func TestTicketCommands(t *testing.T) {
 
 func TestUnholdLiftsOnlyABudgetHold(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
-	ref := "gh:acme/web#1" // the ticket of createTask's tasks
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
+	// The ticket of createTask's tasks.
+	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
 	hold := func() string {
 		var tk struct{ Hold string }
@@ -212,7 +213,7 @@ func TestUnholdLiftsOnlyABudgetHold(t *testing.T) {
 
 func TestRetryRestartsTheExhaustedTasksAndLiftsTheHold(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
 	d.createTask(t, "t_1", "implementer")
@@ -292,7 +293,7 @@ func TestATaskThatUsesUpItsAttemptsHoldsTheTicketUntilRetry(t *testing.T) {
 
 func TestRepeatingAWriteWithTheSameIdempotencyKeyPerformsItOnce(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
 	var first, second lease
@@ -333,7 +334,7 @@ func TestRepeatingAWriteWithTheSameIdempotencyKeyPerformsItOnce(t *testing.T) {
 
 func TestTailAfterACursorResumesExactly(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	for i := range 5 {
 		createTicket(t, d, fmt.Sprintf("gh:acme/web#%d", i))
 	}
@@ -370,7 +371,7 @@ func TestTailAfterACursorResumesExactly(t *testing.T) {
 
 func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
 	var now []struct{ Cursor string }
@@ -391,7 +392,7 @@ func TestWaitReturnsTheFirstMatchingEvent(t *testing.T) {
 
 func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") // the shells never complete
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 100") //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome; 100 runs because the shells never complete
 	const n = 40
 	for i := range n {
 		d.createTask(t, fmt.Sprintf("t_%02d", i), "implementer")
@@ -442,7 +443,7 @@ func TestTwoShellsClaimingInALoopNeverGetTheSameTask(t *testing.T) {
 
 func TestPauseAndResumeTheHandOut(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
 	var running lease
@@ -461,7 +462,7 @@ func TestPauseAndResumeTheHandOut(t *testing.T) {
 
 func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1")
+	d := startDaemon(t, newDataDir(t), "max_concurrent_runs = 1") //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.createTask(t, "t_1", "implementer")
 	d.createTask(t, "t_2", "implementer")
 	d.mustCLI(t, nil, "task", "claim", "t_1", "--actor", "agent:a")
@@ -472,17 +473,21 @@ func TestMaxConcurrentRunsFromTheConfigBoundsClaims(t *testing.T) {
 
 func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	dataDir := newDataDir(t)
+	d := startSteppedDaemon(t, dataDir, writeDaemonConfig(t, dataDir))
 	ref := "gh:acme/web#1"
 	createTicket(t, d, ref)
-	var now []struct{ Cursor string }
-	d.mustCLI(t, &now, "tail")
 	var timer struct{ ID, State string }
-	d.mustCLI(t, &timer, "schedule", "--in", "1s", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
+	d.mustCLI(t, &timer, "schedule", "--in", "1ms", "ticket.fire", `{"ref":"gh:acme/web#1","trigger":"cancel"}`)
 	if timer.ID == "" || timer.State != "pending" {
 		t.Fatalf("schedule = %+v", timer)
 	}
-	d.mustCLI(t, nil, "wait", "type=timer.fired", "--after", now[len(now)-1].Cursor, "--timeout", "10s")
+	d.step(t, "scheduler")
+	var fired []struct{ Type string }
+	d.mustCLI(t, &fired, "tail", "--type", "timer.fired")
+	if len(fired) != 1 {
+		t.Fatalf("after the scheduler step %d timers fired, want 1", len(fired))
+	}
 	var tk struct{ State string }
 	d.mustCLI(t, &tk, "ticket", "show", ref)
 	if tk.State != "canceled" {
@@ -495,7 +500,7 @@ func TestAScheduledActionRunsInTheDaemon(t *testing.T) {
 
 func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project and no due timer: no loop pass decides the outcome
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "a_web", "ticket": "gh:acme/web#1", "project": "web", "role": "implementer"}, nil)
 	d.call(t, "task.create", map[string]any{"actor": "system", "id": "b_api", "ticket": "gh:acme/api#1", "project": "api", "role": "implementer"}, nil)
 	d.mustCLI(t, nil, "pause", "--project", "web")
@@ -508,7 +513,7 @@ func TestPausingOneProjectLeavesTheOthersToClaimReady(t *testing.T) {
 
 func TestRepeatingAScheduleWithItsKeyReturnsTheSameTimer(t *testing.T) {
 	t.Parallel()
-	d := startDaemon(t, newDataDir(t))
+	d := startDaemon(t, newDataDir(t)) //nolint:forbidigo // no project, and its timers are due in an hour: no loop pass decides the outcome
 	var first, second struct{ ID, State string }
 	d.mustCLI(t, &first, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
 	d.mustCLI(t, &second, "schedule", "--in", "1h", "ticket.create", `{"ref":"gh:acme/web#5"}`, "--idempotency-key", "s-1")
