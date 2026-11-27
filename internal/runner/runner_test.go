@@ -668,9 +668,11 @@ const stopLease = 5 * time.Second
 
 // stopLimit is the stop checkpoint limit of the tests that reach it. It is
 // long enough for the commit and the checks before the hook or check that
-// the test blocks, however loaded the machine: the limit is reached only
-// while that blocks.
-const stopLimit = 30 * time.Second
+// the test blocks, however loaded the machine (they take well under a
+// second unloaded; #278 saw them use 6s): the limit is reached only while
+// that blocks. A test that reaches it takes as long, so it is no longer:
+// twenty rounds of the tests that reach it fit the checkpoint's flaky check.
+const stopLimit = 15 * time.Second
 
 // blocks is a shell script that touches started and then blocks past
 // stopLimit; the checkpoint kills it at the limit.
