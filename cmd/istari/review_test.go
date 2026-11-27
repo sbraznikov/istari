@@ -416,11 +416,12 @@ func TestAReviewRefusedForTheTicketsStateCostsNoAttempt(t *testing.T) {
 
 func TestAReviewRefusedForAYAMLErrorStillCostsAnAttempt(t *testing.T) {
 	t.Parallel()
-	d, _, _, log := earlyReview(t, "findings: [")
+	d, _, ticket, log := earlyReview(t, "findings: [")
 	runs := endedReviews(t, d, log, 1)
 	if !strings.HasPrefix(runs[0].Reason, "rejected: ") {
 		t.Fatalf("the reviewer run ended %q, want it rejected", runs[0].Reason)
 	}
+	d.waitForEvents(t, fmt.Sprintf("gh:%s#%d", githubtest.Repo, ticket), "task.failed", 1) // the run ends before its task fails
 	if task := showTask(t, d, runs[0].Task); task.Attempts < 1 {
 		t.Fatalf("the review task has %d attempts after a YAML error, want the failed one counted", task.Attempts)
 	}
