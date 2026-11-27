@@ -40,6 +40,7 @@ var every = []journal.Entry{
 		Checks: map[string]string{"test": "green", "typecheck": "green"}, Files: []string{"cache/cache.go"}, PR: "https://github.com/acme/web/pull/7",
 	}},
 	{Kind: journal.Review, Actor: "agent:reviewer-1", Review: &journal.ReviewEntry{Verdict: "changes_requested", Summary: "Two findings", PR: "https://github.com/acme/web/pull/7"}},
+	{Kind: journal.FindingReply, Actor: "agent:implementer-1", Text: "The duplicate is the spec's own wording; a helper would hide it.", Reply: &journal.ReplyEntry{Review: "s_1_r1_review", Finding: 2}},
 	{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "test", Commit: "a1b2c3d", URL: "https://github.com/acme/web/actions/runs/9/job/41", Output: "--- FAIL: TestX\n    x_test.go:9: got 1, want 2", Cut: true}},
 	{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "lint", Commit: "a1b2c3d", Error: "github: GET /repos/acme/web/actions/jobs/42/logs: 404 Not Found"}},
 	{Kind: journal.Comment, Actor: "human:alex", Text: "The failing test is TestX; see the log.", Link: "https://github.com/acme/web/issues/3#issuecomment-5"},
@@ -59,6 +60,15 @@ func TestACIFailureEntryShowsTheCheckTheCommitAndTheOutput(t *testing.T) {
 	}
 	if strings.Contains(journal.Text(journal.Entry{Kind: journal.CI, Actor: "system", CI: &journal.CIEntry{Check: "test", Commit: "c", Output: "ok"}}), "cut") {
 		t.Error("an entry that was not cut says it was")
+	}
+}
+
+func TestAReplyEntryNamesTheFindingAndTheReviewItAnswers(t *testing.T) {
+	t.Parallel()
+	text := journal.Text(journal.Entry{Kind: journal.FindingReply, Actor: "agent:implementer-1", Text: "Not a flaw here.", Reply: &journal.ReplyEntry{Review: "s_1_r1_review", Finding: 2}})
+	want := "**Reply** to finding 2 of review s_1_r1_review — agent:implementer-1\n\nNot a flaw here."
+	if text != want {
+		t.Fatalf("text =\n%s\nwant\n%s", text, want)
 	}
 }
 
@@ -90,6 +100,11 @@ func TestAnIncompleteEntryIsRefused(t *testing.T) {
 		{Kind: journal.Checkpoint, Actor: "agent:a"}, // no checkpoint
 		{Kind: journal.Decision, Actor: "agent:a", Decision: &journal.DecisionEntry{Problem: "p", State: "s", Recommendation: "r", Recommended: "A", Status: "proposed", Options: []journal.Option{{Letter: "A", Gist: "g", Consequences: "c", Size: "S", Risks: "r", Changes: "x"}}}}, // one option
 		{Kind: "gossip", Actor: "agent:a", Text: "x"},
+		{Kind: journal.FindingReply, Actor: "agent:a", Reply: &journal.ReplyEntry{Review: "t", Finding: 1}},          // no text
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Finding: 1}},            // no review task
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Review: "t"}},           // no finding
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x", Reply: &journal.ReplyEntry{Review: "t", Finding: -1}}, // no finding
+		{Kind: journal.FindingReply, Actor: "agent:a", Text: "x"},                                                    // no reply part
 	} {
 		if _, err := journal.Render(e); err == nil {
 			t.Errorf("%s entry %+v was rendered", e.Kind, e)
