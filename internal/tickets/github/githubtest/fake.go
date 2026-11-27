@@ -67,9 +67,9 @@ type Server struct {
 	reruns          int                  // jobs rerun through the API
 	deletedBranches []string
 	teams           map[string][]string // "org/slug" → active members
-	counted         []string  // "METHOD path" of the requests that count against the quota
-	remaining       int       // the quota the answers report, with reset
-	reset           time.Time // zero: no X-RateLimit-* headers
+	counted         []string            // "METHOD path" of the requests that count against the quota
+	remaining       int                 // the quota the answers report, with reset
+	reset           time.Time           // zero: no X-RateLimit-* headers
 }
 
 // Label is a repository label.
