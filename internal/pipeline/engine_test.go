@@ -1593,3 +1593,44 @@ func TestAPlanningRoundWithoutItsPlanApprovalTaskGetsItAndDoesNotReachT4(t *test
 		t.Fatalf("a second reconcile: %d tasks (was %d), %s", len(again), len(tasks), f.state(t, ref))
 	}
 }
+
+func TestAReworkOrConflictRoundCutShortAfterVerifyGetsItsReviewAndIsNotPassed(t *testing.T) {
+	t.Parallel()
+	for _, round := range []string{"_r2_", "_r2c_"} { // a rework round (T7), a conflict round (T10)
+		twin := newEngine(t, config.Defaults{}, nil)
+		twin.readyTicket(t, ref)
+		twin.reconcile(t)
+		f := newEngine(t, config.Defaults{}, nil)
+		// The PR watch reads the pull request clean: conflict() starts no round.
+		clean := func(context.Context, string) (pipeline.PRConflict, bool, error) { return pipeline.PRConflict{}, false, nil }
+		f.engine = pipeline.NewEngine(f.tasks, f.tickets, pipeline.EngineOptions{Conflict: clean})
+		f.readyTicket(t, ref)
+		for _, tr := range []string{"start", "plan_accepted", "pr_ready"} {
+			if _, err := f.tickets.Fire(ctx, "system", ref, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The daemon stopped after it made the round's verify task; both are done.
+		f.cutShort(t, twin, func(task core.Task) (string, bool, bool) {
+			s := pipeline.StageOf(task)
+			return strings.Replace(task.ID, "_r1_", round, 1), s == "implement" || s == pipeline.StageVerify, true
+		})
+		impl, verify := f.stage(t, ref, "implement"), f.stage(t, ref, pipeline.StageVerify)
+		f.reconcile(t)
+		if st := f.state(t, ref); st != core.TicketInReview {
+			t.Fatalf("%s: the ticket is %s, want in_review: nobody reviewed the round (T8)", round, st)
+		}
+		review := f.stage(t, ref, "review")
+		if !strings.Contains(review.ID, round) || review.State != core.TaskReady || !slices.Equal(review.Needs, []string{impl.ID, verify.ID}) {
+			t.Fatalf("%s: review %s is %s needing %v, want the round's, ready on %s and %s", round, review.ID, review.State, review.Needs, impl.ID, verify.ID)
+		}
+		if merge := f.stage(t, ref, pipeline.StageMerge); !strings.Contains(merge.ID, round) {
+			t.Fatalf("%s: merge is %s, want the round's", round, merge.ID)
+		}
+		tasks, _ := f.tasks.List(ctx)
+		f.reconcile(t) // idempotent: no new round, no transition
+		if again, _ := f.tasks.List(ctx); len(again) != len(tasks) || f.state(t, ref) != core.TicketInReview {
+			t.Fatalf("%s: a second reconcile: %d tasks (was %d), %s", round, len(again), len(tasks), f.state(t, ref))
+		}
+	}
+}
