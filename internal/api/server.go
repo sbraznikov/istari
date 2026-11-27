@@ -58,6 +58,7 @@ type Server struct {
 	prs       *runner.PullRequests
 	tracker   tickets.SyncProvider
 	github    *ratelimit.Transport // nil: no counts, no hold
+	priority  string               // the default ticket priority; "" means core.DefaultPriority
 	firstRepo string               // the first configured repository: where a plan goes without its own
 	repos     map[string]bool      // the configured repositories: only their tickets get worktrees
 	ops       map[string]operation
@@ -109,13 +110,14 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 	n := newNotifier()
 	ns := notifyingStore{Store: s, n: n}
 	srv := &Server{
-		store:   ns,
-		tasks:   core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits, DefaultPriority: opts.Priority}),
-		tickets: core.NewTickets(ns, core.TicketOptions{Clock: opts.Clock}),
-		changed: n,
-		clock:   opts.Clock,
-		closing: make(chan struct{}),
-		mux:     http.NewServeMux(),
+		store:    ns,
+		tasks:    core.NewTasks(ns, core.TaskOptions{Clock: opts.Clock, Limits: opts.Limits, DefaultPriority: opts.Priority}),
+		tickets:  core.NewTickets(ns, core.TicketOptions{Clock: opts.Clock}),
+		changed:  n,
+		clock:    opts.Clock,
+		priority: opts.Priority,
+		closing:  make(chan struct{}),
+		mux:      http.NewServeMux(),
 	}
 	srv.sched = scheduler.New(ns, srv.tasks, srv.Do, scheduler.Options{Clock: opts.Clock, Tick: opts.Tick, Prepare: srv.Prepare})
 	// One journal for the syncer, the runner and the watcher, so a ticket's
