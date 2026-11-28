@@ -18,7 +18,7 @@ linters:
         # Every helper that starts a daemon free. The helpers that start one
         # with a project (startPipelineDaemon, startAgentDaemon,
         # pipelineDaemon, newSteppedRecovered) start it stepped.
-        - pattern: ^(startDaemon|startDaemonWithConfig|startDaemonWithArgs)$
+        - pattern: ^(startDaemon|startDaemonWithConfig|startDaemonWithArgs|launchDaemon)$
           msg: "start the daemon stepped (CODING_STANDARDS S7.10), or say why it may run free with //nolint:forbidigo // <why>"
     nolintlint:
       # Every //nolint names its linter and says why: //nolint:errcheck // <why>.

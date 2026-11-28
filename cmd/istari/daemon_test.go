@@ -26,6 +26,8 @@ type daemon struct {
 	cmd     *exec.Cmd
 	stderr  *syncBuffer
 	client  *http.Client
+	exited  chan struct{} // closed when the daemon process has ended
+	exitErr error         // what exec.Cmd.Wait returned; read it after exited is closed
 }
 
 // syncBuffer is a buffer the daemon's stderr is copied into while a test
@@ -95,34 +97,62 @@ func startDaemonWithConfig(t *testing.T, dataDir, config string, env ...string) 
 // `istari daemon`, such as --paused.
 func startDaemonWithArgs(t *testing.T, dataDir, config string, args []string, env ...string) *daemon {
 	t.Helper()
-	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &syncBuffer{}}
+	d, err := launchDaemon(t, dataDir, config, args, env...) //nolint:forbidigo // forwards: the caller of startDaemonWithArgs is checked
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// launchDaemon starts `istari daemon` and waits until it answers
+// /v1/health. It returns an error with the exit status and the stderr of
+// the daemon at once when the daemon exits before it answers. The only
+// time limit is the deadline of the test: it stops a daemon that hangs.
+func launchDaemon(t *testing.T, dataDir, config string, args []string, env ...string) (*daemon, error) {
+	t.Helper()
+	d := &daemon{dataDir: dataDir, socket: filepath.Join(dataDir, "istari.sock"), config: config, stderr: &syncBuffer{}, exited: make(chan struct{})}
 	d.cmd = exec.Command(binary, append([]string{"daemon", "--config", d.config}, args...)...)
 	d.cmd.Env = append(os.Environ(), env...)
 	d.cmd.Stderr = d.stderr
 	if err := d.cmd.Start(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
+	go func() {
+		d.exitErr = d.cmd.Wait()
+		close(d.exited)
+	}()
 	t.Cleanup(func() {
-		if d.cmd.ProcessState == nil {
-			d.cmd.Process.Kill() //nolint:errcheck // teardown: the daemon may have exited already
-			d.cmd.Wait()         //nolint:errcheck // teardown: Wait reports the kill
-		}
+		d.cmd.Process.Kill() //nolint:errcheck // teardown: the daemon may have exited already
+		d.wait()             //nolint:errcheck // teardown: wait reports the kill
 	})
 	d.client = socketClient(d.socket)
-	deadline := time.Now().Add(10 * time.Second)
+	var hang <-chan time.Time
+	if deadline, ok := t.Deadline(); ok {
+		hang = time.After(time.Until(deadline) - 5*time.Second) // the margin leaves time to report the hang
+	}
 	for {
 		resp, err := d.client.Get("http://istari/v1/health")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return d
+				return d, nil
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("daemon did not answer: %v\nstderr: %s", err, d.stderr)
+		select {
+		case <-d.exited:
+			return nil, fmt.Errorf("daemon exited before it answered: %v\nstderr: %s", d.exitErr, d.stderr)
+		case <-hang:
+			return nil, fmt.Errorf("daemon did not answer before the test deadline: %v\nstderr: %s", err, d.stderr)
+		case <-time.After(20 * time.Millisecond):
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// wait waits until the daemon process ends and returns what exec.Cmd.Wait
+// returned for it.
+func (d *daemon) wait() error {
+	<-d.exited
+	return d.exitErr
 }
 
 // call posts a JSON request to an operation and decodes the JSON answer.
@@ -212,13 +242,29 @@ func TestADaemonRestartedPausedOnAPausedHandOutStarts(t *testing.T) {
 	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.cmd.Wait(); err != nil {
+	if err := first.wait(); err != nil {
 		t.Fatalf("the first daemon did not stop cleanly: %v", err)
 	}
 	d := startDaemonWithArgs(t, dataDir, config, []string{"--paused"}) //nolint:forbidigo // no project: the paused hand-out refuses the claim, no loop pass decides it
 	d.createTask(t, "t_1", "implementer")
 	if _, stderr, code := d.cli(t, "task", "claim", "--ready", "--actor", "agent:a"); code != 1 || !strings.Contains(stderr, "paused") {
 		t.Fatalf("claim after a paused restart: exit %d %q, want paused", code, stderr)
+	}
+}
+
+func TestADaemonThatExitsAtStartIsReportedAtOnce(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(newDataDir(t), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(file, "data") // under a regular file: the daemon cannot make it
+	_, err := launchDaemon(t, dataDir, writeDaemonConfig(t, dataDir), nil) //nolint:forbidigo // the daemon exits at start: no loop pass runs
+	if err == nil {
+		t.Fatal("launchDaemon of a daemon that cannot make its data dir: no error")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "exit status") || !strings.Contains(msg, "not a directory") {
+		t.Fatalf("launchDaemon error = %q, want the exit status and the stderr of the daemon", msg)
 	}
 }
 
@@ -390,7 +436,7 @@ func TestSIGTERMCompletesInFlightRequestsAndExitsZero(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("in-flight request: %s %s", resp.Status, data)
 	}
-	if err := d.cmd.Wait(); err != nil {
+	if err := d.wait(); err != nil {
 		t.Fatalf("daemon exit: %v\nstderr: %s", err, d.stderr)
 	}
 
@@ -425,7 +471,7 @@ func TestARunLeftRunningByADaemonRestartEndsOnStart(t *testing.T) {
 	if err := d.cmd.Process.Kill(); err != nil { // the daemon dies with its run still recorded running
 		t.Fatal(err)
 	}
-	d.cmd.Wait() //nolint:errcheck // Wait reports the kill
+	d.wait() //nolint:errcheck // wait reports the kill
 
 	again := startSteppedDaemon(t, d.dataDir, d.config, d.env...) // the start ends the run; no loop pass reacts to it
 	again.mustCLI(t, &runs, "run", "list")
