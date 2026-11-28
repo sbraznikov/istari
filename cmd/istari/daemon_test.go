@@ -258,7 +258,8 @@ func TestADaemonThatExitsAtStartIsReportedAtOnce(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dataDir := filepath.Join(file, "data") // under a regular file: the daemon cannot make it
+	// The data dir is under a regular file: the daemon cannot make it.
+	dataDir := filepath.Join(file, "data")
 	_, err := launchDaemon(t, dataDir, writeDaemonConfig(t, dataDir), nil) //nolint:forbidigo // the daemon exits at start: no loop pass runs
 	if err == nil {
 		t.Fatal("launchDaemon of a daemon that cannot make its data dir: no error")
