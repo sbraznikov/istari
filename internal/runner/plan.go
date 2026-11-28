@@ -76,6 +76,9 @@ var zoneFiles = map[string]int{"XS": 2, "S": 5, "M": 12, "L": 25}
 type PlanSettings struct {
 	MaxSize string
 	Gate    bool // plan_gate: a human approves the plan with its seams
+	// DefaultPriority is [defaults] priority, a split child's priority when
+	// its parent has none; "" means core.DefaultPriority.
+	DefaultPriority string
 }
 
 // Plans checks and records plans; code, not the planner, does the writing.
@@ -151,6 +154,9 @@ func (p *Plans) Check(ctx context.Context, run Run, res PlanResult, s PlanSettin
 		split := *res.Split
 		split.Tickets = slices.Clone(split.Tickets)
 		priority := tk.Priority
+		if priority == "" {
+			priority = s.DefaultPriority
+		}
 		if priority == "" {
 			priority = core.DefaultPriority
 		}

@@ -251,6 +251,18 @@ func TestASplitChildNamingAnotherRepositoryHasItInItsTable(t *testing.T) {
 	}
 }
 
+func TestASplitChildOfAParentWithoutPriorityHasTheConfiguredDefault(t *testing.T) {
+	t.Parallel()
+	f := newSplit(t)
+	res, err := f.plans.Check(ctx, f.run, splitPlan(tickets.PlanTicket{Key: "a", Title: "Half A", Body: childBody, Type: "bug", Size: "S"}), runner.PlanSettings{MaxSize: "L", DefaultPriority: "P1"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if body := res.Split.Tickets[0].Body; !strings.HasSuffix(body, "| bug | S | P1 | `"+githubtest.Repo+"` |\n") {
+		t.Fatalf("the child's body:\n%s\nwant the configured default P1 in its table: the parent is scheduled as P1", body)
+	}
+}
+
 func TestASplitWithAChildThatMissesTheStandardIsRefusedBeforeAnyIssue(t *testing.T) {
 	for name, tc := range map[string]struct {
 		child tickets.PlanTicket
