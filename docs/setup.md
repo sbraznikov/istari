@@ -83,6 +83,15 @@ istari's clone of a repository is fetched with plain `git` from `https://github.
 
 Without a GitHub App, pushes and pull requests are also made with the gh token, as your user. `istari doctor` says so (step 8).
 
+**Approving merges without a GitHub App.** In the default merge mode `after_approval` a human approves each pull request before istari merges it. The approval is a GitHub review whenever GitHub allows one: anyone else listed in CODEOWNERS reviews the pull request as usual. But the pull requests are yours, and GitHub refuses a review of your own pull request ("Can not approve your own pull request"). If you are the only human on the project, approve with istari instead:
+
+```sh
+istari gate list                 # the approve task of each ticket in awaiting_approval
+istari gate approve <task-id>    # you approve the pull request's current head
+```
+
+Only the pull request's author approves this way, and only while listed in `trusted` (or, when `trusted` is absent, with write access to the repository). The approval names the head commit it approves: a push after it voids it, and the gate shows again. With a GitHub App the pull requests are the App's, so `istari gate approve` on the approve task is refused and you approve with a GitHub review.
+
 ### A GitHub App (optional)
 
 With a GitHub App, pushes, pull requests and check reads use short-lived installation tokens that only the daemon holds. Create an App, install it on the repositories istari works on, and download its private key. The App needs these repository permissions, derived from the API calls istari makes:

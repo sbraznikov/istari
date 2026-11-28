@@ -50,6 +50,7 @@ type Server struct {
 	runner    *runner.Runner
 	engine    *pipeline.Engine
 	vcs       *vcs.Client
+	githubApp bool // vcs acts as a GitHub App (ServerOptions.GitHubApp)
 	watch     *vcs.Watcher
 	saves     *runner.Checkpoints
 	refines   *runner.Refines
@@ -91,6 +92,10 @@ type ServerOptions struct {
 	Defaults config.Defaults
 	// VCS is the GitHub side: pushes, pull requests, checks and reviews.
 	VCS *vcs.Client
+	// GitHubApp tells that VCS acts as a GitHub App ([github_app]): its pull
+	// requests are the App's, so every human can approve them with a GitHub
+	// review, and istari gate approve does not stand in for one (spec 4.3).
+	GitHubApp bool
 	// GitHub is the transport under Tracker and VCS: the sync and the PR
 	// watch wait while its quota is low, and istari doctor reads its counts
 	// (#208). nil: neither waits, and there are no counts.
@@ -175,7 +180,7 @@ func NewServer(s store.Store, opts ServerOptions) *Server {
 		files = f
 	}
 	if opts.VCS != nil {
-		srv.vcs = opts.VCS
+		srv.vcs, srv.githubApp = opts.VCS, opts.GitHubApp
 		// A red head's CI failure entry reaches the rework brief (spec 4.3).
 		srv.watch = vcs.NewWatcher(opts.VCS, ns, vcs.WatcherOptions{Clock: opts.Clock, Journal: j})
 	}
@@ -359,7 +364,8 @@ func (s *Server) configured(all []core.Ticket) []core.Ticket {
 // mergeHooks are the merge stage's ways to GitHub (spec 4.8), on the ticket's
 // tracked pull request. The approval is asked only once the PR watch has seen
 // an approving review, and the diff is read once per head, so a pull request
-// that waits for a human costs no requests on every reconcile.
+// that waits for a human costs no requests on every reconcile. Without one,
+// the author's istari gate approve of the current head approves (spec 4.3).
 func (s *Server) mergeHooks() (
 	approval func(ctx context.Context, ref string) (string, error),
 	changes func(ctx context.Context, ref string) (vcs.Changes, error),
@@ -369,13 +375,19 @@ func (s *Server) mergeHooks() (
 	read := map[string]vcs.Changes{} // "<ticket> <head>" → its changes
 	approval = func(ctx context.Context, ref string) (string, error) {
 		pr, err := s.watch.PullRequestOf(ctx, ref)
-		if errors.Is(err, store.ErrNotFound) || err == nil && pr.Review != "approved" {
+		if errors.Is(err, store.ErrNotFound) {
 			return "", nil
 		}
 		if err != nil {
 			return "", err
 		}
-		return s.vcs.Approval(ctx, pr.Repo, pr.Number)
+		if pr.Review == "approved" {
+			by, err := s.vcs.Approval(ctx, pr.Repo, pr.Number)
+			if err != nil || by != "" {
+				return by, err
+			}
+		}
+		return s.gateApproval(ctx, pr)
 	}
 	changes = func(ctx context.Context, ref string) (vcs.Changes, error) {
 		pr, err := s.watch.PullRequestOf(ctx, ref)

@@ -60,6 +60,24 @@ func (c *Client) Approval(ctx context.Context, repo string, n int) (string, erro
 	return "", nil
 }
 
+// Author returns the login that opened the pull request, without a GitHub
+// App the gh CLI's user (spec section 11), and the pull request's current
+// head commit, which the author's istari gate approve binds to (spec 4.3).
+func (c *Client) Author(ctx context.Context, repo string, n int) (login, head string, err error) {
+	var pr struct {
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := c.do(ctx, repo, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, n), nil, &pr); err != nil {
+		return "", "", err
+	}
+	return pr.User.Login, pr.Head.SHA, nil
+}
+
 // review is a pull request review as Approval reads it.
 type review struct {
 	State    string `json:"state"`

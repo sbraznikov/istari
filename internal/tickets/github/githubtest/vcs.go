@@ -297,6 +297,7 @@ func (s *Server) pullJSON(i *Issue) map[string]any {
 		"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", Repo, i.Number),
 		"head":     map[string]any{"ref": i.Branch, "sha": i.HeadSHA, "repo": map[string]any{"full_name": Repo}},
 		"base":     map[string]any{"ref": i.Base, "sha": i.BaseSHA},
+		"user":     map[string]string{"login": i.Author},
 	}
 }
 

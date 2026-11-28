@@ -116,7 +116,9 @@ func approveTask(r round) (core.Task, bool) {
 }
 
 // approve completes the approve task when a CODEOWNERS member's review
-// approves the pull request's current head, or in auto mode when the pull
+// approves the pull request's current head (or, without a GitHub App, the
+// author's istari gate approve of it, spec 4.3: Approval answers both), or in
+// auto mode when the pull
 // request meets every condition of spec 4.8, which skips the human. A pull
 // request auto mode refuses waits for a human's approval as in
 // after_approval. approved tells whether the task was completed.

@@ -341,7 +341,8 @@ func (s *Server) operations() map[string]operation {
 			}
 			return k.SetPriority(ctx, r.Actor, r.Ref, r.Priority)
 		}),
-		// Gates: the tasks a human performs (spec section 9).
+		// Gates: the tasks a human performs (spec section 9), and the approve
+		// task where istari gate approve stands in for a GitHub review (4.3).
 		"gate.list": read(func(ctx context.Context, _ Empty) (any, error) {
 			all, err := t.List(ctx)
 			if err != nil {
@@ -350,6 +351,13 @@ func (s *Server) operations() map[string]operation {
 			gates := []core.Task{}
 			for _, task := range all {
 				if task.Role == pipeline.RoleHuman && task.State == core.TaskReady {
+					gates = append(gates, task)
+					continue
+				}
+				switch _, open, err := s.openMergeGate(ctx, task); {
+				case err != nil:
+					return nil, err
+				case open:
 					gates = append(gates, task)
 				}
 			}
@@ -362,6 +370,9 @@ func (s *Server) operations() map[string]operation {
 			task, err := t.Get(ctx, r.ID)
 			if err != nil {
 				return nil, err
+			}
+			if task.Role == pipeline.RoleGitHubReview {
+				return s.approveMerge(ctx, r.Actor, task)
 			}
 			if task.Role != pipeline.RoleHuman {
 				return nil, &core.Error{Code: core.CodeInvalidTask, Message: r.ID + " is a " + task.Role + " task, not a gate"}
