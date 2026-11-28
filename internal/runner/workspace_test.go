@@ -356,6 +356,84 @@ func TestPruneRemovesOrphansOnly(t *testing.T) {
 	}
 }
 
+func TestPruneReturnsAnOrphanItKeepsWithTheReason(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, reason string
+		make         func(t *testing.T, dir string)
+	}{
+		{"unpushed", "1 commits not on the remote", func(t *testing.T, dir string) {
+			gitIn(t, dir, "commit", "-q", "--allow-empty", "-m", "Not pushed")
+		}},
+		{"uncommitted", "uncommitted changes", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkspaces(t)
+			tk := f.ticket(t, 164, "Done but not saved")
+			f.fire(t, tk.Ref, "accept", "start")
+			f.reconcile(t)
+			tc.make(t, f.dir(164))
+			f.fire(t, tk.Ref, "plan_accepted", "pr_ready", "review_passed", "merged")
+			f.reconcile(t)
+			all, err := f.tickets.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pruned, err := f.ws.Prune(ctx, all)
+			if err != nil || len(pruned) != 1 {
+				t.Fatalf("Prune = %+v, %v; want the kept #164", pruned, err)
+			}
+			got := pruned[0]
+			if got.Ticket != tk.Ref || got.State != runner.WorkspaceKept || got.Dir != f.dir(164) || got.Reason != tc.reason {
+				t.Fatalf("Prune = %+v; want #164 kept in %s for %q", got, f.dir(164), tc.reason)
+			}
+			if !exists(f.dir(164)) {
+				t.Fatalf("prune removed a worktree with %s", tc.reason)
+			}
+		})
+	}
+}
+
+func TestPruneReturnsAWorktreeWithoutARecordItKeeps(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaces(t)
+	w, err := f.ws.Ensure(ctx, f.ticket(t, 2, "Left behind"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Dir, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.Open(filepath.Join(t.TempDir(), "istari.db")) // istari's database is new
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ws := runner.NewWorkspaces(fresh, runner.WorkspaceOptions{DataDir: f.data})
+	// istari doctor reads the orphans: they say the directory is kept, so it
+	// does not advise a prune that keeps it again.
+	orphans, err := ws.Orphans(ctx, nil)
+	if err != nil || len(orphans) != 1 || orphans[0].State != runner.WorkspaceKept || orphans[0].Reason != "uncommitted changes" {
+		t.Fatalf("Orphans = %+v, %v; want %s kept for uncommitted changes", orphans, err, w.Dir)
+	}
+	pruned, err := ws.Prune(ctx, nil)
+	if err != nil || len(pruned) != 1 || pruned[0].State != runner.WorkspaceKept || pruned[0].Dir != w.Dir || pruned[0].Reason != "uncommitted changes" {
+		t.Fatalf("Prune = %+v, %v; want %s kept for uncommitted changes", pruned, err, w.Dir)
+	}
+	if !exists(w.Dir) {
+		t.Fatal("prune removed a worktree with uncommitted changes")
+	}
+}
+
 func TestAWorktreeLeftOnDiskWithoutARecordIsAnOrphanToo(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaces(t)

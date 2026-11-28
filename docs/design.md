@@ -733,7 +733,7 @@ Rules:
 - The refiner works before the worktree is created and reads code from the main branch without write access.
 - A parent ticket without tasks of its own has no worktree: only the child tickets have one.
 - Before deleting, istari checks that the worktree has no uncommitted or unpushed changes. If there are any, the worktree is not deleted and a message goes to the `#agents-ops` channel: losing work is worse than leaving a directory behind.
-- `istari doctor` finds worktrees without a ticket and tickets in `done` whose worktree was not removed; `istari workspace prune` removes them.
+- `istari doctor` finds worktrees without a ticket and tickets in `done` whose worktree was not removed; `istari workspace prune` removes them. A worktree kept for unsaved work is reported, not removed: `prune` lists it with its path and the reason (uncommitted changes, or the count of commits not on the remote), and `doctor` shows it as a warning naming the ticket, the path and the reason, failing only on worktrees `prune` would remove.
 
 **Who starts agents.** Only the Runner, a part of the daemon. The human starts the daemon itself once (`istari daemon`, or as a system service via `istari daemon install`); after that agents start without their involvement. A run starts when four conditions are met: the ticket has a task in the `ready` state, there is no hold on the ticket, no other run of the ticket is running, and there is a free slot within the parallel run limit.
 
